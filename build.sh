@@ -1,18 +1,16 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-cd "$SCRIPT_DIR"
+cd "$(cd "$(dirname "$0")" && pwd)"
 
-BUILD_DIR="./build/release"
+# ── Directory layout ─────────────────────────────────────────────────────────
+XCODE_DIR="GboardIME"
+BUILD_DIR="$XCODE_DIR/build/release"
 APP_NAME="GboardIME.app"
 INSTALL_DIR="$HOME/Library/Input Methods"
-ENTITLEMENTS="$SCRIPT_DIR/GboardIME.entitlements"
-
-# HMM engine resources (relative to repo root)
-REPO_ROOT="$(dirname "$SCRIPT_DIR")"
-SO_SRC="$REPO_ROOT/source/resources/lib/arm64-v8a/libintegrated_shared_object.so"
-PACK_SRC="$REPO_ROOT/hmmoemdata/zh_cn_2025090307"
+ENTITLEMENTS="$XCODE_DIR/GboardIME.entitlements"
+SO_SRC="gboard_apk_source/resources/lib/arm64-v8a/libintegrated_shared_object.so"
+PACK_SRC="hmmoemdata/zh_cn_2025090307"
 
 usage() {
     echo "Usage: $0 [build|install|uninstall|clean]"
@@ -43,11 +41,13 @@ copy_engine_resources() {
 
 do_build() {
     echo "Building GboardIME (Release)..."
+    cd "$XCODE_DIR"
     xcodebuild -quiet \
         -scheme GboardIME \
         -configuration Release \
         build \
-        CONFIGURATION_BUILD_DIR="$BUILD_DIR"
+        CONFIGURATION_BUILD_DIR="build/release"
+    cd ..
     copy_engine_resources "$BUILD_DIR/$APP_NAME"
     echo "Built: $BUILD_DIR/$APP_NAME"
 }
@@ -81,7 +81,9 @@ do_uninstall() {
 }
 
 do_clean() {
-    rm -rf build
+    rm -rf "$BUILD_DIR"
+    rm -f tests/test_engine
+    rm -rf tests/test_engine.dSYM
     echo "Cleaned."
 }
 

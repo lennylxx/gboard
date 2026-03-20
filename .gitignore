@@ -1,5 +1,5 @@
 # Gboard source data (large, extracted from APK)
-source/
+gboard_apk_source/
 hmmoemdata/
 xapk_unpacked/
 *.xapk
