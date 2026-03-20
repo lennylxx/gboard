@@ -1,0 +1,20 @@
+# Gboard source data (large, extracted from APK)
+source/
+hmmoemdata/
+xapk_unpacked/
+*.xapk
+*.zip
+
+# Build artifacts
+GboardIME/build/
+*.o
+*.dSYM/
+tests/test_engine
+
+# Xcode
+DerivedData/
+xcuserdata/
+*.xcworkspace/
+
+# macOS
+.DS_Store

@@ -1,0 +1,417 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 54;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		AA000001000000000000001A /* main.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA000001000000000000001F /* main.swift */; };
+		AA000001000000000000002A /* InputController.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA000001000000000000002F /* InputController.swift */; };
+		AA000001000000000000003A /* CandidateWindow.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA000001000000000000003F /* CandidateWindow.swift */; };
+		AA000001000000000000004A /* GboardBridge.c in Sources */ = {isa = PBXBuildFile; fileRef = AA000001000000000000004F /* GboardBridge.c */; };
+		AA000001000000000000005A /* elf_loader.c in Sources */ = {isa = PBXBuildFile; fileRef = AA000001000000000000005F /* elf_loader.c */; };
+		AA000001000000000000006A /* android_stubs.c in Sources */ = {isa = PBXBuildFile; fileRef = AA000001000000000000006F /* android_stubs.c */; };
+		AA000001000000000000007A /* jni_env.c in Sources */ = {isa = PBXBuildFile; fileRef = AA000001000000000000007F /* jni_env.c */; };
+		AA000001000000000000008A /* hmm_engine.c in Sources */ = {isa = PBXBuildFile; fileRef = AA000001000000000000008F /* hmm_engine.c */; };
+		CC00000100000000000000A1 /* hmm_native.c in Sources */ = {isa = PBXBuildFile; fileRef = CC00000100000000000000B1 /* hmm_native.c */; };
+		CC00000100000000000000A2 /* hmm_enroll.c in Sources */ = {isa = PBXBuildFile; fileRef = CC00000100000000000000B2 /* hmm_enroll.c */; };
+		CC00000100000000000000A3 /* hmm_candidates.c in Sources */ = {isa = PBXBuildFile; fileRef = CC00000100000000000000B3 /* hmm_candidates.c */; };
+		AA000001000000000000009A /* Cocoa.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = AA000001000000000000009F /* Cocoa.framework */; };
+		AA00000100000000000000AA /* InputMethodKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = AA00000100000000000000AF /* InputMethodKit.framework */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXFileReference section */
+		AA000001000000000000001F /* main.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = main.swift; sourceTree = "<group>"; };
+		AA000001000000000000002F /* InputController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InputController.swift; sourceTree = "<group>"; };
+		AA000001000000000000003F /* CandidateWindow.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CandidateWindow.swift; sourceTree = "<group>"; };
+		AA000001000000000000004F /* GboardBridge.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = GboardBridge.c; sourceTree = "<group>"; };
+		AA000001000000000000005F /* elf_loader.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = elf_loader.c; sourceTree = "<group>"; };
+		AA000001000000000000006F /* android_stubs.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = android_stubs.c; sourceTree = "<group>"; };
+		AA000001000000000000007F /* jni_env.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = jni_env.c; sourceTree = "<group>"; };
+		AA000001000000000000008F /* hmm_engine.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = hmm_engine.c; sourceTree = "<group>"; };
+		CC00000100000000000000B1 /* hmm_native.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = hmm_native.c; sourceTree = "<group>"; };
+		CC00000100000000000000B2 /* hmm_enroll.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = hmm_enroll.c; sourceTree = "<group>"; };
+		CC00000100000000000000B3 /* hmm_candidates.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = hmm_candidates.c; sourceTree = "<group>"; };
+		DD00000100000000000000H1 /* hmm_engine.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = hmm_engine.h; sourceTree = "<group>"; };
+		DD00000100000000000000H2 /* hmm_internal.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = hmm_internal.h; sourceTree = "<group>"; };
+		DD00000100000000000000H3 /* elf_loader.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = elf_loader.h; sourceTree = "<group>"; };
+		DD00000100000000000000H4 /* jni_env.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = jni_env.h; sourceTree = "<group>"; };
+		DD00000100000000000000H5 /* android_stubs.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = android_stubs.h; sourceTree = "<group>"; };
+		DD00000100000000000000H6 /* GboardBridge.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = GboardBridge.h; sourceTree = "<group>"; };
+		AA000001000000000000009F /* Cocoa.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Cocoa.framework; path = System/Library/Frameworks/Cocoa.framework; sourceTree = SDKROOT; };
+		AA00000100000000000000AF /* InputMethodKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = InputMethodKit.framework; path = System/Library/Frameworks/InputMethodKit.framework; sourceTree = SDKROOT; };
+		AA00000100000000000000BF /* GboardIME.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = GboardIME.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		AA00000100000000000000CF /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
+		AA00000100000000000000DF /* GboardIME.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = GboardIME.entitlements; sourceTree = "<group>"; };
+/* End PBXFileReference section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		AA00000100000000000000E0 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				AA000001000000000000009A /* Cocoa.framework in Frameworks */,
+				AA00000100000000000000AA /* InputMethodKit.framework in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		AA00000100000000000000F0 /* / */ = {
+			isa = PBXGroup;
+			children = (
+				AA0000010000000000000100 /* GboardIME */,
+				AA0000010000000000000110 /* ime */,
+				AA0000010000000000000120 /* engine */,
+				BB0000010000000000000200 /* resources */,
+				AA0000010000000000000130 /* Frameworks */,
+				AA0000010000000000000140 /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		AA0000010000000000000100 /* GboardIME */ = {
+			isa = PBXGroup;
+			children = (
+				AA00000100000000000000CF /* Info.plist */,
+				AA00000100000000000000DF /* GboardIME.entitlements */,
+			);
+			name = GboardIME;
+			sourceTree = "<group>";
+		};
+		AA0000010000000000000110 /* ime */ = {
+			isa = PBXGroup;
+			children = (
+				AA000001000000000000001F /* main.swift */,
+				AA000001000000000000002F /* InputController.swift */,
+				AA000001000000000000003F /* CandidateWindow.swift */,
+				DD00000100000000000000H6 /* GboardBridge.h */,
+				AA000001000000000000004F /* GboardBridge.c */,
+			);
+			path = ime;
+			sourceTree = "<group>";
+		};
+		AA0000010000000000000120 /* engine */ = {
+			isa = PBXGroup;
+			children = (
+				DD00000100000000000000H1 /* hmm_engine.h */,
+				DD00000100000000000000H2 /* hmm_internal.h */,
+				DD00000100000000000000H3 /* elf_loader.h */,
+				DD00000100000000000000H4 /* jni_env.h */,
+				DD00000100000000000000H5 /* android_stubs.h */,
+				AA000001000000000000008F /* hmm_engine.c */,
+				CC00000100000000000000B1 /* hmm_native.c */,
+				CC00000100000000000000B2 /* hmm_enroll.c */,
+				CC00000100000000000000B3 /* hmm_candidates.c */,
+				AA000001000000000000005F /* elf_loader.c */,
+				AA000001000000000000006F /* android_stubs.c */,
+				AA000001000000000000007F /* jni_env.c */,
+			);
+			path = engine;
+			sourceTree = "<group>";
+		};
+		BB0000010000000000000200 /* resources */ = {
+			isa = PBXGroup;
+			children = (
+			);
+			path = resources;
+			sourceTree = "<group>";
+		};
+		AA0000010000000000000130 /* Frameworks */ = {
+			isa = PBXGroup;
+			children = (
+				AA000001000000000000009F /* Cocoa.framework */,
+				AA00000100000000000000AF /* InputMethodKit.framework */,
+			);
+			name = Frameworks;
+			sourceTree = "<group>";
+		};
+		AA0000010000000000000140 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				AA00000100000000000000BF /* GboardIME.app */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		AA0000010000000000000150 /* GboardIME */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = AA0000010000000000000160 /* Build configuration list for PBXNativeTarget "GboardIME" */;
+			buildPhases = (
+				AA0000010000000000000170 /* Sources */,
+				AA00000100000000000000E0 /* Frameworks */,
+				AA0000010000000000000180 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = GboardIME;
+			productName = GboardIME;
+			productReference = AA00000100000000000000BF /* GboardIME.app */;
+			productType = "com.apple.product-type.application";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		AA0000010000000000000190 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = YES;
+				LastSwiftUpdateCheck = 1250;
+				LastUpgradeCheck = 1610;
+				TargetAttributes = {
+					AA0000010000000000000150 = {
+						CreatedOnToolsVersion = 14.0;
+					};
+				};
+			};
+			buildConfigurationList = AA00000100000000000001A0 /* Build configuration list for PBXProject "GboardIME" */;
+			compatibilityVersion = "Xcode 9.3";
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				en,
+				Base,
+			);
+			mainGroup = AA00000100000000000000F0;
+			productRefGroup = AA0000010000000000000140 /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				AA0000010000000000000150 /* GboardIME */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		AA0000010000000000000180 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		AA0000010000000000000170 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				AA000001000000000000001A /* main.swift in Sources */,
+				AA000001000000000000002A /* InputController.swift in Sources */,
+				AA000001000000000000003A /* CandidateWindow.swift in Sources */,
+				AA000001000000000000004A /* GboardBridge.c in Sources */,
+				AA000001000000000000005A /* elf_loader.c in Sources */,
+				AA000001000000000000006A /* android_stubs.c in Sources */,
+				AA000001000000000000007A /* jni_env.c in Sources */,
+				AA000001000000000000008A /* hmm_engine.c in Sources */,
+				CC00000100000000000000A1 /* hmm_native.c in Sources */,
+				CC00000100000000000000A2 /* hmm_enroll.c in Sources */,
+				CC00000100000000000000A3 /* hmm_candidates.c in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin XCBuildConfiguration section */
+		AA00000100000000000001B0 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEAD_CODE_STRIPPING = YES;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_TESTABILITY = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_DYNAMIC_NO_PIC = NO;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"DEBUG=1",
+					"$(inherited)",
+				);
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				MACOSX_DEPLOYMENT_TARGET = 13.0;
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				MTL_FAST_MATH = YES;
+				ONLY_ACTIVE_ARCH = YES;
+				SDKROOT = macosx;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+			};
+			name = Debug;
+		};
+		AA00000100000000000001C0 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEAD_CODE_STRIPPING = YES;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				MACOSX_DEPLOYMENT_TARGET = 13.0;
+				MTL_ENABLE_DEBUG_INFO = NO;
+				MTL_FAST_MATH = YES;
+				SDKROOT = macosx;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_OPTIMIZATION_LEVEL = "-O";
+			};
+			name = Release;
+		};
+		AA00000100000000000001D0 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_ENTITLEMENTS = GboardIME.entitlements;
+				CODE_SIGN_IDENTITY = "-";
+				CODE_SIGN_STYLE = Manual;
+				COMBINE_HIDPI_IMAGES = YES;
+				CONFIGURATION_BUILD_DIR = "$(SYMROOT)/$(CONFIGURATION)";
+				DEAD_CODE_STRIPPING = YES;
+				HEADER_SEARCH_PATHS = (
+					"$(PROJECT_DIR)/engine",
+					"$(PROJECT_DIR)/ime",
+				);
+				INFOPLIST_FILE = Info.plist;
+				SWIFT_OBJC_BRIDGING_HEADER = "ime/GboardBridge.h";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				MACOSX_DEPLOYMENT_TARGET = 13.0;
+				PRODUCT_BUNDLE_IDENTIFIER = "com.google.inputmethod.GboardIME";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_VERSION = 5.0;
+			};
+			name = Debug;
+		};
+		AA00000100000000000001E0 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_ENTITLEMENTS = GboardIME.entitlements;
+				CODE_SIGN_IDENTITY = "-";
+				CODE_SIGN_STYLE = Manual;
+				COMBINE_HIDPI_IMAGES = YES;
+				CONFIGURATION_BUILD_DIR = "$(SYMROOT)/$(CONFIGURATION)";
+				DEAD_CODE_STRIPPING = YES;
+				HEADER_SEARCH_PATHS = (
+					"$(PROJECT_DIR)/engine",
+					"$(PROJECT_DIR)/ime",
+				);
+				INFOPLIST_FILE = Info.plist;
+				SWIFT_OBJC_BRIDGING_HEADER = "ime/GboardBridge.h";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				MACOSX_DEPLOYMENT_TARGET = 13.0;
+				PRODUCT_BUNDLE_IDENTIFIER = "com.google.inputmethod.GboardIME";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_VERSION = 5.0;
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		AA00000100000000000001A0 /* Build configuration list for PBXProject "GboardIME" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				AA00000100000000000001B0 /* Debug */,
+				AA00000100000000000001C0 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		AA0000010000000000000160 /* Build configuration list for PBXNativeTarget "GboardIME" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				AA00000100000000000001D0 /* Debug */,
+				AA00000100000000000001E0 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+/* End XCConfigurationList section */
+	};
+	rootObject = AA0000010000000000000190 /* Project object */;
+}

@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleIdentifier</key>
+    <string>com.google.inputmethod.GboardIME</string>
+    <key>CFBundleName</key>
+    <string>GboardIME</string>
+    <key>CFBundleDisplayName</key>
+    <string>Gboard</string>
+    <key>CFBundleVersion</key>
+    <string>1</string>
+    <key>CFBundleShortVersionString</key>
+    <string>1.0</string>
+    <key>CFBundleExecutable</key>
+    <string>GboardIME</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>CFBundleDevelopmentRegion</key>
+    <string>en</string>
+    <key>CFBundleInfoDictionaryVersion</key>
+    <string>6.0</string>
+
+    <!-- IMKit keys -->
+    <key>NSPrincipalClass</key>
+    <string>NSApplication</string>
+    <key>InputMethodServerControllerClass</key>
+    <string>GboardInputController</string>
+    <key>InputMethodConnectionName</key>
+    <string>GboardIME_Connection</string>
+
+    <!-- Character repertoire — top level, makes it appear under Chinese Simplified -->
+    <key>tsInputMethodCharacterRepertoireKey</key>
+    <array>
+        <string>Hans</string>
+    </array>
+
+    <key>LSBackgroundOnly</key>
+    <true/>
+    <key>LSMinimumSystemVersion</key>
+    <string>13.0</string>
+    <key>NSSupportsAutomaticTermination</key>
+    <false/>
+</dict>
+</plist>
