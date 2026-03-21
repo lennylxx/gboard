@@ -13,3 +13,6 @@ const SymEntry *android_stubs_table(void);
 void bionic_tls_setup(void);
 void bionic_tls_enter(void);  // set TPIDR_EL0 to fake TLS
 void bionic_tls_leave(void);  // restore original TPIDR_EL0
+
+// Run captured __cxa_atexit destructors. Call before elf_unload().
+void android_stubs_run_atexit(void);

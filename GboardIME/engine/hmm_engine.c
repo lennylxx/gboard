@@ -179,9 +179,20 @@ bool hmm_engine_init(const char *so_path, const char *pack_dir) {
 }
 
 void hmm_engine_destroy(void) {
-    if (g_deleteFactory && g_factory)
+    if (g_engine) hmm_engine_reset();
+
+    // Tear down native factory (calls into native code which may use JNI env)
+    if (g_deleteFactory && g_factory) {
+        CRASH_PROTECT_BEGIN()
         g_deleteFactory(g_env, NULL, g_factory);
-    jni_env_destroy(g_env);
+        LOGERR("nativeDeleteEngineFactory OK");
+        CRASH_PROTECT_END("nativeDeleteEngineFactory")
+    }
+
+    g_factory = 0; g_dm = 0; g_sm = 0; g_engine = 0; g_end_vertex = 0;
+
     elf_unload(g_elf);
-    g_elf = NULL; g_env = NULL; g_factory = 0; g_dm = 0; g_engine = 0;
+    g_elf = NULL;
+    jni_env_destroy(g_env);
+    g_env = NULL;
 }

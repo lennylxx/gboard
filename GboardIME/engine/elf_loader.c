@@ -887,6 +887,8 @@ void *elf_bias(ElfHandle *h) { return h ? h->bias : NULL; }
 
 void elf_unload(ElfHandle *h) {
     if (!h) return;
+    // Run captured __cxa_atexit destructors while pages are still mapped
+    android_stubs_run_atexit();
     munmap(h->load_base, h->load_size);
     free(h);
 }

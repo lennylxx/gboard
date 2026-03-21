@@ -567,7 +567,41 @@ static void *stub_memalign(size_t alignment, size_t size) {
 #include <malloc/malloc.h>
 static size_t stub_malloc_usable_size(void *ptr) { return malloc_size(ptr); }
 
-// ── __cxa_thread_atexit_impl ──────────────────────────────────────────────────
+// ── __cxa_atexit / __cxa_thread_atexit_impl ──────────────────────────────────
+// The native .so registers C++ static destructors via __cxa_atexit. If these
+// go to the real __cxa_atexit, they'll fire at process exit — after we've
+// munmapped the code pages, causing SIGSEGV. Instead, we capture them here
+// and run them explicitly before elf_unload via android_stubs_run_atexit().
+
+typedef struct {
+    void (*dtor)(void *);
+    void *obj;
+} AtexitEntry;
+
+#define MAX_ATEXIT 512
+static AtexitEntry s_atexit_entries[MAX_ATEXIT];
+static int s_atexit_count = 0;
+
+static int stub_cxa_atexit(void (*dtor)(void*), void *obj, void *dso) {
+    (void)dso;
+    if (s_atexit_count < MAX_ATEXIT) {
+        s_atexit_entries[s_atexit_count].dtor = dtor;
+        s_atexit_entries[s_atexit_count].obj = obj;
+        s_atexit_count++;
+    }
+    return 0;
+}
+
+void android_stubs_run_atexit(void) {
+    // Run in reverse order (LIFO), matching __cxa_atexit semantics
+    for (int i = s_atexit_count - 1; i >= 0; i--) {
+        if (s_atexit_entries[i].dtor) {
+            s_atexit_entries[i].dtor(s_atexit_entries[i].obj);
+        }
+    }
+    s_atexit_count = 0;
+}
+
 static int stub_cxa_thread_atexit_impl(void (*dtor)(void*), void *obj, void *dso) {
     (void)dtor; (void)obj; (void)dso; return 0; // leak thread-locals, fine for our use
 }
@@ -778,6 +812,7 @@ static const SymEntry s_table[] = {
     E("sincosf",                         stub_sincosf),
     E("memalign",                        stub_memalign),
     E("malloc_usable_size",              stub_malloc_usable_size),
+    E("__cxa_atexit",                    stub_cxa_atexit),
     E("__cxa_thread_atexit_impl",        stub_cxa_thread_atexit_impl),
 
     // Linux scheduling / process
