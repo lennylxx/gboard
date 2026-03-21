@@ -10,6 +10,7 @@
 		AA000001000000000000001A /* main.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA000001000000000000001F /* main.swift */; };
 		AA000001000000000000002A /* InputController.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA000001000000000000002F /* InputController.swift */; };
 		AA000001000000000000003A /* CandidateWindow.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA000001000000000000003F /* CandidateWindow.swift */; };
+		EE00000100000000000000PA /* PinyinSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = EE00000100000000000000PF /* PinyinSession.swift */; };
 		AA000001000000000000004A /* GboardBridge.c in Sources */ = {isa = PBXBuildFile; fileRef = AA000001000000000000004F /* GboardBridge.c */; };
 		AA000001000000000000005A /* elf_loader.c in Sources */ = {isa = PBXBuildFile; fileRef = AA000001000000000000005F /* elf_loader.c */; };
 		AA000001000000000000006A /* android_stubs.c in Sources */ = {isa = PBXBuildFile; fileRef = AA000001000000000000006F /* android_stubs.c */; };
@@ -40,6 +41,7 @@
 		DD00000100000000000000H4 /* jni_env.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = jni_env.h; sourceTree = "<group>"; };
 		DD00000100000000000000H5 /* android_stubs.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = android_stubs.h; sourceTree = "<group>"; };
 		DD00000100000000000000H6 /* GboardBridge.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = GboardBridge.h; sourceTree = "<group>"; };
+		EE00000100000000000000PF /* PinyinSession.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PinyinSession.swift; sourceTree = "<group>"; };
 		AA000001000000000000009F /* Cocoa.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Cocoa.framework; path = System/Library/Frameworks/Cocoa.framework; sourceTree = SDKROOT; };
 		AA00000100000000000000AF /* InputMethodKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = InputMethodKit.framework; path = System/Library/Frameworks/InputMethodKit.framework; sourceTree = SDKROOT; };
 		AA00000100000000000000BF /* GboardIME.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = GboardIME.app; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -86,6 +88,7 @@
 			children = (
 				AA000001000000000000001F /* main.swift */,
 				AA000001000000000000002F /* InputController.swift */,
+				EE00000100000000000000PF /* PinyinSession.swift */,
 				AA000001000000000000003F /* CandidateWindow.swift */,
 				DD00000100000000000000H6 /* GboardBridge.h */,
 				AA000001000000000000004F /* GboardBridge.c */,
@@ -206,6 +209,7 @@
 			files = (
 				AA000001000000000000001A /* main.swift in Sources */,
 				AA000001000000000000002A /* InputController.swift in Sources */,
+				EE00000100000000000000PA /* PinyinSession.swift in Sources */,
 				AA000001000000000000003A /* CandidateWindow.swift in Sources */,
 				AA000001000000000000004A /* GboardBridge.c in Sources */,
 				AA000001000000000000005A /* elf_loader.c in Sources */,

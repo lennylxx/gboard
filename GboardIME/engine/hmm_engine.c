@@ -51,6 +51,7 @@ fn_Append           g_append           = NULL;
 fn_FillCandList     g_fillCandList     = NULL;
 fn_GetCandCount     g_getCandCount     = NULL;
 fn_GetCandString    g_getCandString    = NULL;
+fn_GetCandRange     g_getCandRange     = NULL;
 fn_SelectCand       g_selectCand       = NULL;
 fn_Reset            g_reset            = NULL;
 fn_SetKeyLayout     g_setKeyLayout     = NULL;

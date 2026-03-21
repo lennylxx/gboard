@@ -101,6 +101,13 @@ jobject jni_create_range(JNIEnv *env, int start, int end) {
     return (jobject)r;
 }
 
+void jni_get_range(jobject range, int *start, int *end) {
+    if (!range) { if (start) *start = 0; if (end) *end = 0; return; }
+    FakeRange *r = (FakeRange *)range;
+    if (start) *start = r->start;
+    if (end)   *end   = r->end;
+}
+
 // Forward declarations for object array exports (implemented below)
 
 const char *jni_get_string(jstring s) {
@@ -559,6 +566,9 @@ static jlong   fn_GetStaticLongField(JNIEnv *e, jclass c, jfieldID f) { (void)e;
 // Direct buffers
 static jobject fn_NewDirectByteBuffer(JNIEnv *e, void *a, jlong c) { (void)e;(void)a;(void)c; return NULL; }
 static void   *fn_GetDirectBufferAddress(JNIEnv *e, jobject b)     { (void)e;(void)b; return NULL; }
+// JNI slot 231: GetDirectBufferCapacity — not used by HMM engine but kept
+// in case future native code calls it.
+static jlong   fn_GetDirectBufferCapacity(JNIEnv *e, jobject b) __attribute__((unused));
 static jlong   fn_GetDirectBufferCapacity(JNIEnv *e, jobject b)    { (void)e;(void)b; return 0; }
 
 // Extra stubs needed by build_iface

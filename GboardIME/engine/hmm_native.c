@@ -20,6 +20,7 @@ void hmm_resolve_natives(void) {
     g_fillCandList   = (fn_FillCandList)   jni_find_registered_native_exact("nativeFillCandidateList");
     g_getCandCount   = (fn_GetCandCount)   jni_find_registered_native_exact("nativeGetCandidateCount");
     g_getCandString  = (fn_GetCandString)  jni_find_registered_native_exact("nativeGetCandidateString");
+    g_getCandRange   = (fn_GetCandRange)   jni_find_registered_native_exact("nativeGetCandidateRange");
     g_selectCand     = (fn_SelectCand)     jni_find_registered_native_exact("nativeSelectCandidate");
     g_reset          = (fn_Reset)          jni_find_registered_native_exact("nativeReset");
     g_setKeyLayout   = (fn_SetKeyLayout)   jni_find_registered_native_exact("nativeSetKeyboardLayout");

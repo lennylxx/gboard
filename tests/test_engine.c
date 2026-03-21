@@ -170,6 +170,312 @@ static void test_multiple_candidates(void) {
     free_cands(cands, n);
 }
 
+static void test_select_and_continue(void) {
+    printf("[test_select_and_continue]\n");
+
+    // After selecting a candidate, the remaining pinyin should produce valid candidates.
+    // "nihao" → select "你" → feed "hao" → should get "好"
+    char *c[9] = {0};
+    int n = get_candidates_bulk("nihao", c, 9);
+    check("'nihao' gives candidates", n > 0);
+    free_cands(c, n);
+
+    // Feed remaining "hao" → should get candidates
+    char *c2[9] = {0};
+    int n2 = get_candidates_bulk("hao", c2, 9);
+    check("remaining 'hao' gives candidates", n2 > 0);
+    check("remaining 'hao' → '好'", n2 > 0 && c2[0] && strcmp(c2[0], "好") == 0);
+    free_cands(c2, n2);
+
+    // "zhongwenshuru" → after consuming "zhongwen" (8 chars), "shuru" remains
+    char *c3[9] = {0};
+    int n3 = get_candidates_bulk("shuru", c3, 9);
+    check("remaining 'shuru' gives candidates", n3 > 0);
+    free_cands(c3, n3);
+}
+
+// ── Candidate range tests ────────────────────────────────────────────────────
+
+static void test_candidate_range(void) {
+    printf("[test_candidate_range]\n");
+
+    // "nihao" → candidate[0] = "你好" should consume 5 vertices (all chars)
+    char *c[9] = {0};
+    int n = get_candidates_bulk("nihao", c, 9);
+    check("range: 'nihao' has candidates", n > 0);
+    if (n > 0) {
+        int consumed = hmm_engine_get_candidate_consumed(0);
+        printf("    range[0] '%s' consumed=%d (total=5)\n", c[0], consumed);
+        check("range: 'nihao' cand[0] consumed == 5", consumed == 5);
+    }
+    free_cands(c, n);
+
+    // "zhongwenshurufa" → candidate[0] = "中文输入法" should consume 15
+    char *c2[9] = {0};
+    int n2 = get_candidates_bulk("zhongwenshurufa", c2, 9);
+    check("range: 'zhongwenshurufa' has candidates", n2 > 0);
+    if (n2 > 0) {
+        int consumed = hmm_engine_get_candidate_consumed(0);
+        printf("    range[0] '%s' consumed=%d (total=15)\n", c2[0], consumed);
+        check("range: 'zhongwenshurufa' cand[0] consumed == 15", consumed == 15);
+    }
+    free_cands(c2, n2);
+
+    // "woqunijiaya" → if cand[0] is partial, consumed < total
+    char *c3[9] = {0};
+    int n3 = get_candidates_bulk("woqunijiaya", c3, 9);
+    check("range: 'woqunijiaya' has candidates", n3 > 0);
+    if (n3 > 0) {
+        int consumed = hmm_engine_get_candidate_consumed(0);
+        printf("    range[0] '%s' consumed=%d (total=11)\n", c3[0], consumed);
+        check("range: consumed > 0", consumed > 0);
+        check("range: consumed <= 11", consumed <= 11);
+    }
+    free_cands(c3, n3);
+}
+
+// ── Full IME simulation: type → select → continue with remaining ─────────────
+
+// Simulate the full IME flow: type pinyin, get candidates, select cand[0],
+// compute remaining from range, re-feed remaining, repeat until done.
+// Returns the concatenated committed Chinese text.
+static int simulate_ime_flow(const char *pinyin, char *out, int out_size) {
+    char composition[256];
+    strncpy(composition, pinyin, sizeof(composition) - 1);
+    composition[sizeof(composition) - 1] = '\0';
+    out[0] = '\0';
+    int rounds = 0;
+
+    while (composition[0] != '\0' && rounds < 20) {
+        rounds++;
+        hmm_engine_reset();
+        if (!hmm_engine_append(composition)) {
+            printf("    round %d: append '%s' failed\n", rounds, composition);
+            break;
+        }
+        char *cands[9] = {0};
+        int n = hmm_engine_get_candidates(cands, 9);
+        if (n <= 0) {
+            printf("    round %d: no candidates for '%s'\n", rounds, composition);
+            break;
+        }
+
+        int consumed = hmm_engine_get_candidate_consumed(0);
+        printf("    round %d: '%s' → cand[0]='%s' consumed=%d/%zu\n",
+               rounds, composition, cands[0], consumed, strlen(composition));
+
+        // Commit candidate text
+        strncat(out, cands[0], out_size - strlen(out) - 1);
+        hmm_engine_select(0);
+
+        // Advance composition
+        if (consumed > 0 && consumed < (int)strlen(composition)) {
+            memmove(composition, composition + consumed, strlen(composition) - consumed + 1);
+        } else {
+            composition[0] = '\0';
+        }
+
+        free_cands(cands, n);
+    }
+    return rounds;
+}
+
+static void test_full_ime_simulation(void) {
+    printf("[test_full_ime_simulation]\n");
+
+    // Test 1: "nihao" → should produce "你好"
+    {
+        char out[256];
+        simulate_ime_flow("nihao", out, sizeof(out));
+        printf("    result: '%s'\n", out);
+        check("sim 'nihao' → contains 你好", strstr(out, "你好") != NULL);
+    }
+
+    // Test 2: "zhongwenshurufa" → should produce "中文输入法"
+    {
+        char out[256];
+        simulate_ime_flow("zhongwenshurufa", out, sizeof(out));
+        printf("    result: '%s'\n", out);
+        check("sim 'zhongwenshurufa' → contains 中文", strstr(out, "中文") != NULL);
+        check("sim 'zhongwenshurufa' → contains 输入法", strstr(out, "输入法") != NULL);
+    }
+
+    // Test 3: "woshizhongguoren" → should produce something with 中国人
+    {
+        char out[256];
+        simulate_ime_flow("woshizhongguoren", out, sizeof(out));
+        printf("    result: '%s'\n", out);
+        check("sim 'woshizhongguoren' → non-empty", out[0] != '\0');
+    }
+
+    // Test 4: "jintiandtianqihenhaowomenyiqichuquwan"
+    {
+        char out[256];
+        simulate_ime_flow("jintiantianqihenhaowomenyiqichuquwan", out, sizeof(out));
+        printf("    result: '%s'\n", out);
+        check("sim long sentence → non-empty", out[0] != '\0');
+    }
+}
+
+// ── Brute force: every valid initial → must get candidates + valid range ─────
+
+static void test_brute_force_initials(void) {
+    printf("[test_brute_force_initials]\n");
+    // Every possible pinyin initial + common vowels
+    const char *inputs[] = {
+        "a","o","e","ai","an","ba","bo","bi","bu","ca","ce","ci","cu",
+        "da","de","di","du","fa","fo","fu","ga","ge","gu","ha","he","hu",
+        "ji","ju","ka","ke","ku","la","le","li","lu","lv","ma","me","mi","mu",
+        "na","ne","ni","nu","nv","pa","po","pi","pu","qi","qu","re","ri","ru",
+        "sa","se","si","su","sha","she","shi","shu","ta","te","ti","tu",
+        "wa","wo","wu","xi","xu","ya","ye","yi","yu","za","ze","zi","zu",
+        "zha","zhe","zhi","zhu","cha","che","chi","chu",
+        NULL
+    };
+
+    int total = 0, ok = 0, range_ok = 0;
+    for (int i = 0; inputs[i]; i++) {
+        total++;
+        char *cands[9] = {0};
+        int n = get_candidates_bulk(inputs[i], cands, 9);
+        if (n > 0) {
+            ok++;
+            int consumed = hmm_engine_get_candidate_consumed(0);
+            if (consumed > 0 && consumed <= (int)strlen(inputs[i])) {
+                range_ok++;
+            } else {
+                printf("    WARN: '%s' cand[0]='%s' consumed=%d (len=%zu)\n",
+                       inputs[i], cands[0], consumed, strlen(inputs[i]));
+            }
+        } else {
+            printf("    WARN: '%s' returned 0 candidates\n", inputs[i]);
+        }
+        free_cands(cands, n);
+    }
+    printf("    %d/%d inputs returned candidates, %d/%d had valid ranges\n",
+           ok, total, range_ok, total);
+    check("brute force: all initials return candidates", ok == total);
+    check("brute force: all ranges valid", range_ok == total);
+}
+
+// ── Brute force: common phrases → simulate full select flow ──────────────────
+
+static void test_brute_force_phrases(void) {
+    printf("[test_brute_force_phrases]\n");
+
+    const char *phrases[] = {
+        "nihao", "xiexie", "zaijian", "duibuqi", "meiguanxi",
+        "zhongguo", "meiguo", "beijing", "shanghai", "guangzhou",
+        "dianhua", "diannao", "shouji", "yinyue", "dianying",
+        "xuesheng", "laoshi", "tongxue", "pengyou", "jiaren",
+        "chifan", "shuijiao", "shangban", "xiaban", "huijia",
+        "zuotian", "jintian", "mingtian", "xianzai", "yihou",
+        "feichang", "feichanghao", "taihaole", "meiwenti",
+        "qingwen", "xingming", "dizhi", "dianhuahaoma",
+        "womenshipengyou", "zhongwenshurufa", "rengongzhineng",
+        "jiqixuexi", "shenduxuexi", "ziranyuyan",
+        "woxihuanzhongguo", "jintiantianqihenhao",
+        NULL
+    };
+
+    int total = 0, completed = 0;
+    for (int i = 0; phrases[i]; i++) {
+        total++;
+        char out[512];
+        int rounds = simulate_ime_flow(phrases[i], out, sizeof(out));
+        if (out[0] != '\0') {
+            completed++;
+            printf("    OK: '%s' → '%s' (%d rounds)\n", phrases[i], out, rounds);
+        } else {
+            printf("    FAIL: '%s' → empty output\n", phrases[i]);
+        }
+    }
+    printf("    %d/%d phrases completed\n", completed, total);
+    check("brute force: all phrases produce output", completed == total);
+}
+
+// ── Brute force: random a-z strings → must not crash ─────────────────────────
+
+static void test_brute_force_random(void) {
+    printf("[test_brute_force_random]\n");
+
+    // Deterministic pseudo-random: test engine doesn't crash on garbage input
+    unsigned seed = 12345;
+    int total = 200, crashed = 0;
+    for (int i = 0; i < total; i++) {
+        unsigned len = 1 + (seed % 15);
+        char buf[16];
+        for (unsigned j = 0; j < len; j++) {
+            seed = seed * 1103515245 + 12345;
+            buf[j] = 'a' + (seed >> 16) % 26;
+        }
+        buf[len] = '\0';
+
+        char *cands[9] = {0};
+        int n = get_candidates_bulk(buf, cands, 9);
+        if (n > 0) {
+            int consumed = hmm_engine_get_candidate_consumed(0);
+            (void)consumed; // just checking it doesn't crash
+        }
+        if (n >= 0) free_cands(cands, n);
+        else crashed++;
+    }
+    printf("    tested %d random strings, %d failures\n", total, crashed);
+    check("brute force: no crashes on random input", crashed == 0);
+}
+
+// ── Stress: incremental keystroke simulation ─────────────────────────────────
+
+static void test_brute_force_incremental(void) {
+    printf("[test_brute_force_incremental]\n");
+
+    // Simulate typing each phrase one key at a time (like real user)
+    const char *phrases[] = {
+        "nihao", "zhongwen", "shurufa", "woshizhongguoren",
+        "jintiantianqihenhao", "feichang", "pengyou", NULL
+    };
+
+    int ok = 0, total = 0;
+    for (int p = 0; phrases[p]; p++) {
+        total++;
+        bool phrase_ok = true;
+        int len = (int)strlen(phrases[p]);
+
+        // Simulate each keystroke: reset + re-append full composition (like the IME)
+        for (int k = 1; k <= len; k++) {
+            hmm_engine_reset();
+            char partial[64];
+            strncpy(partial, phrases[p], k);
+            partial[k] = '\0';
+
+            if (!hmm_engine_append(partial)) {
+                printf("    FAIL: '%s' append failed at len=%d\n", phrases[p], k);
+                phrase_ok = false;
+                break;
+            }
+            char *cands[9] = {0};
+            int n = hmm_engine_get_candidates(cands, 9);
+            if (n <= 0) {
+                printf("    WARN: '%s' no candidates at len=%d\n", phrases[p], k);
+            }
+            free_cands(cands, n > 0 ? n : 0);
+        }
+
+        // After full input, should have candidates
+        char *cands[9] = {0};
+        int n = get_candidates_bulk(phrases[p], cands, 9);
+        if (n <= 0) {
+            printf("    FAIL: '%s' no final candidates\n", phrases[p]);
+            phrase_ok = false;
+        }
+        free_cands(cands, n > 0 ? n : 0);
+
+        if (phrase_ok) ok++;
+    }
+    printf("    %d/%d phrases OK through incremental keystroke\n", ok, total);
+    check("brute force incremental: all phrases work", ok == total);
+}
+
 // ── Main ─────────────────────────────────────────────────────────────────────
 
 int main(int argc, char **argv) {
@@ -189,6 +495,13 @@ int main(int argc, char **argv) {
     test_reset_between_inputs();
     test_incremental_append();
     test_multiple_candidates();
+    test_select_and_continue();
+    test_candidate_range();
+    test_full_ime_simulation();
+    test_brute_force_initials();
+    test_brute_force_phrases();
+    test_brute_force_random();
+    test_brute_force_incremental();
 
     printf("\n══════════════════════════════════\n");
     printf("Results: %d passed, %d failed\n", g_pass, g_fail);

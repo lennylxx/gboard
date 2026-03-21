@@ -77,3 +77,4 @@ jobject     jni_create_file_descriptor(JNIEnv *env, int fd);
 
 // Fake Range object for fillCandidateList etc.
 jobject     jni_create_range(JNIEnv *env, int start, int end);
+void        jni_get_range(jobject range, int *start, int *end);

@@ -571,11 +571,6 @@ ElfHandle *elf_load(const char *path) {
         Elf64_Addr seg_end   = (ph->p_vaddr + ph->p_memsz + page - 1) & ~(page - 1);
         size_t     seg_size  = (size_t)(seg_end - seg_start);
 
-        int prot = 0;
-        if (ph->p_flags & 4) prot |= PROT_READ;
-        if (ph->p_flags & 2) prot |= PROT_WRITE;
-        if (ph->p_flags & 1) prot |= PROT_EXEC;
-
         // File-backed portion: map from the ELF file so the kernel can
         // verify the pages came from a file (required for PROT_EXEC in sandbox
         // without allow-unsigned-executable-memory entitlement).

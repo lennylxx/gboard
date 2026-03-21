@@ -498,7 +498,7 @@ static int stub_pthread_cond_timedwait(void *c, void *m, const struct timespec *
 }
 
 // pthread_once — Bionic: 4 bytes (int), macOS: 16 bytes. Use atomic on first 4 bytes.
-static volatile int s_once_spin_count = 0;
+static volatile int s_once_spin_count __attribute__((unused)) = 0;
 static int stub_pthread_once(void *once, void (*init_routine)(void)) {
     int *flag = (int *)once;
     if (__sync_val_compare_and_swap(flag, 0, 2) == 0) {

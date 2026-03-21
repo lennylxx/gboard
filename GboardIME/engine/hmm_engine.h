@@ -24,6 +24,11 @@ int  hmm_engine_get_candidates(char **candidates, int max_count);
 // Commit candidate at index (0-based) and reset composition.
 bool hmm_engine_select(int index);
 
+// Get the vertex range consumed by candidate at index.
+// Returns the end vertex index (number of pinyin chars consumed from start).
+// Returns -1 on failure.
+int hmm_engine_get_candidate_consumed(int index);
+
 // Reset / clear current composition without committing.
 void hmm_engine_reset(void);
 

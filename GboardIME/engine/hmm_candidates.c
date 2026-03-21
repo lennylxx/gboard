@@ -67,6 +67,19 @@ int hmm_engine_get_candidates(char **candidates, int max_count) {
     return filled;
 }
 
+int hmm_engine_get_candidate_consumed(int index) {
+    if (!g_getCandRange || !g_engine) return -1;
+    jobject range = NULL;
+    CRASH_PROTECT_BEGIN()
+    range = g_getCandRange(g_env, NULL, g_engine, (jint)index);
+    CRASH_PROTECT_END("nativeGetCandidateRange")
+    if (!range) return -1;
+    int start_v = 0, end_v = 0;
+    jni_get_range(range, &start_v, &end_v);
+    LOG("getCandidateRange(%d) → start=%d end=%d (g_end_vertex=%d)", index, start_v, end_v, g_end_vertex);
+    return end_v;
+}
+
 bool hmm_engine_select(int index) {
     if (!g_selectCand || !g_engine) return false;
     jboolean result = JNI_FALSE;

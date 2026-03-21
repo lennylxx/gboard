@@ -10,6 +10,7 @@ GboardIME/build/
 *.o
 *.dSYM/
 tests/test_engine
+tests/test_ime
 
 # Xcode
 DerivedData/
