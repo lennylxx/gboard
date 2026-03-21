@@ -1,5 +1,6 @@
 // Fake JNIEnv — uses explicit field assignment to avoid struct layout issues.
 #include "jni_env.h"
+#include "config.h"
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
@@ -7,18 +8,18 @@
 
 #include <unistd.h>
 #include <fcntl.h>
+#include <os/log.h>
 #if DEBUG
-extern int g_log_fd; // from elf_loader.c
-static void jni_log(const char *fmt, ...) {
-    char buf[1024];
-    int off = snprintf(buf, sizeof(buf), "[JNI] ");
-    va_list ap; va_start(ap, fmt);
-    off += vsnprintf(buf + off, sizeof(buf) - off, fmt, ap);
-    va_end(ap);
-    if (off < (int)sizeof(buf) - 1) buf[off++] = '\n';
-    if (g_log_fd >= 0) write(g_log_fd, buf, off);
+static os_log_t jni_os_log(void) {
+    static os_log_t log;
+    static int once;
+    if (!once) { log = os_log_create(BUNDLE_ID, "jni"); once = 1; }
+    return log;
 }
-#define JLOG(fmt, ...) jni_log(fmt, ##__VA_ARGS__)
+#define JLOG(fmt, ...) do { \
+    char _b[1024]; snprintf(_b, sizeof(_b), "[JNI] " fmt, ##__VA_ARGS__); \
+    os_log_debug(jni_os_log(), "%{public}s", _b); \
+} while(0)
 #else
 #define JLOG(...) ((void)0)
 #endif

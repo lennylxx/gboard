@@ -1,17 +1,11 @@
 import Cocoa
 import InputMethodKit
+import os
+
+private let logger = Logger(subsystem: Bundle.main.bundleIdentifier!, category: "ime")
 
 func imeLog(_ msg: String) {
-    let path = "/tmp/gboardime_debug.log"
-    let line = "\(Date()): \(msg)\n"
-    if let fh = FileHandle(forWritingAtPath: path) {
-        fh.seekToEndOfFile()
-        fh.write(line.data(using: .utf8)!)
-        fh.closeFile()
-    } else {
-        FileManager.default.createFile(atPath: path, contents: line.data(using: .utf8))
-    }
-    NSLog("[GboardIME] %@", msg)
+    logger.debug("\(msg, privacy: .public)")
 }
 
 let kConnectionName = "GboardIME_Connection"

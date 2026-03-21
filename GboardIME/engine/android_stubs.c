@@ -2,6 +2,7 @@
 // that don't exist on macOS.
 
 #include "android_stubs.h"
+#include "config.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -16,17 +17,18 @@
 #include <sys/stat.h>
 #include <sys/mman.h>
 
+#include <os/log.h>
 #if DEBUG
-extern int g_log_fd;
-static void alog_write(const char *fmt, ...) {
-    char buf[1024];
-    va_list ap;
-    va_start(ap, fmt);
-    int n = vsnprintf(buf, sizeof(buf), fmt, ap);
-    va_end(ap);
-    if (n > 0 && g_log_fd >= 0) write(g_log_fd, buf, (size_t)(n < (int)sizeof(buf) ? n : (int)sizeof(buf) - 1));
+static os_log_t alog_os_log(void) {
+    static os_log_t log;
+    static int once;
+    if (!once) { log = os_log_create(BUNDLE_ID, "asset"); once = 1; }
+    return log;
 }
-#define ALOG(fmt, ...) alog_write("[AAsset] " fmt "\n", ##__VA_ARGS__)
+#define ALOG(fmt, ...) do { \
+    char _b[1024]; snprintf(_b, sizeof(_b), "[AAsset] " fmt, ##__VA_ARGS__); \
+    os_log_debug(alog_os_log(), "%{public}s", _b); \
+} while(0)
 #else
 #define ALOG(...) ((void)0)
 #endif
@@ -53,8 +55,6 @@ static char s_asset_base[4096] = ".";
 // instructions in the loaded .so to `ldr xN, [PC + offset]` pointing to
 // a literal containing our fake TLS address. This is done by
 // elf_patch_tpidr() in elf_loader.c after the .so is loaded/relocated.
-
-#include <sys/mman.h>
 
 #define FAKE_TLS_SIZE 4096
 uint8_t s_fake_tls[FAKE_TLS_SIZE] __attribute__((aligned(16)));

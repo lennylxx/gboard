@@ -78,11 +78,6 @@ struct CandidateView: View {
                 .onAppear {
                     proxy.scrollTo(selectedIndex, anchor: .center)
                 }
-                .onChange(of: selectedIndex) { idx in
-                    withAnimation(.easeOut(duration: 0.15)) {
-                        proxy.scrollTo(idx, anchor: .center)
-                    }
-                }
             }
             .frame(height: 38)
             .background(keyColor)

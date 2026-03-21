@@ -4,6 +4,7 @@
 
 #include "elf_loader.h"
 #include "android_stubs.h"
+#include "config.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -147,9 +148,24 @@ struct ElfHandle {
 static sigjmp_buf s_ctor_jmp;
 static void ctor_crash_handler(int sig) { siglongjmp(s_ctor_jmp, sig); }
 
-// Forward declaration
+// ── Logging via os_log ───────────────────────────────────────────────────────
+#include <os/log.h>
+#include <stdarg.h>
 #if DEBUG
-static void elf_log(const char *fmt, ...);
+static os_log_t elf_os_log(void) {
+    static os_log_t log;
+    static int once;
+    if (!once) { log = os_log_create(BUNDLE_ID, "elf"); once = 1; }
+    return log;
+}
+static void elf_log(const char *fmt, ...) {
+    char buf[2048];
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(buf, sizeof(buf), fmt, ap);
+    va_end(ap);
+    os_log_debug(elf_os_log(), "%{public}s", buf);
+}
 #else
 #define elf_log(...) ((void)0)
 #endif
@@ -302,31 +318,6 @@ static void apply_rela(ElfHandle *h, const Elf64_Rela *rela, size_t count) {
     }
 }
 
-// ── Logging helper (writes to file in sandbox container) ─────────────────────
-#include <stdarg.h>
-#if DEBUG
-int g_log_fd = -1;
-static void elf_log(const char *fmt, ...) {
-    if (g_log_fd < 0) {
-        const char *home = getenv("HOME");
-        char logpath[1024];
-        if (home) {
-            snprintf(logpath, sizeof(logpath), "%s/Library/Containers/com.google.inputmethod.GboardIME/Data/elf_loader.log", home);
-            g_log_fd = open(logpath, O_WRONLY | O_CREAT | O_TRUNC, 0644);
-        }
-        if (g_log_fd < 0) g_log_fd = open("/tmp/elf_loader.log", O_WRONLY | O_CREAT | O_TRUNC, 0644);
-        if (g_log_fd < 0) g_log_fd = STDERR_FILENO;
-    }
-    char buf[2048];
-    va_list ap;
-    va_start(ap, fmt);
-    int n = vsnprintf(buf, sizeof(buf), fmt, ap);
-    va_end(ap);
-    if (n > 0) write(g_log_fd, buf, (size_t)(n < (int)sizeof(buf) ? n : (int)sizeof(buf) - 1));
-}
-#else
-int g_log_fd = -1;
-#endif
 
 // ── Android packed relocation decoder (DT_ANDROID_RELA / "APS2") ─────────────
 

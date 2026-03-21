@@ -2,6 +2,7 @@
 // Not part of the public API — use hmm_engine.h instead.
 #pragma once
 
+#include "config.h"
 #include "hmm_engine.h"
 #include "elf_loader.h"
 #include "android_stubs.h"
@@ -14,7 +15,6 @@
 #include <dlfcn.h>
 #include <signal.h>
 #include <setjmp.h>
-#include <dirent.h>
 #include <fcntl.h>
 #include <unistd.h>
 #include <stdarg.h>
@@ -22,30 +22,28 @@
 #include <sys/stat.h>
 
 // ── Logging ─────────────────────────────────────────────────────────────────
-extern int g_log_fd; // from elf_loader.c
+#include <os/log.h>
+
+static inline os_log_t hmm_os_log(void) {
+    static os_log_t log;
+    static int once;
+    if (!once) { log = os_log_create(BUNDLE_ID, "hmm"); once = 1; }
+    return log;
+}
 
 #if DEBUG
-static inline void hmm_log(const char *fmt, ...) {
-    char buf[1024];
-    va_list ap; va_start(ap, fmt);
-    int n = vsnprintf(buf, sizeof(buf)-1, fmt, ap);
-    va_end(ap);
-    if (n > 0) { buf[n] = '\n'; write(g_log_fd >= 0 ? g_log_fd : STDERR_FILENO, buf, n+1); }
-}
-#define LOG(fmt, ...) hmm_log(fmt, ##__VA_ARGS__)
+#define LOG(fmt, ...) do { \
+    char _b[1024]; snprintf(_b, sizeof(_b), fmt, ##__VA_ARGS__); \
+    os_log_debug(hmm_os_log(), "%{public}s", _b); \
+} while(0)
 #else
 #define LOG(...) ((void)0)
 #endif
 
-static inline void hmm_logerr(const char *fmt, ...) {
-    char buf[1024];
-    int off = snprintf(buf, sizeof(buf)-1, "[hmm_engine] ");
-    va_list ap; va_start(ap, fmt);
-    off += vsnprintf(buf+off, sizeof(buf)-1-off, fmt, ap);
-    va_end(ap);
-    if (off > 0) { buf[off] = '\n'; write(STDERR_FILENO, buf, off+1); }
-}
-#define LOGERR(fmt, ...) hmm_logerr(fmt, ##__VA_ARGS__)
+#define LOGERR(fmt, ...) do { \
+    char _b[1024]; snprintf(_b, sizeof(_b), fmt, ##__VA_ARGS__); \
+    os_log_error(hmm_os_log(), "%{public}s", _b); \
+} while(0)
 
 // ── Crash protection ────────────────────────────────────────────────────────
 extern sigjmp_buf s_hmm_jmp;
