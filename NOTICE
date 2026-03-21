@@ -1,0 +1,15 @@
+LEGAL NOTICE
+
+This project is an independent research/interoperability effort. It does NOT
+include, distribute, or link to any Google proprietary binaries or data files.
+
+To use this project, you must supply your own legally obtained copy of the
+Gboard APK (com.google.android.inputmethod.latin). This project provides
+only the original code needed to load and interface with Gboard's native
+HMM Pinyin engine on macOS.
+
+Google, Gboard, and Android are trademarks of Google LLC. This project is
+not affiliated with, endorsed by, or sponsored by Google.
+
+Users are responsible for ensuring their use complies with applicable terms
+of service and local laws regarding interoperability and reverse engineering.
