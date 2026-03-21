@@ -16,8 +16,7 @@
 #include <sys/stat.h>
 #include <sys/mman.h>
 
-// Use raw write() for logging to avoid stdio lock deadlocks when siglongjmp
-// is used for crash recovery in constructors.
+#if DEBUG
 extern int g_log_fd;
 static void alog_write(const char *fmt, ...) {
     char buf[1024];
@@ -28,6 +27,9 @@ static void alog_write(const char *fmt, ...) {
     if (n > 0 && g_log_fd >= 0) write(g_log_fd, buf, (size_t)(n < (int)sizeof(buf) ? n : (int)sizeof(buf) - 1));
 }
 #define ALOG(fmt, ...) alog_write("[AAsset] " fmt "\n", ##__VA_ARGS__)
+#else
+#define ALOG(...) ((void)0)
+#endif
 
 static char s_asset_base[4096] = ".";
 

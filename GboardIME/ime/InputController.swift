@@ -10,6 +10,7 @@ class GboardInputController: IMKInputController {
 
     private var composition = ""          // accumulated pinyin (e.g. "nihao")
     private var candidates: [String] = []
+    private var selectedIndex = 0
     private var candidateWindow: CandidateWindowController?
 
     override init!(server: IMKServer!, delegate: Any!, client: Any!) {
@@ -54,14 +55,32 @@ class GboardInputController: IMKInputController {
             return handleDelete(client: sender)
         }
 
+        // Left/Right arrow — move highlighted candidate
+        if !composition.isEmpty && !candidates.isEmpty {
+            if keyCode == 123 { // Left arrow
+                if selectedIndex > 0 {
+                    selectedIndex -= 1
+                    showCandidates(candidates, client: sender)
+                }
+                return true
+            }
+            if keyCode == 124 { // Right arrow
+                if selectedIndex < candidates.count - 1 {
+                    selectedIndex += 1
+                    showCandidates(candidates, client: sender)
+                }
+                return true
+            }
+        }
+
         // Number keys 1-9 while candidate window is showing — select candidate
         if !composition.isEmpty, let n = Int(chars), n >= 1 && n <= 9 {
             return selectCandidate(index: n - 1, client: sender)
         }
 
-        // Space — select first candidate if composing
+        // Space — select highlighted candidate if composing
         if keyCode == 49 && !composition.isEmpty {
-            return commitFirst(client: sender)
+            return selectCandidate(index: selectedIndex, client: sender)
         }
 
         // Ignore modifier-only combos
@@ -83,7 +102,7 @@ class GboardInputController: IMKInputController {
 
     private func appendPinyin(_ ch: String, client sender: Any!) -> Bool {
         composition += ch
-        updatePreedit(client: sender)
+        setInvisibleMarkedText(client: sender)
         fetchCandidates(client: sender)
         return true
     }
@@ -94,20 +113,20 @@ class GboardInputController: IMKInputController {
         if composition.isEmpty {
             cancelComposition(client: sender)
         } else {
-            updatePreedit(client: sender)
+            setInvisibleMarkedText(client: sender)
             fetchCandidates(client: sender)
         }
         return true
     }
 
-    private func updatePreedit(client sender: Any!) {
+    private func setInvisibleMarkedText(client sender: Any!) {
         guard let client = sender as? IMKTextInput else { return }
         let attrs = mark(forStyle: kTSMHiliteSelectedRawText,
                          at: NSRange(location: NSNotFound, length: 0))
-        let str = NSAttributedString(string: composition,
+        let str = NSAttributedString(string: "\u{200B}",
                                      attributes: attrs as? [NSAttributedString.Key: Any])
         client.setMarkedText(str,
-                             selectionRange: NSRange(location: composition.count, length: 0),
+                             selectionRange: NSRange(location: 1, length: 0),
                              replacementRange: NSRange(location: NSNotFound, length: 0))
     }
 
@@ -141,6 +160,7 @@ class GboardInputController: IMKInputController {
         }
 
         candidates = results
+        selectedIndex = 0
         showCandidates(results, client: sender)
     }
 
@@ -153,7 +173,7 @@ class GboardInputController: IMKInputController {
         if candidateWindow == nil {
             candidateWindow = CandidateWindowController()
         }
-        candidateWindow?.update(candidates: candidates, pinyin: composition) { [weak self] idx in
+        candidateWindow?.update(candidates: candidates, pinyin: composition, selectedIndex: selectedIndex) { [weak self] idx in
             self?.selectCandidate(index: idx, client: sender)
         }
         // Position near cursor
@@ -168,7 +188,7 @@ class GboardInputController: IMKInputController {
     private func commitFirst(client sender: Any!) -> Bool {
         guard !composition.isEmpty else { return false }
         if !candidates.isEmpty {
-            return selectCandidate(index: 0, client: sender)
+            return selectCandidate(index: selectedIndex, client: sender)
         }
         // No candidates — commit raw pinyin
         if let client = sender as? IMKTextInput {
@@ -206,6 +226,7 @@ class GboardInputController: IMKInputController {
     private func resetState() {
         composition = ""
         candidates = []
+        selectedIndex = 0
         gboard_reset()
         candidateWindow?.close()
         candidateWindow = nil

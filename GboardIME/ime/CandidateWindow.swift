@@ -13,6 +13,7 @@ private func bundledImage(_ name: String) -> NSImage? {
 struct CandidateView: View {
     let candidates: [String]
     let pinyin: String
+    let selectedIndex: Int
     let onSelect: (Int) -> Void
 
     // Gboard light theme colors
@@ -39,38 +40,49 @@ struct CandidateView: View {
             Divider().background(divColor)
 
             // Candidate row
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 0) {
-                    ForEach(Array(candidates.enumerated()), id: \.offset) { i, cand in
-                        Button {
-                            onSelect(i)
-                        } label: {
-                            HStack(alignment: .firstTextBaseline, spacing: 2) {
-                                Text("\(i + 1).")
-                                    .font(.system(size: 11))
-                                    .foregroundColor(hintColor)
-                                Text(cand)
-                                    .font(.system(size: 18, weight: .regular))
-                                    .foregroundColor(labelColor)
+            ScrollViewReader { proxy in
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 0) {
+                        ForEach(Array(candidates.enumerated()), id: \.offset) { i, cand in
+                            Button {
+                                onSelect(i)
+                            } label: {
+                                HStack(alignment: .firstTextBaseline, spacing: 2) {
+                                    Text("\(i + 1).")
+                                        .font(.system(size: 11))
+                                        .foregroundColor(hintColor)
+                                    Text(cand)
+                                        .font(.system(size: 18, weight: .regular))
+                                        .foregroundColor(labelColor)
+                                }
+                                .frame(minWidth: 36, minHeight: 36)
+                                .padding(.horizontal, 4)
+                                .padding(.vertical, 2)
                             }
-                            .frame(minWidth: 36, minHeight: 36)
-                            .padding(.horizontal, 4)
-                            .padding(.vertical, 2)
-                        }
-                        .buttonStyle(.plain)
-                        .background(
-                            RoundedRectangle(cornerRadius: 6)
-                                .fill(i == 0 ? accentColor.opacity(0.08) : Color.clear)
-                        )
+                            .buttonStyle(.plain)
+                            .background(
+                                RoundedRectangle(cornerRadius: 6)
+                                    .fill(i == selectedIndex ? accentColor.opacity(0.08) : Color.clear)
+                            )
+                            .id(i)
 
-                        if i < candidates.count - 1 {
-                            Divider()
-                                .frame(height: 28)
-                                .background(divColor)
+                            if i < candidates.count - 1 {
+                                Divider()
+                                    .frame(height: 28)
+                                    .background(divColor)
+                            }
                         }
                     }
+                    .padding(.horizontal, 4)
                 }
-                .padding(.horizontal, 4)
+                .onAppear {
+                    proxy.scrollTo(selectedIndex, anchor: .center)
+                }
+                .onChange(of: selectedIndex) { idx in
+                    withAnimation(.easeOut(duration: 0.15)) {
+                        proxy.scrollTo(idx, anchor: .center)
+                    }
+                }
             }
             .frame(height: 38)
             .background(keyColor)
@@ -88,9 +100,9 @@ class CandidateWindowController: NSObject {
     private var hostingView: NSHostingView<CandidateView>?
     private var onSelect: ((Int) -> Void)?
 
-    func update(candidates: [String], pinyin: String, onSelect: @escaping (Int) -> Void) {
+    func update(candidates: [String], pinyin: String, selectedIndex: Int = 0, onSelect: @escaping (Int) -> Void) {
         self.onSelect = onSelect
-        let view = CandidateView(candidates: candidates, pinyin: pinyin) { [weak self] idx in
+        let view = CandidateView(candidates: candidates, pinyin: pinyin, selectedIndex: selectedIndex) { [weak self] idx in
             self?.onSelect?(idx)
         }
         let minWidth: CGFloat = max(300, CGFloat(candidates.count) * 56 + 24)

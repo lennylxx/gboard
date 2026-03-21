@@ -24,6 +24,7 @@
 // ── Logging ─────────────────────────────────────────────────────────────────
 extern int g_log_fd; // from elf_loader.c
 
+#if DEBUG
 static inline void hmm_log(const char *fmt, ...) {
     char buf[1024];
     va_list ap; va_start(ap, fmt);
@@ -31,6 +32,11 @@ static inline void hmm_log(const char *fmt, ...) {
     va_end(ap);
     if (n > 0) { buf[n] = '\n'; write(g_log_fd >= 0 ? g_log_fd : STDERR_FILENO, buf, n+1); }
 }
+#define LOG(fmt, ...) hmm_log(fmt, ##__VA_ARGS__)
+#else
+#define LOG(...) ((void)0)
+#endif
+
 static inline void hmm_logerr(const char *fmt, ...) {
     char buf[1024];
     int off = snprintf(buf, sizeof(buf)-1, "[hmm_engine] ");
@@ -38,14 +44,7 @@ static inline void hmm_logerr(const char *fmt, ...) {
     off += vsnprintf(buf+off, sizeof(buf)-1-off, fmt, ap);
     va_end(ap);
     if (off > 0) { buf[off] = '\n'; write(STDERR_FILENO, buf, off+1); }
-    if (g_log_fd >= 0 && g_log_fd != STDERR_FILENO) {
-        va_start(ap, fmt);
-        int n = vsnprintf(buf, sizeof(buf)-1, fmt, ap);
-        va_end(ap);
-        if (n > 0) { buf[n] = '\n'; write(g_log_fd, buf, n+1); }
-    }
 }
-#define LOG(fmt, ...) hmm_log(fmt, ##__VA_ARGS__)
 #define LOGERR(fmt, ...) hmm_logerr(fmt, ##__VA_ARGS__)
 
 // ── Crash protection ────────────────────────────────────────────────────────

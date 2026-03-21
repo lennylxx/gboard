@@ -5,9 +5,9 @@
 #include <stdio.h>
 #include <stdarg.h>
 
-// Use raw write() for logging to avoid stdio lock deadlocks during crash recovery.
 #include <unistd.h>
 #include <fcntl.h>
+#if DEBUG
 extern int g_log_fd; // from elf_loader.c
 static void jni_log(const char *fmt, ...) {
     char buf[1024];
@@ -19,6 +19,9 @@ static void jni_log(const char *fmt, ...) {
     if (g_log_fd >= 0) write(g_log_fd, buf, off);
 }
 #define JLOG(fmt, ...) jni_log(fmt, ##__VA_ARGS__)
+#else
+#define JLOG(...) ((void)0)
+#endif
 
 #define KIND_STRING  0xFE  // unique tag to distinguish from engine-internal objects
 #define KIND_BARRAY  2

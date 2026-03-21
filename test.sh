@@ -10,7 +10,7 @@ SO_PATH="gboard_apk_source/resources/lib/arm64-v8a/libintegrated_shared_object.s
 PACK_PATH="hmmoemdata/zh_cn_2025090307"
 
 echo "Building test_engine..."
-clang -g -O0 -o "$TEST_DIR/test_engine" \
+clang -g -O0 -DDEBUG=1 -o "$TEST_DIR/test_engine" \
     "$TEST_DIR/test_engine.c" \
     "$ENGINE_DIR/hmm_engine.c" \
     "$ENGINE_DIR/hmm_native.c" \

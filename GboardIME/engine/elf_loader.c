@@ -143,41 +143,16 @@ struct ElfHandle {
     size_t init_array_count;
 };
 
-// ── Constructor crash protection via PC redirect ─────────────────────────────
-// Instead of siglongjmp (which corrupts mutex state), we modify PC in the
-// signal handler to jump to a return stub, and set SP to the saved value.
-// This lets the constructor "return" cleanly without unwinding issues.
-static volatile sig_atomic_t s_ctor_crashed = 0;
-static uintptr_t s_ctor_saved_sp = 0;
-static uintptr_t s_ctor_saved_fp = 0;
-static uintptr_t s_ctor_return_addr = 0;
-
-// Naked return stub — just returns to caller
-__attribute__((naked)) static void ctor_return_stub(void) {
-    __asm__ volatile("ret");
-}
-
-static void ctor_crash_sa_handler(int sig, siginfo_t *info, void *uctx) {
-    (void)info;
-    s_ctor_crashed = sig;
-#if defined(__aarch64__) || defined(__arm64__)
-    ucontext_t *uc = (ucontext_t *)uctx;
-    if (uc) {
-        // Redirect PC to our return stub
-        __darwin_arm_thread_state64_set_pc_fptr(
-            uc->uc_mcontext->__ss, (void *)ctor_return_stub);
-        // Restore SP and FP to values before the constructor was called
-        __darwin_arm_thread_state64_set_sp(uc->uc_mcontext->__ss, s_ctor_saved_sp);
-        __darwin_arm_thread_state64_set_fp(uc->uc_mcontext->__ss, s_ctor_saved_fp);
-        // Set LR to the return address
-        __darwin_arm_thread_state64_set_lr_fptr(
-            uc->uc_mcontext->__ss, (void *)s_ctor_return_addr);
-    }
-#endif
-}
+// ── Constructor crash protection (sigsetjmp-based, used in fork child) ───────
+static sigjmp_buf s_ctor_jmp;
+static void ctor_crash_handler(int sig) { siglongjmp(s_ctor_jmp, sig); }
 
 // Forward declaration
+#if DEBUG
 static void elf_log(const char *fmt, ...);
+#else
+#define elf_log(...) ((void)0)
+#endif
 
 // ── Symbol resolution ─────────────────────────────────────────────────────────
 
@@ -214,7 +189,6 @@ typedef struct {
 static void *gnu_hash_lookup(ElfHandle *h, const GnuHashHdr *gnu,
                               const char *name)
 {
-    uint32_t namelen = (uint32_t)strlen(name);
     uint32_t hash = 5381;
     for (const uint8_t *p = (const uint8_t *)name; *p; p++)
         hash = hash * 33 + *p;
@@ -260,20 +234,6 @@ void *elf_sym(ElfHandle *h, const char *name) {
 }
 
 // ── LEB128 decoding ──────────────────────────────────────────────────────────
-
-static uint64_t decode_uleb128(const uint8_t **pp, const uint8_t *end) {
-    uint64_t result = 0;
-    unsigned shift = 0;
-    const uint8_t *p = *pp;
-    while (p < end) {
-        uint8_t byte = *p++;
-        result |= (uint64_t)(byte & 0x7f) << shift;
-        shift += 7;
-        if ((byte & 0x80) == 0) break;
-    }
-    *pp = p;
-    return result;
-}
 
 static int64_t decode_sleb128(const uint8_t **pp, const uint8_t *end) {
     int64_t result = 0;
@@ -344,8 +304,7 @@ static void apply_rela(ElfHandle *h, const Elf64_Rela *rela, size_t count) {
 
 // ── Logging helper (writes to file in sandbox container) ─────────────────────
 #include <stdarg.h>
-// Use raw fd-based logging to avoid stdio lock deadlocks when siglongjmp
-// leaves a lock held from a crashed constructor.
+#if DEBUG
 int g_log_fd = -1;
 static void elf_log(const char *fmt, ...) {
     if (g_log_fd < 0) {
@@ -365,6 +324,9 @@ static void elf_log(const char *fmt, ...) {
     va_end(ap);
     if (n > 0) write(g_log_fd, buf, (size_t)(n < (int)sizeof(buf) ? n : (int)sizeof(buf) - 1));
 }
+#else
+int g_log_fd = -1;
+#endif
 
 // ── Android packed relocation decoder (DT_ANDROID_RELA / "APS2") ─────────────
 
@@ -447,9 +409,6 @@ static void decode_android_rela(ElfHandle *h, const uint8_t *data, size_t size) 
 // `ldr xN, [PC + offset]` loading from a literal containing our fake TLS address.
 
 extern uint8_t s_fake_tls[];  // from android_stubs.c
-
-// Literal pool: 8 bytes holding the fake TLS pointer, placed near the code.
-static uint8_t *s_tpidr_literal_pool = NULL;
 
 static void elf_patch_tpidr(void *load_base, size_t load_size) {
 #if defined(__aarch64__) || defined(__arm64__)
@@ -560,10 +519,6 @@ static void elf_patch_tpidr(void *load_base, size_t load_size) {
             patched, unreachable, patched + unreachable);
 #endif
 }
-
-// ── Constructor support (kept for hmm_engine CRASH_PROTECT) ──────────────────
-static sigjmp_buf s_ctor_jmp;
-static void ctor_crash_handler(int sig) { siglongjmp(s_ctor_jmp, sig); }
 
 // ── Main loader ───────────────────────────────────────────────────────────────
 
@@ -740,32 +695,6 @@ ElfHandle *elf_load(const char *path) {
     if (h->jmprel)  apply_rela(h, h->jmprel,  h->jmprel_count);
     if (android_rela_off && android_rela_sz)
         decode_android_rela(h, bias + android_rela_off, android_rela_sz);
-
-    // Debug: verify relocations were applied to data section
-    {
-        uint64_t *check = (uint64_t *)(bias + 0x202e000);
-        int nonzero = 0;
-        for (int ci = 0; ci < 128; ci++) {
-            if (check[ci] != 0) nonzero++;
-        }
-        elf_log("reloc check: 0x202e000 has %d non-zero qwords out of 128\n", nonzero);
-        elf_log("  [0]=0x%llx [1]=0x%llx [2]=0x%llx [3]=0x%llx\n",
-                (unsigned long long)check[0], (unsigned long long)check[1],
-                (unsigned long long)check[2], (unsigned long long)check[3]);
-    }
-
-    // Debug: check init_array after relocations
-    if (h->init_array && h->init_array_count > 0) {
-        elf_log("post-reloc init_array[0]=%p [1]=%p [2]=%p\n",
-                (void*)h->init_array[0], (void*)h->init_array[1], (void*)h->init_array[2]);
-        // Check raw memory at init_array location
-        uint64_t *raw = (uint64_t*)(bias + init_array_off);
-        elf_log("post-reloc raw[0]=0x%llx raw[1]=0x%llx\n",
-                (unsigned long long)raw[0], (unsigned long long)raw[1]);
-        // Verify bias + some known offset would make sense
-        elf_log("bias=%p init_array_off=0x%llx init_array_addr=%p\n",
-                (void*)bias, (unsigned long long)init_array_off, (void*)h->init_array);
-    }
 
     // Patch TPIDR_EL0 accesses BEFORE setting segment permissions.
     // Pages are still rw from the initial load, so we can write freely.
