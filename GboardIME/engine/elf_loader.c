@@ -170,17 +170,57 @@ static void elf_log(const char *fmt, ...) {
 #define elf_log(...) ((void)0)
 #endif
 
-// ── Symbol resolution ─────────────────────────────────────────────────────────
+// ── Symbol resolution (hash table for O(1) stub lookup) ──────────────────────
 
-static const SymEntry *g_stubs;  // from android_stubs_table()
+#define STUB_HT_BUCKETS 256  // power of 2
+
+typedef struct StubHTEntry {
+    const char *name;
+    void       *addr;
+    struct StubHTEntry *next;
+} StubHTEntry;
+
+static StubHTEntry *s_stub_ht[STUB_HT_BUCKETS];
+static StubHTEntry *s_stub_pool;
+static int s_stub_ht_ready;
+
+static uint32_t stub_hash(const char *s) {
+    uint32_t h = 5381;
+    for (; *s; s++) h = h * 33 + (uint8_t)*s;
+    return h;
+}
+
+static void stub_ht_init(void) {
+    if (s_stub_ht_ready) return;
+    const SymEntry *stubs = android_stubs_table();
+    if (!stubs) { s_stub_ht_ready = 1; return; }
+
+    // Count entries
+    size_t n = 0;
+    for (const SymEntry *e = stubs; e->name; e++) n++;
+
+    // Allocate pool
+    s_stub_pool = calloc(n, sizeof(StubHTEntry));
+
+    // Insert into hash table
+    size_t idx = 0;
+    for (const SymEntry *e = stubs; e->name; e++, idx++) {
+        uint32_t bucket = stub_hash(e->name) & (STUB_HT_BUCKETS - 1);
+        s_stub_pool[idx].name = e->name;
+        s_stub_pool[idx].addr = e->addr;
+        s_stub_pool[idx].next = s_stub_ht[bucket];
+        s_stub_ht[bucket] = &s_stub_pool[idx];
+    }
+    s_stub_ht_ready = 1;
+}
 
 static void *resolve_symbol(const char *name) {
-    // 1. Check Android stubs first
-    if (g_stubs) {
-        for (const SymEntry *e = g_stubs; e->name; e++) {
-            if (strcmp(e->name, name) == 0) return e->addr;
-        }
+    // 1. Check Android stubs via hash table
+    uint32_t bucket = stub_hash(name) & (STUB_HT_BUCKETS - 1);
+    for (StubHTEntry *e = s_stub_ht[bucket]; e; e = e->next) {
+        if (strcmp(e->name, name) == 0) return e->addr;
     }
+
     // 2. Fall back to macOS dyld (handles all standard libc/pthread/math)
     void *sym = dlsym(RTLD_DEFAULT, name);
     if (sym) return sym;
@@ -401,32 +441,51 @@ static void decode_android_rela(ElfHandle *h, const uint8_t *data, size_t size) 
 
 extern uint8_t s_fake_tls[];  // from android_stubs.c
 
-static void elf_patch_tpidr(void *load_base, size_t load_size) {
+// Segment range for targeted TPIDR scanning
+typedef struct {
+    uint32_t *code;
+    size_t    n_insns;
+} CodeRange;
+
+static void elf_patch_tpidr(uint8_t *bias, const Elf64_Phdr *phdrs, int phnum,
+                             void *load_base, size_t load_size) {
 #if defined(__aarch64__) || defined(__arm64__)
     // Strategy: replace every `mrs xN, TPIDR_EL0` with `b trampoline_i`.
     // Each patched instruction gets its own trampoline that:
     //   1. Loads the fake TLS address into xN (ADRP + ADD)
     //   2. Branches back to the instruction after the original mrs (B return)
     //
-    // CRITICAL: We use B (not BL) to avoid clobbering LR (x30). The original
-    // `mrs` instruction does not modify LR, so our replacement must not either.
-    // Using BL would cause infinite loops in functions where mrs appears before
-    // the prologue saves LR to the stack.
+    // CRITICAL: We use B (not BL) to avoid clobbering LR (x30).
+    //
+    // OPTIMIZATION: Only scan executable segments (PF_X), not the entire
+    // load range. Typically ~8-16MB of code vs ~80MB total.
 
     uint64_t tls_addr = (uint64_t)s_fake_tls;
+    size_t page = (size_t)sysconf(_SC_PAGESIZE);
 
-    // First pass: count mrs instructions to size the trampoline area
-    uint32_t *code = (uint32_t *)load_base;
-    size_t n_insns = load_size / 4;
-    int mrs_count = 0;
-    for (size_t i = 0; i < n_insns; i++) {
-        if ((code[i] & 0xFFFFFFE0) == 0xd53bd040) mrs_count++;
+    // Collect executable segment ranges
+    CodeRange ranges[32];
+    int n_ranges = 0;
+    size_t total_code_bytes = 0;
+    for (int i = 0; i < phnum && n_ranges < 32; i++) {
+        if (phdrs[i].p_type != PT_LOAD) continue;
+        if (!(phdrs[i].p_flags & 1)) continue;  // PF_X = 1
+        Elf64_Addr seg_start = phdrs[i].p_vaddr & ~(page - 1);
+        Elf64_Addr seg_end = (phdrs[i].p_vaddr + phdrs[i].p_memsz + page - 1) & ~(page - 1);
+        size_t seg_size = (size_t)(seg_end - seg_start);
+        ranges[n_ranges].code = (uint32_t *)(bias + seg_start);
+        ranges[n_ranges].n_insns = seg_size / 4;
+        total_code_bytes += seg_size;
+        n_ranges++;
     }
 
-    // Each trampoline needs 3 instructions (12 bytes). Allocate enough pages.
-    size_t tramp_size = (size_t)mrs_count * 12;
-    tramp_size = (tramp_size + 0x3FFF) & ~0x3FFFULL;  // round up to page
-    if (tramp_size < 0x4000) tramp_size = 0x4000;
+    if (n_ranges == 0) return;
+
+    // Single pass: pre-allocate generous trampoline area.
+    // Worst case: every instruction is mrs → 12 bytes per trampoline.
+    // Realistic: ~100 mrs in ~16MB code → need ~1200 bytes.
+    // Pre-allocate 64KB which handles up to ~5400 trampolines.
+    size_t tramp_size = 0x10000;  // 64KB
 
     uintptr_t hint = (uintptr_t)load_base + load_size;
     hint = (hint + 0x3FFF) & ~0x3FFFULL;
@@ -437,84 +496,84 @@ static void elf_patch_tpidr(void *load_base, size_t load_size) {
                           MAP_ANON | MAP_PRIVATE, -1, 0);
     }
     if (tramp_page == MAP_FAILED) {
-        elf_log("TPIDR patch: failed to alloc trampoline area (%zu bytes)\n", tramp_size);
+        elf_log("TPIDR patch: failed to alloc trampoline area\n");
         return;
     }
 
-    elf_log("TPIDR patch: trampoline area at %p (%zu bytes), fake_tls=%p\n",
-            tramp_page, tramp_size, s_fake_tls);
+    elf_log("TPIDR patch: scanning %d exec segments (%zu bytes of %zu total), tramp at %p\n",
+            n_ranges, total_code_bytes, load_size, tramp_page);
 
-    // Second pass: patch each mrs and create per-instruction trampolines
+    // Single pass: scan and patch simultaneously
     uint32_t *tp = (uint32_t *)tramp_page;
+    uint32_t *tp_end = (uint32_t *)((uint8_t *)tramp_page + tramp_size - 12);
     int patched = 0, unreachable = 0;
 
-    for (size_t i = 0; i < n_insns; i++) {
-        uint32_t insn = code[i];
-        if ((insn & 0xFFFFFFE0) != 0xd53bd040) continue;
+    for (int r = 0; r < n_ranges; r++) {
+        uint32_t *code = ranges[r].code;
+        size_t n_insns = ranges[r].n_insns;
 
-        int rd = insn & 0x1F;
-        uintptr_t insn_pc = (uintptr_t)&code[i];
-        uintptr_t tramp_pc = (uintptr_t)&tp[0];
-        uintptr_t return_pc = insn_pc + 4;  // instruction after the mrs
+        for (size_t i = 0; i < n_insns; i++) {
+            uint32_t insn = code[i];
+            if ((insn & 0xFFFFFFE0) != 0xd53bd040) continue;
 
-        // Check forward branch range (insn → trampoline)
-        intptr_t fwd_offset = (intptr_t)(tramp_pc - insn_pc);
-        if (fwd_offset < -0x8000000 || fwd_offset > 0x7FFFFFC) {
-            unreachable++;
-            continue;
+            if (tp > tp_end) { unreachable++; continue; }
+
+            int rd = insn & 0x1F;
+            uintptr_t insn_pc = (uintptr_t)&code[i];
+            uintptr_t tramp_pc = (uintptr_t)&tp[0];
+            uintptr_t return_pc = insn_pc + 4;
+
+            // Check branch ranges (±128MB)
+            intptr_t fwd_offset = (intptr_t)(tramp_pc - insn_pc);
+            if (fwd_offset < -0x8000000 || fwd_offset > 0x7FFFFFC) {
+                unreachable++;
+                continue;
+            }
+            intptr_t ret_offset = (intptr_t)(return_pc - (uintptr_t)&tp[2]);
+            if (ret_offset < -0x8000000 || ret_offset > 0x7FFFFFC) {
+                unreachable++;
+                continue;
+            }
+
+            // Build trampoline: adrp + add + b_return
+            intptr_t page_diff = (intptr_t)((tls_addr & ~0xFFFULL) - (tramp_pc & ~0xFFFULL));
+            int64_t immval = page_diff >> 12;
+            uint32_t adrp = 0x90000000 | (((uint32_t)(immval & 3)) << 29) |
+                            (((uint32_t)((immval >> 2) & 0x7FFFF)) << 5) | (uint32_t)rd;
+            uint32_t add = 0x91000000 | (((uint32_t)(tls_addr & 0xFFF)) << 10) |
+                           ((uint32_t)rd << 5) | (uint32_t)rd;
+            uint32_t b_ret = 0x14000000 | ((uint32_t)((ret_offset >> 2) & 0x3FFFFFF));
+
+            tp[0] = adrp;
+            tp[1] = add;
+            tp[2] = b_ret;
+            tp += 3;
+
+            // Patch mrs → B trampoline
+            code[i] = 0x14000000 | ((uint32_t)((fwd_offset >> 2) & 0x3FFFFFF));
+            patched++;
         }
-
-        // Check return branch range (trampoline → return_pc)
-        intptr_t ret_offset = (intptr_t)(return_pc - (uintptr_t)&tp[2]);
-        if (ret_offset < -0x8000000 || ret_offset > 0x7FFFFFC) {
-            unreachable++;
-            continue;
-        }
-
-        // Build trampoline:
-        //   adrp xN, <page_of_fake_tls>
-        //   add  xN, xN, #<page_offset>
-        //   b    return_pc              ; branch back (does NOT touch LR)
-        intptr_t page_diff = (intptr_t)((tls_addr & ~0xFFFULL) - (tramp_pc & ~0xFFFULL));
-        int64_t immval = page_diff >> 12;
-        uint32_t immlo = (uint32_t)(immval & 3);
-        uint32_t immhi = (uint32_t)((immval >> 2) & 0x7FFFF);
-        uint32_t adrp = 0x90000000 | (immlo << 29) | (immhi << 5) | (uint32_t)rd;
-
-        uint32_t lo12 = (uint32_t)(tls_addr & 0xFFF);
-        uint32_t add = 0x91000000 | (lo12 << 10) | ((uint32_t)rd << 5) | (uint32_t)rd;
-
-        // B (unconditional branch): 0x14000000 | (imm26 & 0x3FFFFFF)
-        uint32_t ret_imm26 = (uint32_t)((ret_offset >> 2) & 0x3FFFFFF);
-        uint32_t b_ret = 0x14000000 | ret_imm26;
-
-        tp[0] = adrp;
-        tp[1] = add;
-        tp[2] = b_ret;
-        tp += 3;  // 3 instructions per trampoline
-
-        // Patch the mrs instruction with B (not BL!) to trampoline
-        uint32_t fwd_imm26 = (uint32_t)((fwd_offset >> 2) & 0x3FFFFFF);
-        code[i] = 0x14000000 | fwd_imm26;  // B (not BL)
-        patched++;
     }
 
     // Make trampoline area executable
     mprotect(tramp_page, tramp_size, PROT_READ | PROT_EXEC);
 
-    // Flush instruction cache
-    __builtin___clear_cache((char *)load_base, (char *)load_base + load_size);
+    // Flush instruction cache (only for exec segments + trampoline)
+    for (int r = 0; r < n_ranges; r++) {
+        __builtin___clear_cache((char *)ranges[r].code,
+                                (char *)ranges[r].code + ranges[r].n_insns * 4);
+    }
     __builtin___clear_cache((char *)tramp_page, (char *)tramp_page + tramp_size);
 
-    elf_log("TPIDR patch: %d patched, %d unreachable (of %d total)\n",
-            patched, unreachable, patched + unreachable);
+    elf_log("TPIDR patch: %d patched, %d unreachable (scanned %zu bytes of code)\n",
+            patched, unreachable, total_code_bytes);
 #endif
 }
 
 // ── Main loader ───────────────────────────────────────────────────────────────
 
 ElfHandle *elf_load(const char *path) {
-    g_stubs = android_stubs_table();
+    stub_ht_init();
 
     int fd = open(path, O_RDONLY);
     if (fd < 0) { elf_log("open(%s) failed: %s\n", path, strerror(errno)); return NULL; }
@@ -685,7 +744,7 @@ ElfHandle *elf_load(const char *path) {
     // Patch TPIDR_EL0 accesses BEFORE setting segment permissions.
     // Pages are still rw from the initial load, so we can write freely.
     bionic_tls_setup();
-    elf_patch_tpidr(load_base, load_size);
+    elf_patch_tpidr(bias, phdrs, ehdr->e_phnum, load_base, load_size);
 
     // Now set proper segment permissions (rx for code, rw for data).
     for (int i = 0; i < ehdr->e_phnum; i++) {
@@ -717,80 +776,102 @@ ElfHandle *elf_load(const char *path) {
     }
     elf_log("Bionic TLS: TPIDR_EL0 set to fake TLS block\n");
 
-    // Run constructors using fork-probe to avoid mutex corruption.
-    // Phase 1: Fork a child that probes each constructor with sigsetjmp.
-    //          The child reports which constructors crash via shared memory.
-    // Phase 2: In the parent, run only the safe constructors directly.
+    // Run constructors — use cached probe results when available.
+    // Cache key: file size + mtime + constructor count.
+    // Cache file: /tmp/gboard_ctor_cache_<size>_<mtime>_<count>
     if (h->init_array && h->init_array_count > 0) {
         size_t n = h->init_array_count;
         uint8_t *ctor_safe = mmap(NULL, n, PROT_READ | PROT_WRITE,
                                    MAP_SHARED | MAP_ANON, -1, 0);
-        memset(ctor_safe, 0, n);  // 0=unknown, 1=safe, 2=crashed, 3=hung
 
-        elf_log("DT_INIT_ARRAY: probing %zu constructors via fork...\n", n);
+        // Try loading from cache
+        char cache_path[256];
+        snprintf(cache_path, sizeof(cache_path),
+                 "/tmp/gboard_ctor_cache_%zu_%lld_%zu",
+                 file_size, (long long)st.st_mtime, n);
 
-        pid_t pid = fork();
-        if (pid == 0) {
-            for (size_t i = 0; i < n; i++) {
-                void (*ctor)(void) = h->init_array[i];
-                if (!ctor || (uintptr_t)ctor < 0x10000) { ctor_safe[i] = 1; continue; }
+        int cached = 0;
+        int cache_fd = open(cache_path, O_RDONLY);
+        if (cache_fd >= 0) {
+            ssize_t rd = read(cache_fd, ctor_safe, n);
+            close(cache_fd);
+            if ((size_t)rd == n) {
+                cached = 1;
+                elf_log("DT_INIT_ARRAY: loaded probe cache (%zu ctors)\n", n);
+            }
+        }
 
-                int sig = sigsetjmp(s_ctor_jmp, 1);
-                if (sig != 0) {
+        if (!cached) {
+            // Fork-probe: child tests each constructor with sigsetjmp
+            memset(ctor_safe, 0, n);
+            elf_log("DT_INIT_ARRAY: probing %zu constructors via fork...\n", n);
+
+            pid_t pid = fork();
+            if (pid == 0) {
+                for (size_t i = 0; i < n; i++) {
+                    void (*ctor)(void) = h->init_array[i];
+                    if (!ctor || (uintptr_t)ctor < 0x10000) { ctor_safe[i] = 1; continue; }
+
+                    int sig = sigsetjmp(s_ctor_jmp, 1);
+                    if (sig != 0) {
+                        struct itimerval zero = {{0,0},{0,0}};
+                        setitimer(ITIMER_REAL, &zero, NULL);
+                        ctor_safe[i] = (sig == SIGALRM) ? 3 : 2;
+                        elf_log("  ctor[%zu] at %p: %s (sig=%d)\n", i, (void*)ctor,
+                                sig == SIGALRM ? "HUNG" : "CRASHED", sig);
+                        continue;
+                    }
+
+                    struct sigaction csa = {0};
+                    csa.sa_handler = ctor_crash_handler;
+                    sigemptyset(&csa.sa_mask);
+                    struct sigaction old_segv, old_bus, old_ill, old_alrm, old_abrt;
+                    sigaction(SIGSEGV, &csa, &old_segv);
+                    sigaction(SIGBUS,  &csa, &old_bus);
+                    sigaction(SIGILL,  &csa, &old_ill);
+                    sigaction(SIGALRM, &csa, &old_alrm);
+                    sigaction(SIGABRT, &csa, &old_abrt);
+
+                    struct itimerval timer = {{0,0},{2,0}};
+                    setitimer(ITIMER_REAL, &timer, NULL);
+                    ctor();
                     struct itimerval zero = {{0,0},{0,0}};
                     setitimer(ITIMER_REAL, &zero, NULL);
-                    ctor_safe[i] = (sig == SIGALRM) ? 3 : 2;
-                    elf_log("  ctor[%zu] at %p: %s (sig=%d)\n", i, (void*)ctor,
-                            sig == SIGALRM ? "HUNG" : "CRASHED", sig);
-                    continue;
+                    ctor_safe[i] = 1;
+
+                    sigaction(SIGSEGV, &old_segv, NULL);
+                    sigaction(SIGBUS,  &old_bus,  NULL);
+                    sigaction(SIGILL,  &old_ill,  NULL);
+                    sigaction(SIGALRM, &old_alrm, NULL);
+                    sigaction(SIGABRT, &old_abrt, NULL);
                 }
+                _exit(0);
+            } else if (pid > 0) {
+                int status;
+                waitpid(pid, &status, 0);
+                elf_log("DT_INIT_ARRAY probe: child exit=%d\n", WEXITSTATUS(status));
 
-                struct sigaction csa = {0};
-                csa.sa_handler = ctor_crash_handler;
-                sigemptyset(&csa.sa_mask);
-                struct sigaction old_segv, old_bus, old_ill, old_alrm, old_abrt;
-                sigaction(SIGSEGV, &csa, &old_segv);
-                sigaction(SIGBUS,  &csa, &old_bus);
-                sigaction(SIGILL,  &csa, &old_ill);
-                sigaction(SIGALRM, &csa, &old_alrm);
-                sigaction(SIGABRT, &csa, &old_abrt);
-
-                struct itimerval timer = {{0,0},{2,0}}; // 2 second timeout
-                setitimer(ITIMER_REAL, &timer, NULL);
-                ctor();
-                struct itimerval zero = {{0,0},{0,0}};
-                setitimer(ITIMER_REAL, &zero, NULL);
-                ctor_safe[i] = 1;
-
-                sigaction(SIGSEGV, &old_segv, NULL);
-                sigaction(SIGBUS,  &old_bus,  NULL);
-                sigaction(SIGILL,  &old_ill,  NULL);
-                sigaction(SIGALRM, &old_alrm, NULL);
-                sigaction(SIGABRT, &old_abrt, NULL);
+                // Save cache for next time
+                int wfd = open(cache_path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+                if (wfd >= 0) {
+                    write(wfd, ctor_safe, n);
+                    close(wfd);
+                    elf_log("DT_INIT_ARRAY: saved probe cache to %s\n", cache_path);
+                }
             }
-            _exit(0);
-        } else if (pid > 0) {
-            int status;
-            waitpid(pid, &status, 0);
-            int probe_ok = 0, probe_bad = 0;
-            for (size_t i = 0; i < n; i++) {
-                if (ctor_safe[i] == 1) probe_ok++;
-                else probe_bad++;
-            }
-            elf_log("DT_INIT_ARRAY probe: %d safe, %d unsafe (child exit=%d)\n",
-                    probe_ok, probe_bad, WEXITSTATUS(status));
-
-            // Phase 2: run only safe constructors in the parent (no sigsetjmp)
-            int run_ok = 0;
-            for (size_t i = 0; i < n; i++) {
-                if (ctor_safe[i] != 1) continue;
-                void (*ctor)(void) = h->init_array[i];
-                if (!ctor || (uintptr_t)ctor < 0x10000) continue;
-                ctor();
-                run_ok++;
-            }
-            elf_log("DT_INIT_ARRAY: ran %d safe constructors in parent\n", run_ok);
         }
+
+        // Run only safe constructors
+        int run_ok = 0, skipped = 0;
+        for (size_t i = 0; i < n; i++) {
+            if (ctor_safe[i] != 1) { skipped++; continue; }
+            void (*ctor)(void) = h->init_array[i];
+            if (!ctor || (uintptr_t)ctor < 0x10000) continue;
+            ctor();
+            run_ok++;
+        }
+        elf_log("DT_INIT_ARRAY: ran %d safe, skipped %d (cached=%d)\n",
+                run_ok, skipped, cached);
         munmap(ctor_safe, n);
     }
 
