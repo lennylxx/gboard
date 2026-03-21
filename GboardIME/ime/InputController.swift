@@ -210,9 +210,75 @@ class GboardInputController: IMKInputController {
             client.insertText(text,
                               replacementRange: NSRange(location: NSNotFound, length: 0))
         }
+
+        // Figure out how many pinyin chars were consumed
+        let chineseCount = text.unicodeScalars.filter { $0.value >= 0x4E00 && $0.value <= 0x9FFF }.count
+        var consumed = pinyinConsumedLength(composition, syllableCount: max(chineseCount, 1))
+        if consumed == 0 { consumed = composition.count } // incomplete syllable — consume all
+        let remainingPinyin = String(composition.dropFirst(consumed))
+        imeLog("selectCandidate: text='\(text)' chineseCount=\(chineseCount) consumed=\(consumed) remaining='\(remainingPinyin)'")
+
+        if !remainingPinyin.isEmpty {
+            composition = remainingPinyin
+            setInvisibleMarkedText(client: sender)
+            fetchCandidates(client: sender)
+            if !candidates.isEmpty {
+                return true
+            }
+        }
         resetState()
         return true
     }
+
+    /// Split pinyin into syllables using DP to find a valid full segmentation.
+    /// Returns the number of characters consumed for `syllableCount` syllables.
+    private func pinyinConsumedLength(_ pinyin: String, syllableCount: Int) -> Int {
+        let s = Array(pinyin)
+        let n = s.count
+        // DP: segmentAt[i] = array of syllable lengths forming a valid segmentation of s[0..<i]
+        var segmentAt = [Int: [Int]]()
+        segmentAt[0] = []
+        for i in 0..<n {
+            guard let prev = segmentAt[i] else { continue }
+            for len in 1...min(6, n - i) {
+                let slice = String(s[i..<i+len])
+                if Self.pinyinSyllables.contains(slice) && segmentAt[i + len] == nil {
+                    segmentAt[i + len] = prev + [len]
+                }
+            }
+        }
+        // Use the full segmentation if available, otherwise best partial
+        let best = segmentAt[n] ?? segmentAt.filter { $0.key > 0 }.max(by: { $0.key < $1.key })?.value ?? []
+        return best.prefix(syllableCount).reduce(0, +)
+    }
+
+    private static let pinyinSyllables: Set<String> = {
+        let initials = ["b","p","m","f","d","t","n","l","g","k","h",
+                        "j","q","x","zh","ch","sh","r","z","c","s","y","w"]
+        let finals = ["a","o","e","ai","ei","ao","ou","an","en","ang","eng","ong","er",
+                      "i","ia","ie","iao","iu","ian","in","iang","ing","iong",
+                      "u","ua","uo","uai","ui","uan","un","uang",
+                      "v","ve","ue","van","vn","yuan","yue","yun"]
+        var set = Set<String>()
+        // Standalone finals
+        for f in finals { set.insert(f) }
+        // initial + final combos (not all are valid but the greedy parser works fine)
+        for i in initials {
+            for f in finals {
+                set.insert(i + f)
+            }
+        }
+        // Common standalone syllables that might be missed
+        for s in ["a","o","e","ai","ei","ao","ou","an","en","ang","eng","er",
+                   "yi","ya","ye","yao","you","yan","yin","yang","ying","yong",
+                   "wu","wa","wo","wai","wei","wan","wen","wang","weng",
+                   "yu","yue","yuan","yun",
+                   "zhi","chi","shi","ri","zi","ci","si",
+                   "ju","qu","xu","lv","nv","lve","nve"] {
+            set.insert(s)
+        }
+        return set
+    }()
 
     private func cancelComposition(client sender: Any!) {
         if let client = sender as? IMKTextInput {
@@ -236,6 +302,11 @@ class GboardInputController: IMKInputController {
 
     override func commitComposition(_ sender: Any!) {
         commitFirst(client: sender)
+    }
+
+    override func deactivateServer(_ sender: Any!) {
+        resetState()
+        super.deactivateServer(sender)
     }
 
     override func candidates(_ sender: Any!) -> [Any]! { return [] }

@@ -79,6 +79,7 @@ struct CandidateView: View {
                     proxy.scrollTo(selectedIndex, anchor: .center)
                 }
             }
+            .id(selectedIndex)
             .frame(height: 38)
             .background(keyColor)
         }
