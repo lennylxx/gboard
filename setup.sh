@@ -42,7 +42,7 @@ FALLBACK_MANIFEST="https://www.gstatic.com/android/keyboard/hmmpack/2025090313/m
 XAPK_DIR="xapk_unpacked"
 APK_SOURCE="gboard_apk_source"
 RESOURCES="$APK_SOURCE/resources"
-SOURCES="$APK_SOURCE/sources"
+JADX_OUT="$APK_SOURCE/jadx"
 DICT_DIR="hmmoemdata"
 SO_FILE="$RESOURCES/lib/arm64-v8a/libintegrated_shared_object.so"
 
@@ -124,9 +124,9 @@ fi
 
 # ── Step 3: Decompile Java sources with jadx ────────────────────────────────
 echo "Decompiling Java sources (this may take a few minutes)..."
-rm -rf "$SOURCES"
-jadx --quiet --no-res --output-dir "$SOURCES" "$BASE_APK" || true  # some classes fail to decompile (normal for obfuscated APKs)
-JAVA_COUNT=$(find "$SOURCES" -name "*.java" | wc -l | tr -d ' ')
+rm -rf "$JADX_OUT"
+jadx --quiet --no-res --output-dir "$JADX_OUT" "$BASE_APK" || true  # some classes fail to decompile (normal for obfuscated APKs)
+JAVA_COUNT=$(find "$JADX_OUT" -name "*.java" | wc -l | tr -d ' ')
 echo "Decompiled $JAVA_COUNT Java files"
 
 # ── Step 4: Download HMM dict pack from Google's CDN ────────────────────────
@@ -149,7 +149,7 @@ elif [[ -d "$DICT_DIR" ]] && [[ -n "$(ls -A "$DICT_DIR" 2>/dev/null)" ]]; then
 else
     # Extract manifest URL from decompiled source
     MANIFEST_URL=""
-    MANIFEST_FILE=$(grep -rl "hmm_superpacks_manifest_url" "$SOURCES" 2>/dev/null | head -1)
+    MANIFEST_FILE=$(grep -rl "hmm_superpacks_manifest_url" "$JADX_OUT" 2>/dev/null | head -1)
     if [[ -n "$MANIFEST_FILE" ]]; then
         MANIFEST_URL=$(grep -o 'https://[^"]*metadata[^"]*\.json' "$MANIFEST_FILE" | head -1)
     fi
@@ -191,7 +191,7 @@ echo ""
 echo "Setup complete."
 echo "  XAPK:       $XAPK_PATH"
 echo "  Resources:  $RESOURCES/"
-echo "  Sources:    $SOURCES/ ($JAVA_COUNT files)"
+echo "  Sources:    $JADX_OUT/ ($JAVA_COUNT files)"
 if [[ -d "$DICT_DIR" ]] && [[ -n "$(ls -A "$DICT_DIR" 2>/dev/null)" ]]; then
     PACK=$(ls "$DICT_DIR" | head -1)
     echo "  Dict pack:  $DICT_DIR/$PACK/"
