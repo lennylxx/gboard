@@ -46,8 +46,8 @@ class GboardInputController: IMKInputController, PinyinSessionDelegate {
             let wasComposing = session.isComposing
             session.cancel()
             return wasComposing
-        case 36, 76: // Return / Enter
-            result = session.selectCurrent()
+        case 36, 76: // Return / Enter — commit raw pinyin
+            result = session.commitRawPinyin()
         case 51: // Delete
             result = session.deleteBack()
         case 123: // Left arrow
@@ -60,6 +60,13 @@ class GboardInputController: IMKInputController, PinyinSessionDelegate {
             // Number keys 1-9 while composing
             if session.isComposing, let n = Int(chars), n >= 1 && n <= 9 {
                 result = session.selectNumber(n)
+            }
+            // Chinese punctuation mapping (before modifier check — Shift produces ? " ^ $ etc.)
+            else if chars.count == 1,
+                    let ch = chars.first,
+                    (flags.isEmpty || flags == .capsLock || flags == .shift || flags == [.shift, .capsLock]),
+                    PinyinSession.isPunctuation(ch) {
+                result = session.handlePunctuation(ch)
             }
             // Ignore modifier-only combos
             else if !(flags.isEmpty || flags == .capsLock) {

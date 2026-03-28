@@ -381,6 +381,70 @@ func testBruteForceInitials() {
     check("all initials return candidates", ok == inputs.count)
 }
 
+// ── Chinese punctuation ─────────────────────────────────────────────────────
+
+func testChinesePunctuation() {
+    print("[test_chinese_punctuation]")
+
+    // Basic punctuation mapping (not composing)
+    let (s, d) = makeSession()
+    _ = s.handlePunctuation(",")
+    check("comma → ，", d.committedText == "，")
+    d.clear()
+
+    _ = s.handlePunctuation(".")
+    check("period → 。", d.committedText == "。")
+    d.clear()
+
+    _ = s.handlePunctuation("?")
+    check("question → ？", d.committedText == "？")
+    d.clear()
+
+    _ = s.handlePunctuation("!")
+    check("exclamation → ！", d.committedText == "！")
+    d.clear()
+
+    _ = s.handlePunctuation(";")
+    check("semicolon → ；", d.committedText == "；")
+    d.clear()
+
+    _ = s.handlePunctuation(":")
+    check("colon → ：", d.committedText == "：")
+    d.clear()
+
+    // Paired quotes toggle
+    _ = s.handlePunctuation("\"")
+    check("first double-quote → \u{201C}", d.committedText == "\u{201C}")
+    d.clear()
+    _ = s.handlePunctuation("\"")
+    check("second double-quote → \u{201D}", d.committedText == "\u{201D}")
+    d.clear()
+
+    // isPunctuation static check
+    check("comma is punctuation", PinyinSession.isPunctuation(","))
+    check("a is not punctuation", !PinyinSession.isPunctuation("a"))
+
+    // Unmapped character returns passThrough
+    let r = s.handlePunctuation("@")
+    check("@ is passThrough", r == .passThrough)
+}
+
+func testPunctuationWhileComposing() {
+    print("[test_punctuation_while_composing]")
+    let (s, d) = makeSession()
+
+    // Type some pinyin first
+    for ch in "ni" { _ = s.appendLetter(String(ch)) }
+    check("composing 'ni'", s.isComposing)
+    check("has candidates", !s.candidates.isEmpty)
+
+    // Punctuation should commit first candidate then insert Chinese punct
+    let firstCandidate = s.candidates[0]
+    _ = s.handlePunctuation(",")
+    check("committed candidate + comma", d.committedText == firstCandidate + "，")
+    check("composition cleared", !s.isComposing)
+}
+
 // ── Main ─────────────────────────────────────────────────────────────────────
 
 // ── Entry point ──────────────────────────────────────────────────────────────
@@ -414,6 +478,8 @@ func testBruteForceInitials() {
         testCommitAndPassThrough()
         testRandomKeystrokes()
         testBruteForceInitials()
+        testChinesePunctuation()
+        testPunctuationWhileComposing()
 
         print("\n══════════════════════════════════")
         print("Results: \(gPass) passed, \(gFail) failed")

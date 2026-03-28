@@ -25,6 +25,27 @@ class PinyinSession {
 
     weak var delegate: PinyinSessionDelegate?
 
+    // MARK: - Chinese punctuation
+
+    private static let punctuationMap: [Character: String] = [
+        ",": "，", ".": "。", "?": "？", "!": "！",
+        ":": "：", ";": "；", "\\": "、",
+        "(": "（", ")": "）",
+        "[": "【", "]": "】",
+        "<": "《", ">": "》",
+        "^": "……", "_": "——",
+        "$": "￥", "~": "～",
+    ]
+
+    /// Paired punctuation: toggles between opening and closing forms.
+    private static let pairedPunctuation: [Character: (String, String)] = [
+        "\"": ("\u{201C}", "\u{201D}"),  // " "
+        "'":  ("\u{2018}", "\u{2019}"),  // ' '
+    ]
+
+    private var doubleQuoteOpen = true
+    private var singleQuoteOpen = true
+
     // MARK: - Key actions (called by InputController or test harness)
 
     func appendLetter(_ ch: String) -> KeyResult {
@@ -43,6 +64,13 @@ class PinyinSession {
             delegate?.sessionSetMarkedText(composition)
             fetchCandidates()
         }
+        return .handled
+    }
+
+    func commitRawPinyin() -> KeyResult {
+        guard !composition.isEmpty else { return .passThrough }
+        delegate?.sessionInsertText(composition)
+        reset()
         return .handled
     }
 
@@ -119,6 +147,42 @@ class PinyinSession {
     }
 
     var isComposing: Bool { !composition.isEmpty }
+
+    // MARK: - Punctuation
+
+    /// Returns true if the character has a Chinese punctuation mapping.
+    static func isPunctuation(_ ch: Character) -> Bool {
+        punctuationMap[ch] != nil || pairedPunctuation[ch] != nil
+    }
+
+    /// Returns the Chinese punctuation for the given character, or nil if not mapped.
+    func chinesePunctuation(for ch: Character) -> String? {
+        if let mapped = Self.punctuationMap[ch] {
+            return mapped
+        }
+        if let pair = Self.pairedPunctuation[ch] {
+            if ch == "\"" {
+                let result = doubleQuoteOpen ? pair.0 : pair.1
+                doubleQuoteOpen.toggle()
+                return result
+            } else {
+                let result = singleQuoteOpen ? pair.0 : pair.1
+                singleQuoteOpen.toggle()
+                return result
+            }
+        }
+        return nil
+    }
+
+    /// Handles a punctuation key: commits composition if needed, then inserts Chinese punctuation.
+    func handlePunctuation(_ ch: Character) -> KeyResult {
+        guard let punct = chinesePunctuation(for: ch) else { return .passThrough }
+        if isComposing {
+            _ = selectCurrent()
+        }
+        delegate?.sessionInsertText(punct)
+        return .handled
+    }
 
     // MARK: - Non-letter while composing
 
