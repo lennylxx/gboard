@@ -4,6 +4,10 @@ A macOS input method that runs Gboard's native HMM Pinyin engine via a custom AR
 
 > **This project does not include any Google binaries or data.** You must supply your own legally obtained Gboard APK. See [NOTICE](NOTICE) for details.
 
+## Preview
+
+![preview](preview.png)
+
 ## How it works
 
 Three layers make this possible:
