@@ -32,6 +32,7 @@ copy_engine_resources() {
     fi
 
     if [ -d "$PACK_SRC" ]; then
+        rm -rf "$resources/hmmoemdata/zh_cn_2025090307"
         mkdir -p "$resources/hmmoemdata"
         cp -R "$PACK_SRC" "$resources/hmmoemdata/zh_cn_2025090307"
         echo "Copied pinyin data pack"
