@@ -50,19 +50,28 @@ class PinyinSession {
 
     func appendLetter(_ ch: String) -> KeyResult {
         composition += ch
-        delegate?.sessionSetMarkedText(composition)
         fetchCandidates()
+        delegate?.sessionSetMarkedText(segmentedPinyin)
         return .handled
     }
 
     func deleteBack() -> KeyResult {
         guard !composition.isEmpty else { return .passThrough }
-        composition.removeLast()
+        let removed = composition.removeLast()
+        if removed == "'" {
+            // Recalculate separator positions from remaining composition
+            separatorPositions = []
+            var letterCount: Int32 = 0
+            for c in composition {
+                if c == "'" { separatorPositions.append(letterCount) }
+                else { letterCount += 1 }
+            }
+        }
         if composition.isEmpty {
             cancel()
         } else {
-            delegate?.sessionSetMarkedText(composition)
             fetchCandidates()
+            delegate?.sessionSetMarkedText(segmentedPinyin)
         }
         return .handled
     }
@@ -98,18 +107,27 @@ class PinyinSession {
         _ = gboard_select(Int32(index))
         delegate?.sessionInsertText(text)
 
-        // Use engine-reported vertex count (each vertex = 1 pinyin char)
+        // Map vertex count to composition index (skipping apostrophes)
         let remaining: String
-        if consumed > 0 && consumed < composition.count {
-            remaining = String(composition.dropFirst(consumed))
+        let letterCount = composition.filter { $0 != "'" }.count
+        if consumed > 0 && consumed < letterCount {
+            // Find the position in composition corresponding to `consumed` letters
+            var letters = 0
+            var dropCount = 0
+            for c in composition {
+                if letters >= consumed { break }
+                dropCount += 1
+                if c != "'" { letters += 1 }
+            }
+            remaining = String(composition.dropFirst(dropCount))
         } else {
             remaining = ""
         }
 
         if !remaining.isEmpty {
             composition = remaining
-            delegate?.sessionSetMarkedText(composition)
             fetchCandidates()
+            delegate?.sessionSetMarkedText(segmentedPinyin)
             if !candidates.isEmpty {
                 return .handled
             }
@@ -175,7 +193,20 @@ class PinyinSession {
     }
 
     /// Handles a punctuation key: commits composition if needed, then inserts Chinese punctuation.
+    /// Exception: apostrophe while composing sets a separator in the engine (e.g. xi'an).
     func handlePunctuation(_ ch: Character) -> KeyResult {
+        if ch == "'" && isComposing {
+            composition += "'"
+            // Track separator at the vertex matching the letter count up to this apostrophe
+            let vertexPos = Int32(composition.filter { $0 != "'" }.count)
+            if !separatorPositions.contains(vertexPos) {
+                separatorPositions.append(vertexPos)
+            }
+            gboard_set_separator(vertexPos, 1)  // 1 = TOKEN_SEPARATOR
+            refillCandidates()
+            delegate?.sessionSetMarkedText(segmentedPinyin)
+            return .handled
+        }
         guard let punct = chinesePunctuation(for: ch) else { return .passThrough }
         if isComposing {
             _ = selectCurrent()
@@ -192,24 +223,68 @@ class PinyinSession {
         return .commitAndPass
     }
 
+    // MARK: - Pinyin segmentation
+
+    /// Segmented pinyin from engine (e.g. "zhong'wen'shu'ru'fa").
+    private(set) var segmentedPinyin: String = ""
+
+    private func updateSegmentation() {
+        guard !composition.isEmpty else { segmentedPinyin = ""; return }
+        let letters = Array(composition.filter { $0 != "'" })
+        guard !letters.isEmpty else { segmentedPinyin = composition; return }
+        var breaks = [Int32](repeating: 0, count: 16)
+        let n = Int(gboard_get_syllable_breaks(&breaks, Int32(breaks.count)))
+        if n > 0 {
+            var parts: [String] = []
+            var prev = 0
+            for i in 0..<n {
+                let bp = Int(breaks[i])
+                parts.append(String(letters[prev..<bp]))
+                prev = bp
+            }
+            parts.append(String(letters[prev...]))
+            segmentedPinyin = parts.joined(separator: "'")
+        } else {
+            segmentedPinyin = String(letters)
+        }
+    }
+
     // MARK: - Internal
 
     func reset() {
         composition = ""
         candidates = []
         selectedIndex = 0
+        separatorPositions = []
         gboard_reset()
         delegate?.sessionHideCandidates()
     }
 
+    /// Separator vertex positions set by user apostrophes.
+    private var separatorPositions: [Int32] = []
+
     private func fetchCandidates() {
         gboard_reset()
-        guard gboard_append(composition) else {
+        // Append only letters (skip apostrophes)
+        let letters = String(composition.filter { $0 != "'" })
+        guard gboard_append(letters) else {
             candidates = []
             delegate?.sessionHideCandidates()
             return
         }
+        // Restore user-set separators after reset+append
+        for pos in separatorPositions {
+            gboard_set_separator(pos, 1)
+        }
+        fillCandidateList()
+    }
 
+    /// Refill candidates on current engine state (no reset), used after setting a separator.
+    private func refillCandidates() {
+        fillCandidateList()
+    }
+
+    private func fillCandidateList() {
         let maxCount = 9
         var bufs = [UnsafeMutablePointer<CChar>?](repeating: nil, count: maxCount)
         let count = Int(gboard_get_candidates(&bufs, Int32(maxCount)))
@@ -223,6 +298,7 @@ class PinyinSession {
 
         candidates = results
         selectedIndex = 0
+        updateSegmentation()
         notifyCandidates()
     }
 
@@ -230,7 +306,7 @@ class PinyinSession {
         if candidates.isEmpty {
             delegate?.sessionHideCandidates()
         } else {
-            delegate?.sessionShowCandidates(candidates, pinyin: composition, selectedIndex: selectedIndex)
+            delegate?.sessionShowCandidates(candidates, pinyin: segmentedPinyin, selectedIndex: selectedIndex)
         }
     }
 }

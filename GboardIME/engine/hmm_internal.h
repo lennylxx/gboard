@@ -112,6 +112,12 @@ typedef jboolean (*fn_FillTokenCandList)(JNIEnv *, jobject, jlong, jobject);
 typedef jint     (*fn_GetTokenCandCount)(JNIEnv *, jobject, jlong);
 typedef jstring  (*fn_GetTokenCandString)(JNIEnv *, jobject, jlong, jint);
 typedef jboolean (*fn_SelectTokenCand)(JNIEnv *, jobject, jlong, jint);
+typedef jint     (*fn_GetSeparator)(JNIEnv *, jobject, jlong, jint);
+typedef jboolean (*fn_SetSeparator)(JNIEnv *, jobject, jlong, jint, jint);
+typedef jint     (*fn_GetSegmentCount)(JNIEnv *, jobject, jlong);
+typedef jlong    (*fn_GetSegment)(JNIEnv *, jobject, jlong, jint);
+typedef jint     (*fn_GetSegmentTokenCount)(JNIEnv *, jobject, jlong, jlong);
+typedef jlong    (*fn_GetSegmentToken)(JNIEnv *, jobject, jlong, jlong, jint);
 
 // ── Global engine state ─────────────────────────────────────────────────────
 extern ElfHandle *g_elf;
@@ -150,6 +156,12 @@ extern fn_FillTokenCandList g_fillTokenCandList;
 extern fn_GetTokenCandCount g_getTokenCandCount;
 extern fn_GetTokenCandString g_getTokenCandString;
 extern fn_SelectTokenCand  g_selectTokenCand;
+extern fn_GetSeparator     g_getSeparator;
+extern fn_SetSeparator     g_setSeparator;
+extern fn_GetSegmentCount  g_getSegmentCount;
+extern fn_GetSegment       g_getSegment;
+extern fn_GetSegmentTokenCount g_getSegmentTokenCount;
+extern fn_GetSegmentToken  g_getSegmentToken;
 
 // ── Symbol helper ───────────────────────────────────────────────────────────
 static inline void *hmm_sym(ElfHandle *h, const char *name) {

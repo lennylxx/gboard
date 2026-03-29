@@ -10,6 +10,10 @@ class GboardInputController: IMKInputController, PinyinSessionDelegate {
     private let session = PinyinSession()
     private var candidateWindow: CandidateWindowController?
 
+    /// true = Chinese input, false = English passthrough
+    private var chineseMode = true
+    private var shiftTracker = ShiftToggleTracker()
+
     override init!(server: IMKServer!, delegate: Any!, client: Any!) {
         super.init(server: server, delegate: delegate, client: client)
         session.delegate = self
@@ -30,11 +34,38 @@ class GboardInputController: IMKInputController, PinyinSessionDelegate {
     // ── Key handling ───────────────────────────────────────────────────────
 
     override func handle(_ event: NSEvent!, client sender: Any!) -> Bool {
-        imeLog("handle: keyCode=\(event.keyCode) chars='\(event.characters ?? "")' composition='\(session.composition)'")
-        guard event.type == .keyDown else { return false }
-
         self.currentClient = sender
 
+        // ── Shift toggle detection ───────────────────────────────────────
+        if event.type == .flagsChanged {
+            if shiftTracker.handleFlagsChanged(keyCode: event.keyCode, modifierFlags: event.modifierFlags) == .shouldToggle {
+                toggleChineseMode()
+                return true
+            }
+            return false
+        }
+
+        if event.type == .keyUp {
+            if shiftTracker.handleKeyUp(keyCode: event.keyCode) == .shouldToggle {
+                toggleChineseMode()
+                return true
+            }
+            return false
+        }
+
+        guard event.type == .keyDown else { return false }
+        imeLog("handle: keyCode=\(event.keyCode) chars='\(event.characters ?? "")' composition='\(session.composition)' chinese=\(chineseMode)")
+
+        shiftTracker.handleKeyDown(keyCode: event.keyCode, modifierFlags: event.modifierFlags)
+        // Shift key itself as keyDown — ignore
+        if event.keyCode == 56 || event.keyCode == 60 { return false }
+
+        // ── English mode: pass everything through ────────────────────────
+        if !chineseMode {
+            return false
+        }
+
+        // ── Chinese mode ─────────────────────────────────────────────────
         let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
         let keyCode = event.keyCode
         let chars = event.characters ?? ""
@@ -87,6 +118,14 @@ class GboardInputController: IMKInputController, PinyinSessionDelegate {
         }
 
         return result != .passThrough
+    }
+
+    private func toggleChineseMode() {
+        if session.isComposing {
+            _ = session.selectCurrent()
+        }
+        chineseMode.toggle()
+        imeLog("Mode switched to \(chineseMode ? "Chinese" : "English")")
     }
 
     // ── PinyinSessionDelegate ────────────────────────────────────────────
@@ -149,6 +188,11 @@ class GboardInputController: IMKInputController, PinyinSessionDelegate {
         candidateWindow?.close()
         candidateWindow = nil
         super.deactivateServer(sender)
+    }
+
+    override func recognizedEvents(_ sender: Any!) -> Int {
+        let mask: NSEvent.EventTypeMask = [.keyDown, .keyUp, .flagsChanged]
+        return Int(mask.rawValue)
     }
 
     override func candidates(_ sender: Any!) -> [Any]! { return [] }

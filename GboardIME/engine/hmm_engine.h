@@ -29,6 +29,20 @@ bool hmm_engine_select(int index);
 // Returns -1 on failure.
 int hmm_engine_get_candidate_consumed(int index);
 
+// Get separator type at vertex position i.
+// Returns: 0 = none, 1 = token separator, 2 = segment separator. -1 on error.
+int hmm_engine_get_separator(int vertex_index);
+
+// Set separator type at vertex position.
+// separator_type: 0 = none, 1 = token separator, 2 = segment separator.
+bool hmm_engine_set_separator(int vertex_index, int separator_type);
+
+// Get syllable boundary positions from the engine's segment/token structure.
+// Must be called after hmm_engine_get_candidates().
+// Writes vertex positions where syllable breaks occur into breaks[].
+// Returns the number of breaks written, or 0 on failure.
+int hmm_engine_get_syllable_breaks(int *breaks, int max_breaks);
+
 // Reset / clear current composition without committing.
 void hmm_engine_reset(void);
 

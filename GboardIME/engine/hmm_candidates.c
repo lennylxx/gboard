@@ -80,6 +80,67 @@ int hmm_engine_get_candidate_consumed(int index) {
     return end_v;
 }
 
+int hmm_engine_get_separator(int vertex_index) {
+    if (!g_getSeparator || !g_engine) return -1;
+    jint result = 0;
+    CRASH_PROTECT_BEGIN()
+    result = g_getSeparator(g_env, NULL, g_engine, (jint)vertex_index);
+    CRASH_PROTECT_END("nativeGetSeparator")
+    return (int)result;
+}
+
+bool hmm_engine_set_separator(int vertex_index, int separator_type) {
+    if (!g_setSeparator || !g_engine) return false;
+    jboolean result = JNI_FALSE;
+    CRASH_PROTECT_BEGIN()
+    result = g_setSeparator(g_env, NULL, g_engine, (jint)vertex_index, (jint)separator_type);
+    CRASH_PROTECT_END("nativeSetSeparator")
+    return result == JNI_TRUE;
+}
+
+int hmm_engine_get_syllable_breaks(int *breaks, int max_breaks) {
+    if (!breaks || max_breaks < 1) return 0;
+    if (!g_getSegmentCount || !g_getSegment || !g_getSegmentTokenCount || !g_getSegmentToken)
+        return 0;
+
+    jint segCount = 0;
+    CRASH_PROTECT_BEGIN()
+    segCount = g_getSegmentCount(g_env, NULL, g_engine);
+    CRASH_PROTECT_END("getSegmentCount")
+
+    int n = 0;
+    for (jint s = 0; s < segCount && n < max_breaks; s++) {
+        jlong seg = 0;
+        CRASH_PROTECT_BEGIN()
+        seg = g_getSegment(g_env, NULL, g_engine, s);
+        CRASH_PROTECT_END("getSegment")
+        if (!seg) continue;
+
+        jint tokenCount = 0;
+        CRASH_PROTECT_BEGIN()
+        tokenCount = g_getSegmentTokenCount(g_env, NULL, g_engine, seg);
+        CRASH_PROTECT_END("getSegmentTokenCount")
+
+        for (jint t = 0; t < tokenCount && n < max_breaks; t++) {
+            jlong token = 0;
+            CRASH_PROTECT_BEGIN()
+            token = g_getSegmentToken(g_env, NULL, g_engine, seg, t);
+            CRASH_PROTECT_END("getSegmentToken")
+            if (!token) continue;
+
+            // Token layout: offset 0x18 = start_vertex (int32), 0x1C = end_vertex (int32)
+            int start_v = *(int *)((uint8_t *)token + 0x18);
+            int end_v   = *(int *)((uint8_t *)token + 0x1C);
+
+            // Record the end vertex as a syllable break (skip the last one = end of input)
+            if (end_v > start_v && end_v < g_end_vertex && n < max_breaks) {
+                breaks[n++] = end_v;
+            }
+        }
+    }
+    return n;
+}
+
 bool hmm_engine_select(int index) {
     if (!g_selectCand || !g_engine) return false;
     jboolean result = JNI_FALSE;

@@ -476,6 +476,58 @@ static void test_brute_force_incremental(void) {
     check("brute force incremental: all phrases work", ok == total);
 }
 
+// ── Syllable breaks ─────────────────────────────────────────────────────────
+
+static void test_syllable_breaks(void) {
+    printf("[test_syllable_breaks]\n");
+
+    struct { const char *input; const char *expected; } cases[] = {
+        { "nihao",              "ni'hao" },
+        { "zhongwenshurufa",    "zhong'wen'shu'ru'fa" },
+        { "woquni",             "wo'qu'ni" },
+        { "beijing",            "bei'jing" },
+        { "woaini",             "wo'ai'ni" },
+        { "xian",               "xian" },
+        { "jintiantianqihenhao","jin'tian'tian'qi'hen'hao" },
+        { "woshizhongguoren",   "wo'shi'zhong'guo'ren" },
+    };
+    int total = sizeof(cases) / sizeof(cases[0]);
+    int ok = 0;
+
+    for (int c = 0; c < total; c++) {
+        const char *pinyin = cases[c].input;
+        char *cands[9] = {0};
+        get_candidates_for(pinyin, cands, 9);
+
+        int breaks[16];
+        int n = hmm_engine_get_syllable_breaks(breaks, 16);
+
+        // Build segmented string
+        char buf[256] = {0};
+        int pos = 0, prev = 0;
+        int len = (int)strlen(pinyin);
+        for (int i = 0; i < n; i++) {
+            if (prev > 0) buf[pos++] = '\'';
+            int bp = breaks[i];
+            memcpy(buf + pos, pinyin + prev, bp - prev);
+            pos += bp - prev;
+            prev = bp;
+        }
+        if (prev > 0) buf[pos++] = '\'';
+        memcpy(buf + pos, pinyin + prev, len - prev);
+        pos += len - prev;
+        buf[pos] = '\0';
+
+        bool match = strcmp(buf, cases[c].expected) == 0;
+        if (match) ok++;
+        else printf("    FAIL: '%s' → '%s' (expected '%s')\n", pinyin, buf, cases[c].expected);
+
+        free_cands(cands, 9);
+    }
+    printf("    %d/%d syllable breaks correct\n", ok, total);
+    check("syllable breaks match engine segmentation", ok == total);
+}
+
 // ── Main ─────────────────────────────────────────────────────────────────────
 
 int main(int argc, char **argv) {
@@ -502,6 +554,7 @@ int main(int argc, char **argv) {
     test_brute_force_phrases();
     test_brute_force_random();
     test_brute_force_incremental();
+    test_syllable_breaks();
 
     printf("\n══════════════════════════════════\n");
     printf("Results: %d passed, %d failed\n", g_pass, g_fail);

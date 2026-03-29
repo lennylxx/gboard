@@ -61,6 +61,12 @@ fn_FillTokenCandList g_fillTokenCandList = NULL;
 fn_GetTokenCandCount g_getTokenCandCount = NULL;
 fn_GetTokenCandString g_getTokenCandString = NULL;
 fn_SelectTokenCand  g_selectTokenCand  = NULL;
+fn_GetSeparator     g_getSeparator     = NULL;
+fn_SetSeparator     g_setSeparator     = NULL;
+fn_GetSegmentCount  g_getSegmentCount  = NULL;
+fn_GetSegment       g_getSegment       = NULL;
+fn_GetSegmentTokenCount g_getSegmentTokenCount = NULL;
+fn_GetSegmentToken  g_getSegmentToken  = NULL;
 
 // ── Public API ──────────────────────────────────────────────────────────────
 

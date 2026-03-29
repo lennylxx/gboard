@@ -30,6 +30,12 @@ void hmm_resolve_natives(void) {
     g_getTokenCandCount  = (fn_GetTokenCandCount)  jni_find_registered_native_exact("nativeGetTokenCandidateCount");
     g_getTokenCandString = (fn_GetTokenCandString) jni_find_registered_native_exact("nativeGetTokenCandidateString");
     g_selectTokenCand    = (fn_SelectTokenCand)    jni_find_registered_native_exact("nativeSelectTokenCandidate");
+    g_getSeparator       = (fn_GetSeparator)       jni_find_registered_native_exact("nativeGetSeparator");
+    g_setSeparator       = (fn_SetSeparator)       jni_find_registered_native_exact("nativeSetSeparator");
+    g_getSegmentCount    = (fn_GetSegmentCount)    jni_find_registered_native_exact("nativeGetSegmentCount");
+    g_getSegment         = (fn_GetSegment)         jni_find_registered_native_exact("nativeGetSegment");
+    g_getSegmentTokenCount = (fn_GetSegmentTokenCount) jni_find_registered_native_exact("nativeGetSegmentTokenCount");
+    g_getSegmentToken    = (fn_GetSegmentToken)    jni_find_registered_native_exact("nativeGetSegmentToken");
 
     LOGERR("Resolved: factory=%p dm=%p engine=%p enroll=%p append=%p fill=%p count=%p str=%p",
         (void*)g_createFactory, (void*)g_getDataManager, (void*)g_createEngine,
