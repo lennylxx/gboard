@@ -195,14 +195,14 @@ class PinyinSession {
     /// Handles a punctuation key: commits composition if needed, then inserts Chinese punctuation.
     /// Exception: apostrophe while composing sets a separator in the engine (e.g. xi'an).
     func handlePunctuation(_ ch: Character) -> KeyResult {
-        if ch == "'" && isComposing {
+        if (ch == "'" || ch == "\u{2019}" || ch == "\u{2018}") && isComposing {
             composition += "'"
             // Track separator at the vertex matching the letter count up to this apostrophe
             let vertexPos = Int32(composition.filter { $0 != "'" }.count)
             if !separatorPositions.contains(vertexPos) {
                 separatorPositions.append(vertexPos)
             }
-            gboard_set_separator(vertexPos, 1)  // 1 = TOKEN_SEPARATOR
+            _ = gboard_set_separator(vertexPos, 1)  // 1 = TOKEN_SEPARATOR
             refillCandidates()
             delegate?.sessionSetMarkedText(segmentedPinyin)
             return .handled
@@ -232,13 +232,19 @@ class PinyinSession {
         guard !composition.isEmpty else { segmentedPinyin = ""; return }
         let letters = Array(composition.filter { $0 != "'" })
         guard !letters.isEmpty else { segmentedPinyin = composition; return }
+
+        // Collect all break positions: engine breaks + user apostrophes
+        var breakSet = Set<Int>()
         var breaks = [Int32](repeating: 0, count: 16)
         let n = Int(gboard_get_syllable_breaks(&breaks, Int32(breaks.count)))
-        if n > 0 {
+        for i in 0..<n { breakSet.insert(Int(breaks[i])) }
+        for pos in separatorPositions { breakSet.insert(Int(pos)) }
+
+        if !breakSet.isEmpty {
+            let sorted = breakSet.sorted()
             var parts: [String] = []
             var prev = 0
-            for i in 0..<n {
-                let bp = Int(breaks[i])
+            for bp in sorted where bp > prev && bp < letters.count {
                 parts.append(String(letters[prev..<bp]))
                 prev = bp
             }
@@ -246,6 +252,10 @@ class PinyinSession {
             segmentedPinyin = parts.joined(separator: "'")
         } else {
             segmentedPinyin = String(letters)
+        }
+        // Preserve trailing apostrophe from user input
+        if composition.hasSuffix("'") {
+            segmentedPinyin += "'"
         }
     }
 

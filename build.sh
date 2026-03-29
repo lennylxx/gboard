@@ -22,6 +22,7 @@ usage() {
 
 copy_engine_resources() {
     local resources="$1/Contents/Resources"
+    mkdir -p "$resources"
 
     if [ -f "$SO_SRC" ]; then
         cp "$SO_SRC" "$resources/libintegrated_shared_object.so"
