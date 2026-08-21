@@ -35,6 +35,8 @@
     <array>
         <string>Hans</string>
     </array>
+    <key>TICapsLockLanguageSwitchCapable</key>
+    <true/>
 
     <key>LSBackgroundOnly</key>
     <true/>

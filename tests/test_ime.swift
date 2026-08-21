@@ -155,8 +155,9 @@ func testEnterCommits() {
     let (s, m) = makeSession()
 
     for ch in "nihao" { _ = s.appendLetter(String(ch)) }
-    _ = s.selectCurrent()
-    check("enter commits text", !m.committedText.isEmpty)
+    _ = s.commitRawPinyin()
+    check("enter commits raw pinyin", m.committedText == "nihao")
+    check("composition cleared", !s.isComposing)
 }
 
 func testRemainingComposition() {

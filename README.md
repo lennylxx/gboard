@@ -65,6 +65,8 @@ Switch to GboardIME from the menu bar input source picker, then type pinyin.
 | Backspace | Delete last pinyin character |
 | Escape | Cancel composition |
 | Return | Commit raw pinyin |
+| Shift | Switch between Chinese and English; commit active composition as raw pinyin |
+| Caps Lock | Switch between GboardIME and ABC when enabled in macOS Text Input settings; commit active composition as raw pinyin |
 
 Partial selection is supported — selecting a candidate consumes only the pinyin it matched, leaving the rest for continued input (e.g. type `nihao`, select `你`, continue composing from `hao`).
 

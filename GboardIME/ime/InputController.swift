@@ -122,7 +122,7 @@ class GboardInputController: IMKInputController, PinyinSessionDelegate {
 
     private func toggleChineseMode() {
         if session.isComposing {
-            _ = session.selectCurrent()
+            _ = session.commitRawPinyin()
         }
         chineseMode.toggle()
         imeLog("Mode switched to \(chineseMode ? "Chinese" : "English")")
@@ -180,11 +180,11 @@ class GboardInputController: IMKInputController, PinyinSessionDelegate {
 
     override func commitComposition(_ sender: Any!) {
         currentClient = sender
-        _ = session.selectCurrent()
+        _ = session.commitRawPinyin()
     }
 
     override func deactivateServer(_ sender: Any!) {
-        session.reset()
+        _ = session.commitRawPinyin()
         candidateWindow?.close()
         candidateWindow = nil
         super.deactivateServer(sender)
