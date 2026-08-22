@@ -7,6 +7,9 @@ bool gboard_init(const char *so_path, const char *pack_dir) {
 
 bool gboard_append(const char *pinyin)              { return hmm_engine_append(pinyin); }
 int  gboard_get_candidates(char **out, int max)     { return hmm_engine_get_candidates(out, max); }
+int  gboard_get_candidates_page(char **out, int offset, int max) {
+    return hmm_engine_get_candidates_page(out, offset, max);
+}
 bool gboard_select(int index)                       { return hmm_engine_select(index); }
 int  gboard_get_candidate_consumed(int index)       { return hmm_engine_get_candidate_consumed(index); }
 int  gboard_get_separator(int i)                    { return hmm_engine_get_separator(i); }

@@ -31,7 +31,13 @@ class MockDelegate: PinyinSessionDelegate {
     func sessionSetMarkedText(_ text: String) {
         markedText = text.isEmpty ? nil : text
     }
-    func sessionShowCandidates(_ candidates: [String], pinyin: String, selectedIndex: Int) {
+    func sessionShowCandidates(
+        _ candidates: [String],
+        pinyin: String,
+        selectedIndex: Int,
+        canGoPrevious: Bool,
+        canGoNext: Bool
+    ) {
         // no-op for testing
     }
     func sessionHideCandidates() {
@@ -148,6 +154,29 @@ func testArrowKeys() {
     let cand1 = s.candidates[1]
     _ = s.selectCurrent()
     check("space selects highlighted", m.committedText == cand1)
+}
+
+func testCandidatePaging() {
+    print("[test_candidate_paging]")
+    let (s, m) = makeSession()
+
+    for ch in "shi" { _ = s.appendLetter(String(ch)) }
+    check("first page has candidates", !s.candidates.isEmpty)
+    let firstPage = s.candidates
+
+    _ = s.nextPage()
+    check("= advances candidate page", s.candidatePage == 1)
+    check("next page has candidates", !s.candidates.isEmpty)
+    check("next page differs", s.candidates != firstPage)
+    let secondPageFirst = s.candidates[0]
+
+    _ = s.previousPage()
+    check("- returns to first page", s.candidatePage == 0)
+    check("first page restored", s.candidates == firstPage)
+
+    _ = s.nextPage()
+    _ = s.selectNumber(1)
+    check("number selects candidate from current page", m.committedText == secondPageFirst)
 }
 
 func testEnterCommits() {
@@ -468,6 +497,7 @@ func testPunctuationWhileComposing() {
         testDelete()
         testEscape()
         testArrowKeys()
+        testCandidatePaging()
         testEnterCommits()
         testRemainingComposition()
         testSelectAndContinue("nihao_shijie", "nihaoshijie")

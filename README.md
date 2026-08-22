@@ -60,8 +60,10 @@ Switch to GboardIME from the menu bar input source picker, then type pinyin.
 |-----|--------|
 | a-z | Append to pinyin composition |
 | 1-9 | Select nth candidate |
+| - | Show previous candidate page |
+| = | Show next candidate page |
 | Space | Commit highlighted candidate |
-| ← → | Move candidate selection |
+| ← → | Move candidate selection, crossing page boundaries |
 | Backspace | Delete last pinyin character |
 | Escape | Cancel composition |
 | Return | Commit raw pinyin |

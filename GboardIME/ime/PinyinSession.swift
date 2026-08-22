@@ -7,7 +7,13 @@ import Foundation
 protocol PinyinSessionDelegate: AnyObject {
     func sessionInsertText(_ text: String)
     func sessionSetMarkedText(_ text: String)
-    func sessionShowCandidates(_ candidates: [String], pinyin: String, selectedIndex: Int)
+    func sessionShowCandidates(
+        _ candidates: [String],
+        pinyin: String,
+        selectedIndex: Int,
+        canGoPrevious: Bool,
+        canGoNext: Bool
+    )
     func sessionHideCandidates()
 }
 
@@ -19,9 +25,13 @@ enum KeyResult {
 }
 
 class PinyinSession {
+    private static let candidatePageSize = 9
+
     private(set) var composition = ""
     private(set) var candidates: [String] = []
     private(set) var selectedIndex = 0
+    private(set) var candidatePage = 0
+    private(set) var hasNextPage = false
 
     weak var delegate: PinyinSessionDelegate?
 
@@ -102,9 +112,10 @@ class PinyinSession {
         let text = candidates[index]
 
         // Get the vertex range BEFORE selecting (like Android does)
-        let consumed = Int(gboard_get_candidate_consumed(Int32(index)))
+        let engineIndex = candidatePage * Self.candidatePageSize + index
+        let consumed = Int(gboard_get_candidate_consumed(Int32(engineIndex)))
 
-        _ = gboard_select(Int32(index))
+        _ = gboard_select(Int32(engineIndex))
         delegate?.sessionInsertText(text)
 
         // Map vertex count to composition index (skipping apostrophes)
@@ -146,6 +157,10 @@ class PinyinSession {
         if selectedIndex > 0 {
             selectedIndex -= 1
             notifyCandidates()
+        } else if candidatePage > 0 {
+            _ = previousPage()
+            selectedIndex = candidates.count - 1
+            notifyCandidates()
         }
         return .handled
     }
@@ -155,7 +170,24 @@ class PinyinSession {
         if selectedIndex < candidates.count - 1 {
             selectedIndex += 1
             notifyCandidates()
+        } else {
+            _ = nextPage()
         }
+        return .handled
+    }
+
+    func previousPage() -> KeyResult {
+        guard !composition.isEmpty && candidatePage > 0 else { return .handled }
+        candidatePage -= 1
+        fillCandidatePage()
+        return .handled
+    }
+
+    func nextPage() -> KeyResult {
+        guard !composition.isEmpty && !candidates.isEmpty else { return .passThrough }
+        guard hasNextPage else { return .handled }
+        candidatePage += 1
+        fillCandidatePage()
         return .handled
     }
 
@@ -265,6 +297,8 @@ class PinyinSession {
         composition = ""
         candidates = []
         selectedIndex = 0
+        candidatePage = 0
+        hasNextPage = false
         separatorPositions = []
         gboard_reset()
         delegate?.sessionHideCandidates()
@@ -286,18 +320,21 @@ class PinyinSession {
         for pos in separatorPositions {
             gboard_set_separator(pos, 1)
         }
-        fillCandidateList()
+        candidatePage = 0
+        fillCandidatePage()
     }
 
     /// Refill candidates on current engine state (no reset), used after setting a separator.
     private func refillCandidates() {
-        fillCandidateList()
+        candidatePage = 0
+        fillCandidatePage()
     }
 
-    private func fillCandidateList() {
-        let maxCount = 9
+    private func fillCandidatePage() {
+        let maxCount = Self.candidatePageSize + 1
         var bufs = [UnsafeMutablePointer<CChar>?](repeating: nil, count: maxCount)
-        let count = Int(gboard_get_candidates(&bufs, Int32(maxCount)))
+        let offset = candidatePage * Self.candidatePageSize
+        let count = Int(gboard_get_candidates_page(&bufs, Int32(offset), Int32(maxCount)))
 
         var results: [String] = []
         for i in 0..<count {
@@ -306,7 +343,8 @@ class PinyinSession {
             }
         }
 
-        candidates = results
+        hasNextPage = results.count > Self.candidatePageSize
+        candidates = Array(results.prefix(Self.candidatePageSize))
         selectedIndex = 0
         updateSegmentation()
         notifyCandidates()
@@ -316,7 +354,13 @@ class PinyinSession {
         if candidates.isEmpty {
             delegate?.sessionHideCandidates()
         } else {
-            delegate?.sessionShowCandidates(candidates, pinyin: segmentedPinyin, selectedIndex: selectedIndex)
+            delegate?.sessionShowCandidates(
+                candidates,
+                pinyin: segmentedPinyin,
+                selectedIndex: selectedIndex,
+                canGoPrevious: candidatePage > 0,
+                canGoNext: hasNextPage
+            )
         }
     }
 }

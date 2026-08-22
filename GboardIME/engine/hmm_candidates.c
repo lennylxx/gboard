@@ -27,8 +27,8 @@ bool hmm_engine_append(const char *pinyin_input) {
     return true;
 }
 
-int hmm_engine_get_candidates(char **candidates, int max_count) {
-    if (!g_engine || !candidates) return 0;
+int hmm_engine_get_candidates_page(char **candidates, int offset, int max_count) {
+    if (!g_engine || !candidates || offset < 0 || max_count < 1) return 0;
 
     int count = 0;
 
@@ -47,11 +47,13 @@ int hmm_engine_get_candidates(char **candidates, int max_count) {
         CRASH_PROTECT_END("nativeGetCandidateCount")
     }
 
-    if (count > max_count) count = max_count;
+    if (offset >= count) return 0;
+    int end = offset + max_count;
+    if (end > count) end = count;
 
     int filled = 0;
     if (g_getCandString) {
-        for (int i = 0; i < count; i++) {
+        for (int i = offset; i < end; i++) {
             jstring js = NULL;
             CRASH_PROTECT_BEGIN()
             js = g_getCandString(g_env, NULL, g_engine, (jint)i);
@@ -65,6 +67,10 @@ int hmm_engine_get_candidates(char **candidates, int max_count) {
         }
     }
     return filled;
+}
+
+int hmm_engine_get_candidates(char **candidates, int max_count) {
+    return hmm_engine_get_candidates_page(candidates, 0, max_count);
 }
 
 int hmm_engine_get_candidate_consumed(int index) {

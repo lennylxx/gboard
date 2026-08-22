@@ -4,6 +4,7 @@
 bool  gboard_init(const char *so_path, const char *pack_dir);
 bool  gboard_append(const char *pinyin);
 int   gboard_get_candidates(char **out, int max);
+int   gboard_get_candidates_page(char **out, int offset, int max);
 bool  gboard_select(int index);
 int   gboard_get_candidate_consumed(int index);
 int   gboard_get_separator(int vertex_index);

@@ -85,6 +85,10 @@ class GboardInputController: IMKInputController, PinyinSessionDelegate {
             result = session.moveLeft()
         case 124: // Right arrow
             result = session.moveRight()
+        case 27 where session.isComposing && (flags.isEmpty || flags == .capsLock): // -
+            result = session.previousPage()
+        case 24 where session.isComposing && (flags.isEmpty || flags == .capsLock): // =
+            result = session.nextPage()
         case 49 where session.isComposing: // Space
             result = session.selectCurrent()
         default:
@@ -156,14 +160,32 @@ class GboardInputController: IMKInputController, PinyinSessionDelegate {
         }
     }
 
-    func sessionShowCandidates(_ candidates: [String], pinyin: String, selectedIndex: Int) {
+    func sessionShowCandidates(
+        _ candidates: [String],
+        pinyin: String,
+        selectedIndex: Int,
+        canGoPrevious: Bool,
+        canGoNext: Bool
+    ) {
         if candidateWindow == nil {
             candidateWindow = CandidateWindowController()
         }
-        candidateWindow?.update(candidates: candidates, pinyin: pinyin, selectedIndex: selectedIndex) { [weak self] idx in
-            guard let self = self else { return }
-            self.session.selectCandidate(index: idx)
-        }
+        candidateWindow?.update(
+            candidates: candidates,
+            pinyin: pinyin,
+            selectedIndex: selectedIndex,
+            canGoPrevious: canGoPrevious,
+            canGoNext: canGoNext,
+            onSelect: { [weak self] idx in
+                self?.session.selectCandidate(index: idx)
+            },
+            onPrevious: { [weak self] in
+                _ = self?.session.previousPage()
+            },
+            onNext: { [weak self] in
+                _ = self?.session.nextPage()
+            }
+        )
         if let client = currentClient as? IMKTextInput {
             var rect = NSRect.zero
             client.attributes(forCharacterIndex: 0, lineHeightRectangle: &rect)

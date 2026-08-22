@@ -21,6 +21,9 @@ bool hmm_engine_append(const char *pinyin_input);
 // Returns the number of candidates filled.
 int  hmm_engine_get_candidates(char **candidates, int max_count);
 
+// Fill a page of candidates starting at the given 0-based engine index.
+int  hmm_engine_get_candidates_page(char **candidates, int offset, int max_count);
+
 // Commit candidate at index (0-based) and reset composition.
 bool hmm_engine_select(int index);
 
