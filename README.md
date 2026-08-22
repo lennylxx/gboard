@@ -1,4 +1,6 @@
-# GboardIME for macOS
+# Gboard for macOS
+
+[English](README.md) | [简体中文](README.zh-CN.md)
 
 A macOS input method that runs Gboard's native HMM Pinyin engine via a custom ARM64 ELF loader. Type Mandarin Chinese on macOS using the same engine that powers Gboard on Android.
 
