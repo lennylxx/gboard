@@ -115,12 +115,24 @@ class PinyinSession {
         let engineIndex = candidatePage * Self.candidatePageSize + index
         let consumed = Int(gboard_get_candidate_consumed(Int32(engineIndex)))
 
+        // Extract token info for learning BEFORE select mutates engine state
+        let tokenCount = gboard_user_dict_extract_token_count(Int32(engineIndex))
+        let letterCount = composition.filter { $0 != "'" }.count
+
         _ = gboard_select(Int32(engineIndex))
+
+        // Learn the selected candidate
+        if tokenCount > 0 && gboard_user_dict_is_ready() {
+            learnCandidate(text: text,
+                           engineIndex: engineIndex,
+                           tokenCount: Int(tokenCount),
+                           isFullMatch: consumed == letterCount)
+        }
+
         delegate?.sessionInsertText(text)
 
         // Map vertex count to composition index (skipping apostrophes)
         let remaining: String
-        let letterCount = composition.filter { $0 != "'" }.count
         if consumed > 0 && consumed < letterCount {
             // Find the position in composition corresponding to `consumed` letters
             var letters = 0
@@ -291,6 +303,39 @@ class PinyinSession {
         }
     }
 
+    // MARK: - User dictionary learning
+
+    private func learnCandidate(text: String, engineIndex: Int, tokenCount: Int,
+                                isFullMatch: Bool) {
+        var tokenStrings: [String] = []
+        var types: [Int32] = []
+
+        for i in 0..<tokenCount {
+            var tokBuf = [CChar](repeating: 0, count: 16)
+            var typeVal: Int32 = 0
+            if gboard_user_dict_get_token(Int32(engineIndex), Int32(i), &tokBuf, &typeVal) {
+                let s = String(cString: tokBuf)
+                if !s.isEmpty {
+                    tokenStrings.append(s)
+                    types.append(typeVal)
+                }
+            }
+        }
+
+        guard !tokenStrings.isEmpty else { return }
+
+        // Call the C bridge
+        tokenStrings.withCString2DArray { cTokens in
+            types.withUnsafeMutableBufferPointer { cTypes in
+                text.withCString { cValue in
+                    _ = gboard_user_dict_learn(cTokens, cTypes.baseAddress!,
+                                               Int32(tokenStrings.count), cValue,
+                                               isFullMatch)
+                }
+            }
+        }
+    }
+
     // MARK: - Internal
 
     func reset() {
@@ -361,6 +406,21 @@ class PinyinSession {
                 canGoPrevious: candidatePage > 0,
                 canGoNext: hasNextPage
             )
+        }
+    }
+}
+
+// MARK: - Helper: convert [String] to C string pointer array
+
+extension Array where Element == String {
+    func withCString2DArray<R>(_ body: (UnsafeMutablePointer<UnsafePointer<CChar>?>) -> R) -> R {
+        let cStrings = self.map { strdup($0) }
+        defer { cStrings.forEach { free($0) } }
+        var ptrs: [UnsafePointer<CChar>?] = cStrings.map { ptr in
+            ptr.map { UnsafePointer($0) }
+        }
+        return ptrs.withUnsafeMutableBufferPointer { buf in
+            body(buf.baseAddress!)
         }
     }
 }

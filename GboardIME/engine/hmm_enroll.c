@@ -46,6 +46,105 @@ static size_t pb_write_string(uint8_t *buf, int field, const char *s) {
     return n;
 }
 
+static bool pb_read_varint(const uint8_t *buf, size_t len, size_t *pos,
+                           uint64_t *value) {
+    uint64_t result = 0;
+    int shift = 0;
+    while (*pos < len && shift < 64) {
+        uint8_t byte = buf[(*pos)++];
+        result |= (uint64_t)(byte & 0x7f) << shift;
+        if (!(byte & 0x80)) {
+            *value = result;
+            return true;
+        }
+        shift += 7;
+    }
+    return false;
+}
+
+// Replicates AbstractHmmEngineFactory.k(): add the enabled mutable dictionary
+// to both DictionaryConfig messages in the main setting scheme.
+static uint8_t *add_user_dictionary_to_setting(const uint8_t *orig,
+                                                size_t orig_len,
+                                                size_t *out_len) {
+    uint8_t entry[128];
+    uint8_t entry_body[96];
+    size_t body_len = 0;
+    body_len += pb_write_tag(entry_body + body_len, 1, 0);
+    body_len += pb_write_varint(entry_body + body_len, 2);  // type 3
+    body_len += pb_write_string(entry_body + body_len, 2, "user_dict_3_3");
+    body_len += pb_write_tag(entry_body + body_len, 3, 0);
+    body_len += pb_write_varint(entry_body + body_len, 2);  // flags 3
+
+    size_t entry_len = 0;
+    entry_len += pb_write_tag(entry + entry_len, 1, 2);
+    entry_len += pb_write_varint(entry + entry_len, body_len);
+    memcpy(entry + entry_len, entry_body, body_len);
+    entry_len += body_len;
+
+    uint8_t *out = malloc(orig_len + entry_len * 2 + 32);
+    if (!out) return NULL;
+
+    size_t in_pos = 0;
+    size_t out_pos = 0;
+    int modified = 0;
+    while (in_pos < orig_len) {
+        size_t field_start = in_pos;
+        uint64_t tag;
+        if (!pb_read_varint(orig, orig_len, &in_pos, &tag)) goto invalid;
+        int field = (int)(tag >> 3);
+        int wire = (int)(tag & 7);
+
+        if (wire == 0) {
+            uint64_t ignored;
+            if (!pb_read_varint(orig, orig_len, &in_pos, &ignored)) goto invalid;
+            memcpy(out + out_pos, orig + field_start, in_pos - field_start);
+            out_pos += in_pos - field_start;
+        } else if (wire == 2) {
+            uint64_t value_len;
+            if (!pb_read_varint(orig, orig_len, &in_pos, &value_len) ||
+                value_len > orig_len - in_pos) {
+                goto invalid;
+            }
+            const uint8_t *value = orig + in_pos;
+            if (field == 4 || field == 5) {
+                out_pos += pb_write_tag(out + out_pos, field, 2);
+                out_pos += pb_write_varint(out + out_pos, value_len + entry_len);
+                memcpy(out + out_pos, value, (size_t)value_len);
+                out_pos += (size_t)value_len;
+                memcpy(out + out_pos, entry, entry_len);
+                out_pos += entry_len;
+                modified++;
+            } else {
+                memcpy(out + out_pos, orig + field_start,
+                       in_pos + (size_t)value_len - field_start);
+                out_pos += in_pos + (size_t)value_len - field_start;
+            }
+            in_pos += (size_t)value_len;
+        } else if (wire == 1) {
+            if (orig_len - in_pos < 8) goto invalid;
+            in_pos += 8;
+            memcpy(out + out_pos, orig + field_start, in_pos - field_start);
+            out_pos += in_pos - field_start;
+        } else if (wire == 5) {
+            if (orig_len - in_pos < 4) goto invalid;
+            in_pos += 4;
+            memcpy(out + out_pos, orig + field_start, in_pos - field_start);
+            out_pos += in_pos - field_start;
+        } else {
+            goto invalid;
+        }
+    }
+
+    LOGERR("Added user_dict_3_3 to %d setting dictionary configs", modified);
+    *out_len = out_pos;
+    return out;
+
+invalid:
+    free(out);
+    return NULL;
+}
+
 // ── Data scheme (DataScheme / aogz) parsing ─────────────────────────────────
 
 typedef struct {
@@ -304,10 +403,10 @@ bool hmm_enroll_all(const char *pack_dir) {
     // 2. Enroll empty mutable dictionaries (replicates MutableDictEnroller / kzw)
     if (g_enrollEmptyMutableDict && g_dm) {
         const struct { const char *name; int type; int capacity; } mut_dicts[] = {
-            {"new_words_dictionary_accessor", 24, 1},
-            {"contacts_dictionary_accessor", 24, 2},
-            {"user_dictionary_accessor", 23, 3},
-            {"shortcuts_dictionary_accessor", 24, 4},
+            {"system_optional_dict_3_3", 24, 0},
+            {"contacts_dict_3_3", 24, 0},
+            {"user_dict_3_3", 23, 0},
+            {"shortcuts_dict_3_3", 24, 4},
             {NULL, 0, 0}
         };
         for (int i = 0; mut_dicts[i].name; i++) {
@@ -339,8 +438,14 @@ bool hmm_enroll_all(const char *pack_dir) {
             uint8_t *sbuf = malloc((size_t)ssz);
             fread(sbuf, 1, (size_t)ssz, sfp);
             fclose(sfp);
-            jbyteArray ba = jni_NewByteArray(g_env, (jsize)ssz);
-            jni_SetByteArrayRegion(g_env, ba, 0, (jsize)ssz, (jbyte*)sbuf);
+            size_t setting_size = (size_t)ssz;
+            uint8_t *modified = add_user_dictionary_to_setting(
+                sbuf, setting_size, &setting_size);
+            const uint8_t *setting_bytes = modified ? modified : sbuf;
+            jbyteArray ba = jni_NewByteArray(g_env, (jsize)setting_size);
+            jni_SetByteArrayRegion(g_env, ba, 0, (jsize)setting_size,
+                                   (jbyte *)setting_bytes);
+            free(modified);
             free(sbuf);
             for (int hi = 0; handles[hi]; hi++) {
                 for (int ti = 0; type_strs[ti]; ti++) {

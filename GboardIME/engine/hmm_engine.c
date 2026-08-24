@@ -8,6 +8,7 @@
 //   hmm_candidates.c — append, candidates, select, reset
 
 #include "hmm_internal.h"
+#include "hmm_user_dict.h"
 
 // ── Global state definitions (declared extern in hmm_internal.h) ────────────
 
@@ -59,6 +60,68 @@ fn_BeginSession     g_beginSession     = NULL;
 fn_HandleInputContext g_handleInputCtx  = NULL;
 fn_FillTokenCandList g_fillTokenCandList = NULL;
 fn_GetTokenCandCount g_getTokenCandCount = NULL;
+
+static char s_pack_dir[4096];
+
+static bool create_decoder(void) {
+    g_engine = 0;
+    const char *etypes[] = {
+        "zh-t-i0-pinyin-x-f0-delight", "zh-t-i0-pinyin", NULL
+    };
+    for (int ei = 0; etypes[ei] && !g_engine; ei++) {
+        jstring engine_type = jni_NewStringUTF(g_env, etypes[ei]);
+        jstring user_id = jni_NewStringUTF(g_env, "");
+        CRASH_PROTECT_BEGIN()
+        g_engine = g_createEngine(g_env, NULL, g_factory, engine_type, user_id);
+        LOGERR("nativeCreateEngine('%s') → %lld",
+               etypes[ei], (long long)g_engine);
+        CRASH_PROTECT_END("nativeCreateEngine")
+    }
+    if (!g_engine) return false;
+
+    if (g_setKeyLayout && s_pack_dir[0]) {
+        char scheme_path[4096];
+        snprintf(scheme_path, sizeof(scheme_path),
+                 "%s/pinyin_qwerty_setting_scheme", s_pack_dir);
+        FILE *sfp = fopen(scheme_path, "rb");
+        if (sfp) {
+            fseek(sfp, 0, SEEK_END);
+            long size = ftell(sfp);
+            fseek(sfp, 0, SEEK_SET);
+            uint8_t *bytes = malloc((size_t)size);
+            fread(bytes, 1, (size_t)size, sfp);
+            fclose(sfp);
+            jbyteArray layout = jni_NewByteArray(g_env, (jsize)size);
+            jni_SetByteArrayRegion(g_env, layout, 0, (jsize)size,
+                                   (jbyte *)bytes);
+            free(bytes);
+            CRASH_PROTECT_BEGIN()
+            g_setKeyLayout(g_env, NULL, g_engine, layout);
+            CRASH_PROTECT_END("nativeSetKeyboardLayout")
+        }
+    }
+
+    if (g_beginSession) {
+        jbyteArray session_cfg = jni_NewByteArray(g_env, 0);
+        CRASH_PROTECT_BEGIN()
+        g_beginSession(g_env, NULL, g_engine, session_cfg);
+        CRASH_PROTECT_END("nativeBeginSession")
+    }
+    g_end_vertex = 0;
+    return true;
+}
+
+bool hmm_engine_refresh_user_dictionary(void) {
+    if (!g_engine) return false;
+    typedef void (*fn_RefreshEngine)(JNIEnv *, jclass, jlong);
+    fn_RefreshEngine refresh_engine = (fn_RefreshEngine)
+        jni_find_registered_native_by_sig("nativeRefreshData", "(J)V");
+    if (!refresh_engine) return false;
+    CRASH_PROTECT_BEGIN()
+    refresh_engine(g_env, NULL, g_engine);
+    CRASH_PROTECT_END("HmmEngine nativeRefreshData")
+    return true;
+}
 fn_GetTokenCandString g_getTokenCandString = NULL;
 fn_SelectTokenCand  g_selectTokenCand  = NULL;
 fn_GetSeparator     g_getSeparator     = NULL;
@@ -71,7 +134,13 @@ fn_GetSegmentToken  g_getSegmentToken  = NULL;
 // ── Public API ──────────────────────────────────────────────────────────────
 
 bool hmm_engine_init(const char *so_path, const char *pack_dir) {
-    LOG("hmm_engine_init: so=%s pack=%s", so_path, pack_dir);
+    return hmm_engine_init_with_user_data(so_path, pack_dir, NULL);
+}
+
+bool hmm_engine_init_with_user_data(const char *so_path, const char *pack_dir,
+                                     const char *user_data_dir) {
+    LOG("hmm_engine_init: so=%s pack=%s user_data=%s", so_path, pack_dir,
+        user_data_dir ? user_data_dir : "(none)");
 
     android_stubs_init(pack_dir);
 
@@ -124,68 +193,35 @@ bool hmm_engine_init(const char *so_path, const char *pack_dir) {
 
     // 5. Enroll all data + settings
     if (pack_dir) {
+        snprintf(s_pack_dir, sizeof(s_pack_dir), "%s", pack_dir);
         hmm_enroll_all(pack_dir);
     }
 
-    // 6. Create HMM engine
-    {
-        const char *etypes[] = { "zh-t-i0-pinyin-x-f0-delight", "zh-t-i0-pinyin", NULL };
-        for (int ei = 0; etypes[ei] && !g_engine; ei++) {
-            jstring engine_type = jni_NewStringUTF(g_env, etypes[ei]);
-            jstring user_id    = jni_NewStringUTF(g_env, "");
-            CRASH_PROTECT_BEGIN()
-            g_engine = g_createEngine(g_env, NULL, g_factory, engine_type, user_id);
-            LOGERR("nativeCreateEngine('%s') → %lld", etypes[ei], (long long)g_engine);
-            CRASH_PROTECT_END("nativeCreateEngine")
-        }
+    // 6. Load and bind the persistent user dictionary before engine creation.
+    if (hmm_user_dict_init(user_data_dir, pack_dir)) {
+        LOGERR("user dictionary initialized (size=%d)", hmm_user_dict_get_size());
+    } else {
+        LOGERR("user dictionary init failed or not available (non-fatal)");
     }
 
-    if (!g_engine) {
+    // 7. Create HMM engine
+    if (!create_decoder()) {
         LOGERR("Failed to create engine");
         return false;
-    }
-
-    // 7. Set keyboard layout
-    if (g_setKeyLayout && pack_dir) {
-        char scheme_path[4096];
-        snprintf(scheme_path, sizeof(scheme_path), "%s/pinyin_qwerty_setting_scheme", pack_dir);
-        FILE *sfp = fopen(scheme_path, "rb");
-        if (sfp) {
-            fseek(sfp, 0, SEEK_END);
-            long ssz = ftell(sfp);
-            fseek(sfp, 0, SEEK_SET);
-            uint8_t *sbuf = malloc((size_t)ssz);
-            fread(sbuf, 1, (size_t)ssz, sfp);
-            fclose(sfp);
-            jbyteArray layout = jni_NewByteArray(g_env, (jsize)ssz);
-            jni_SetByteArrayRegion(g_env, layout, 0, (jsize)ssz, (jbyte*)sbuf);
-            free(sbuf);
-            CRASH_PROTECT_BEGIN()
-            g_setKeyLayout(g_env, NULL, g_engine, layout);
-            LOG("setKeyboardLayout OK (%ld bytes)", ssz);
-            CRASH_PROTECT_END("nativeSetKeyboardLayout")
-        } else {
-            LOG("pinyin_qwerty_setting_scheme not found");
-        }
-    }
-
-    // 8. Begin session
-    if (g_beginSession && g_engine) {
-        jbyteArray session_cfg = jni_NewByteArray(g_env, 0);
-        CRASH_PROTECT_BEGIN()
-        g_beginSession(g_env, NULL, g_engine, session_cfg);
-        LOGERR("nativeBeginSession OK");
-        CRASH_PROTECT_END("nativeBeginSession")
     }
 
     LOGERR("init complete! engine=%lld", (long long)g_engine);
     LOG("append=%p fillCand=%p getCandCount=%p getCandStr=%p",
         (void*)g_append, (void*)g_fillCandList, (void*)g_getCandCount, (void*)g_getCandString);
+
     return true;
 }
 
 void hmm_engine_destroy(void) {
     if (g_engine) hmm_engine_reset();
+
+    // Tear down user dictionary (persists if configured)
+    hmm_user_dict_destroy();
 
     // Tear down native factory (calls into native code which may use JNI env)
     if (g_deleteFactory && g_factory) {
@@ -196,6 +232,7 @@ void hmm_engine_destroy(void) {
     }
 
     g_factory = 0; g_dm = 0; g_sm = 0; g_engine = 0; g_end_vertex = 0;
+    s_pack_dir[0] = '\0';
 
     elf_unload(g_elf);
     g_elf = NULL;

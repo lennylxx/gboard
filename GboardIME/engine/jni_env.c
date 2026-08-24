@@ -255,23 +255,68 @@ static jstring fn_NewStringUTF(JNIEnv *e, const char *s)         { jstring r=jni
 static jsize   fn_GetStringUTFLength(JNIEnv *e, jstring s)       { (void)e; return (jsize)strlen(jni_get_string(s)); }
 static const char *fn_GetStringUTFChars(JNIEnv *e, jstring s, jboolean *cp) { (void)e; if(cp)*cp=JNI_FALSE; const char*r=jni_get_string(s); JLOG("GetStringUTFChars: %p → '%s'", s, r?r:"(null)"); return r; }
 static void    fn_ReleaseStringUTFChars(JNIEnv *e, jstring s, const char *c) { (void)e;(void)s;(void)c; }
-static jsize   fn_GetStringLength(JNIEnv *e, jstring s)          { (void)e; return (jsize)strlen(jni_get_string(s)); }
+static jsize   fn_GetStringLength(JNIEnv *e, jstring s) {
+    (void)e;
+    // Return UTF-16 code unit count (not byte count)
+    const char *utf8 = jni_get_string(s);
+    size_t len = strlen(utf8);
+    jsize count = 0;
+    for (size_t i = 0; i < len; ) {
+        unsigned char c = (unsigned char)utf8[i];
+        uint32_t cp;
+        if (c < 0x80) { cp = c; i += 1; }
+        else if ((c & 0xE0) == 0xC0) { cp = c & 0x1F; i += 2; }
+        else if ((c & 0xF0) == 0xE0) { cp = c & 0x0F; i += 3; }
+        else if ((c & 0xF8) == 0xF0) { cp = c & 0x07; i += 4; }
+        else { cp = 0; i += 1; }
+        count += (cp > 0xFFFF) ? 2 : 1;  // surrogate pair = 2 code units
+    }
+    return count;
+}
 static const jchar *fn_GetStringChars(JNIEnv *e, jstring s, jboolean *cp) {
     (void)e; if(cp)*cp=JNI_FALSE;
     JLOG("GetStringChars: %p", s);
-    // Convert UTF-8 to UTF-16LE for ASCII range
+    // Convert UTF-8 to UTF-16
     const char *utf8 = jni_get_string(s);
     size_t len = strlen(utf8);
-    jchar *buf = calloc(len + 1, sizeof(jchar));
-    for (size_t i = 0; i < len; i++) buf[i] = (jchar)(unsigned char)utf8[i];
+    // Worst case: each UTF-8 byte becomes one UTF-16 code unit (plus surrogate pairs)
+    jchar *buf = calloc(len + 2, sizeof(jchar));
+    size_t out = 0;
+    for (size_t i = 0; i < len; ) {
+        uint32_t cp_val;
+        unsigned char c = (unsigned char)utf8[i];
+        if (c < 0x80) { cp_val = c; i += 1; }
+        else if ((c & 0xE0) == 0xC0) { cp_val = c & 0x1F; if (i+1<len) cp_val = (cp_val<<6)|((unsigned char)utf8[i+1]&0x3F); i += 2; }
+        else if ((c & 0xF0) == 0xE0) { cp_val = c & 0x0F; if (i+1<len) cp_val = (cp_val<<6)|((unsigned char)utf8[i+1]&0x3F); if (i+2<len) cp_val = (cp_val<<6)|((unsigned char)utf8[i+2]&0x3F); i += 3; }
+        else if ((c & 0xF8) == 0xF0) { cp_val = c & 0x07; if (i+1<len) cp_val = (cp_val<<6)|((unsigned char)utf8[i+1]&0x3F); if (i+2<len) cp_val = (cp_val<<6)|((unsigned char)utf8[i+2]&0x3F); if (i+3<len) cp_val = (cp_val<<6)|((unsigned char)utf8[i+3]&0x3F); i += 4; }
+        else { cp_val = 0xFFFD; i += 1; }
+        if (cp_val <= 0xFFFF) {
+            buf[out++] = (jchar)cp_val;
+        } else {
+            // Surrogate pair
+            cp_val -= 0x10000;
+            buf[out++] = (jchar)(0xD800 | (cp_val >> 10));
+            buf[out++] = (jchar)(0xDC00 | (cp_val & 0x3FF));
+        }
+    }
     return buf;
 }
 static void    fn_ReleaseStringChars(JNIEnv *e, jstring s, const jchar *c) { (void)e;(void)s;(void)c; }
-static void    fn_GetStringRegion(JNIEnv *e, jstring s, jsize st, jsize l, jchar *b) { (void)e;(void)s;(void)st;(void)l;(void)b; }
+static void    fn_GetStringRegion(JNIEnv *e, jstring s, jsize st, jsize l, jchar *b) {
+    (void)e;
+    if (!b || !s) return;
+    // Convert UTF-8 to UTF-16 and copy the requested region
+    const jchar *full = fn_GetStringChars(e, s, NULL);
+    jsize total = fn_GetStringLength(e, s);
+    jsize end = st + l;
+    if (end > total) end = total;
+    for (jsize i = st; i < end; i++) b[i - st] = full[i];
+    free((void*)full);
+}
 static void    fn_GetStringUTFRegion(JNIEnv *e, jstring s, jsize st, jsize l, char *b) { (void)e; if(b) memcpy(b, jni_get_string(s)+st, (size_t)l); }
 
 // Arrays
-static jsize   fn_GetArrayLength(JNIEnv *e, jarray a)  { (void)e; jsize r=(jsize)((FakeObj*)a)->len; JLOG("GetArrayLength: %p → %d", a, r); return r; }
+static jsize   fn_GetArrayLength(JNIEnv *e, jarray a)  { (void)e; return (jsize)((FakeObj*)a)->len; }
 
 static jbyteArray fn_NewByteArray(JNIEnv *e, jsize n)  { (void)e; jbyteArray r=(jbyteArray)alloc_obj(KIND_BARRAY,(size_t)n); JLOG("NewByteArray: size=%d → %p", n, r); return r; }
 static jbyte  *fn_GetByteArrayElements(JNIEnv *e, jbyteArray a, jboolean *cp) {
@@ -313,11 +358,8 @@ static jobject fn_NewObjectArray(JNIEnv *e, jsize n, jclass c, jobject init) {
 static jobject fn_GetObjectArrayElement(JNIEnv *e, jobject a, jsize i) {
     (void)e;
     FakeObj *o = (FakeObj*)a;
-    JLOG("GetObjArrayElem: arr=%p i=%d len=%u", a, i, o->len);
     if (i < 0 || (uint32_t)i >= o->len) return NULL;
-    jobject result = ((jobject*)o->data)[i];
-    JLOG("GetObjArrayElem → %p", result);
-    return result;
+    return ((jobject*)o->data)[i];
 }
 static void fn_SetObjectArrayElement(JNIEnv *e, jobject a, jsize i, jobject v) {
     (void)e;
@@ -808,4 +850,10 @@ jlong *jni_GetLongArrayElements(JNIEnv *e, jlongArray a) {
 }
 void jni_ReleaseLongArrayElements(JNIEnv *e, jlongArray a, jlong *elems) {
     fn_ReleaseLongArrayElements(e, a, elems, 0);
+}
+jintArray jni_NewIntArray(JNIEnv *e, jsize n) {
+    return fn_NewIntArray(e, n);
+}
+void jni_SetIntArrayRegion(JNIEnv *e, jintArray a, jsize start, jsize len, const jint *buf) {
+    fn_SetIntArrayRegion(e, a, start, len, buf);
 }

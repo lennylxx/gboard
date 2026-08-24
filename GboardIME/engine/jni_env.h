@@ -58,6 +58,10 @@ void        jni_SetByteArrayRegion(JNIEnv *e, jbyteArray a, jsize start, jsize l
 jlong      *jni_GetLongArrayElements(JNIEnv *e, jlongArray a);
 void        jni_ReleaseLongArrayElements(JNIEnv *e, jlongArray a, jlong *elems);
 
+// Int array helpers
+jintArray   jni_NewIntArray(JNIEnv *e, jsize n);
+void        jni_SetIntArrayRegion(JNIEnv *e, jintArray a, jsize start, jsize len, const jint *buf);
+
 // Lookup a native method registered via RegisterNatives by name substring.
 // Returns the function pointer, or NULL if not found.
 void       *jni_find_registered_native(const char *name_substring);

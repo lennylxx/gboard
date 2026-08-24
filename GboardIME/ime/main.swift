@@ -11,6 +11,14 @@ func imeLog(_ msg: String) {
 let kConnectionName = "GboardIME_Connection"
 let bundleId = Bundle.main.bundleIdentifier!
 
+final class ApplicationDelegate: NSObject, NSApplicationDelegate {
+    func applicationWillTerminate(_ notification: Notification) {
+        GboardInputController.persistUserDictionary(wait: true)
+    }
+}
+
+let applicationDelegate = ApplicationDelegate()
+NSApplication.shared.delegate = applicationDelegate
 imeLog("Starting — bundle=\(bundleId) conn=\(kConnectionName)")
 let server = IMKServer(name: kConnectionName, bundleIdentifier: bundleId)
 imeLog("IMKServer created: \(String(describing: server))")

@@ -12,6 +12,13 @@ extern "C" {
 // Returns true on success.
 bool hmm_engine_init(const char *so_path, const char *pack_dir);
 
+// Initialize with user data directory for persistent user dictionary.
+// user_data_dir: path to writable directory for user dictionary files
+//                (e.g. ~/Library/Application Support/GboardIME/).
+//                NULL disables user dictionary persistence.
+bool hmm_engine_init_with_user_data(const char *so_path, const char *pack_dir,
+                                     const char *user_data_dir);
+
 // Append one or more pinyin key characters (e.g. "n", "ni", "nihao").
 // Returns true if the engine accepted the input.
 bool hmm_engine_append(const char *pinyin_input);

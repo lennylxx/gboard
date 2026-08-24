@@ -163,6 +163,9 @@ extern fn_GetSegment       g_getSegment;
 extern fn_GetSegmentTokenCount g_getSegmentTokenCount;
 extern fn_GetSegmentToken  g_getSegmentToken;
 
+// Refresh the decoder after a mutable dictionary snapshot is re-enrolled.
+bool hmm_engine_refresh_user_dictionary(void);
+
 // ── Symbol helper ───────────────────────────────────────────────────────────
 static inline void *hmm_sym(ElfHandle *h, const char *name) {
     void *p = elf_sym(h, name);

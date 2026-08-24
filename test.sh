@@ -14,6 +14,7 @@ ENGINE_SRCS=(
     "$ENGINE_DIR/hmm_native.c"
     "$ENGINE_DIR/hmm_enroll.c"
     "$ENGINE_DIR/hmm_candidates.c"
+    "$ENGINE_DIR/hmm_user_dict.c"
     "$ENGINE_DIR/elf_loader.c"
     "$ENGINE_DIR/jni_env.c"
     "$ENGINE_DIR/android_stubs.c"

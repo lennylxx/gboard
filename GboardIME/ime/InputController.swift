@@ -1,6 +1,8 @@
 import Cocoa
 import InputMethodKit
 
+private let userDictionaryPersistInterval: TimeInterval = 4 * 60 * 60
+
 // MARK: - InputController
 
 @objc(GboardInputController)
@@ -14,6 +16,12 @@ class GboardInputController: IMKInputController, PinyinSessionDelegate {
     private var chineseMode = true
     private var shiftTracker = ShiftToggleTracker()
 
+    /// Periodic user dictionary persistence (every 4 hours)
+    private static var persistTimer: Timer?
+    private static let persistQueue = DispatchQueue(
+        label: "com.lennylxx.inputmethod.GboardIME.user-dictionary-persist"
+    )
+
     override init!(server: IMKServer!, delegate: Any!, client: Any!) {
         super.init(server: server, delegate: delegate, client: client)
         session.delegate = self
@@ -26,9 +34,42 @@ class GboardInputController: IMKInputController, PinyinSessionDelegate {
         let bundle = Bundle.main
         let soPath = bundle.path(forResource: "libintegrated_shared_object", ofType: "so") ?? ""
         let packDir = bundle.resourcePath.map { $0 + "/hmmoemdata/zh_cn_2025090307" } ?? ""
-        imeLog("Engine init: so=\(soPath) pack=\(packDir)")
-        engineReady = gboard_init(soPath, packDir)
+
+        // User data directory for persistent user dictionary
+        let appSupport = FileManager.default.urls(for: .applicationSupportDirectory,
+                                                   in: .userDomainMask).first
+        let userDataDir = appSupport?.appendingPathComponent("GboardIME").path ?? ""
+
+        imeLog("Engine init: so=\(soPath) pack=\(packDir) userData=\(userDataDir)")
+        engineReady = gboard_init_with_user_data(soPath, packDir, userDataDir)
         imeLog("Engine ready: \(engineReady)")
+
+        // Schedule periodic persistence every 4 hours
+        if engineReady && gboard_user_dict_is_ready() {
+            persistTimer = Timer.scheduledTimer(
+                withTimeInterval: userDictionaryPersistInterval,
+                repeats: true
+            ) { _ in
+                imeLog("Periodic user dict persist (size=\(gboard_user_dict_get_size()))")
+                persistUserDictionary()
+            }
+        }
+    }
+
+    static func persistUserDictionary(wait: Bool = false) {
+        if !wait {
+            persistQueue.async {
+                _ = gboard_user_dict_persist()
+            }
+            return
+        }
+
+        let completed = DispatchSemaphore(value: 0)
+        persistQueue.async {
+            _ = gboard_user_dict_persist()
+            completed.signal()
+        }
+        _ = completed.wait(timeout: .now() + 5)
     }
 
     // ── Key handling ───────────────────────────────────────────────────────

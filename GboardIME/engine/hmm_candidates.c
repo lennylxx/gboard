@@ -1,5 +1,6 @@
 // Input append, candidate retrieval, selection, and reset.
 #include "hmm_internal.h"
+#include "hmm_user_dict.h"
 
 bool hmm_engine_append(const char *pinyin_input) {
     LOG("append: input='%s' g_append=%p g_engine=%lld", pinyin_input, (void*)g_append, (long long)g_engine);
@@ -163,4 +164,5 @@ void hmm_engine_reset(void) {
         g_reset(g_env, NULL, g_engine);
         CRASH_PROTECT_END("nativeReset")
     }
+    hmm_user_dict_refresh_decoder_if_needed();
 }

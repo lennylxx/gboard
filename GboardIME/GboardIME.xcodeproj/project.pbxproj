@@ -20,6 +20,7 @@
 		CC00000100000000000000A1 /* hmm_native.c in Sources */ = {isa = PBXBuildFile; fileRef = CC00000100000000000000B1 /* hmm_native.c */; };
 		CC00000100000000000000A2 /* hmm_enroll.c in Sources */ = {isa = PBXBuildFile; fileRef = CC00000100000000000000B2 /* hmm_enroll.c */; };
 		CC00000100000000000000A3 /* hmm_candidates.c in Sources */ = {isa = PBXBuildFile; fileRef = CC00000100000000000000B3 /* hmm_candidates.c */; };
+		CC00000100000000000000A4 /* hmm_user_dict.c in Sources */ = {isa = PBXBuildFile; fileRef = CC00000100000000000000B4 /* hmm_user_dict.c */; };
 		AA000001000000000000009A /* Cocoa.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = AA000001000000000000009F /* Cocoa.framework */; };
 		AA00000100000000000000AA /* InputMethodKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = AA00000100000000000000AF /* InputMethodKit.framework */; };
 /* End PBXBuildFile section */
@@ -36,6 +37,8 @@
 		CC00000100000000000000B1 /* hmm_native.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = hmm_native.c; sourceTree = "<group>"; };
 		CC00000100000000000000B2 /* hmm_enroll.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = hmm_enroll.c; sourceTree = "<group>"; };
 		CC00000100000000000000B3 /* hmm_candidates.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = hmm_candidates.c; sourceTree = "<group>"; };
+		CC00000100000000000000B4 /* hmm_user_dict.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = hmm_user_dict.c; sourceTree = "<group>"; };
+		CC00000100000000000000B5 /* hmm_user_dict.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = hmm_user_dict.h; sourceTree = "<group>"; };
 		DD00000100000000000000H1 /* hmm_engine.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = hmm_engine.h; sourceTree = "<group>"; };
 		DD00000100000000000000H2 /* hmm_internal.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = hmm_internal.h; sourceTree = "<group>"; };
 		DD00000100000000000000H3 /* elf_loader.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = elf_loader.h; sourceTree = "<group>"; };
@@ -111,6 +114,8 @@
 				CC00000100000000000000B1 /* hmm_native.c */,
 				CC00000100000000000000B2 /* hmm_enroll.c */,
 				CC00000100000000000000B3 /* hmm_candidates.c */,
+				CC00000100000000000000B4 /* hmm_user_dict.c */,
+				CC00000100000000000000B5 /* hmm_user_dict.h */,
 				AA000001000000000000005F /* elf_loader.c */,
 				AA000001000000000000006F /* android_stubs.c */,
 				AA000001000000000000007F /* jni_env.c */,
@@ -223,6 +228,7 @@
 				CC00000100000000000000A1 /* hmm_native.c in Sources */,
 				CC00000100000000000000A2 /* hmm_enroll.c in Sources */,
 				CC00000100000000000000A3 /* hmm_candidates.c in Sources */,
+				CC00000100000000000000A4 /* hmm_user_dict.c in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

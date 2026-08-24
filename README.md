@@ -74,6 +74,12 @@ Switch to GboardIME from the menu bar input source picker, then type pinyin.
 
 Partial selection is supported — selecting a candidate consumes only the pinyin it matched, leaving the rest for continued input (e.g. type `nihao`, select `你`, continue composing from `hao`).
 
+### Automatic learning
+
+GboardIME automatically learns from your candidate selections. Each committed Chinese phrase is recorded in a user dictionary (`user_dict_3_3`), stored at `~/Library/Application Support/GboardIME/`. The dictionary persists every 4 hours and on app teardown, so learned phrases survive restarts. Use this to gradually personalize candidate ranking.
+
+**Limitation:** Undo of a just-committed learned entry is not supported in the current architecture. InputMethodKit does not reliably expose the context needed to detect "undo of committed text" vs. normal editing.
+
 ## Test
 
 ```bash

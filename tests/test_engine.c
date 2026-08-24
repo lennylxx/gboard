@@ -2,7 +2,11 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdbool.h>
+#include <sys/stat.h>
+#include <sys/wait.h>
+#include <unistd.h>
 #include "engine/hmm_engine.h"
+#include "engine/hmm_user_dict.h"
 
 static int g_pass = 0, g_fail = 0;
 
@@ -43,7 +47,7 @@ static bool has_candidate(char **cands, int count, const char *expected) {
 
 static void test_init(const char *so, const char *pack) {
     printf("[test_init]\n");
-    bool ok = hmm_engine_init(so, pack);
+    bool ok = hmm_engine_init_with_user_data(so, pack, "tests/test_user_data");
     check("engine initializes", ok);
 }
 
@@ -528,12 +532,234 @@ static void test_syllable_breaks(void) {
     check("syllable breaks match engine segmentation", ok == total);
 }
 
+// ── User dictionary tests ────────────────────────────────────────────────────
+
+static void test_user_dict_init(void) {
+    printf("[test_user_dict_init]\n");
+    check("user dict is ready after init", hmm_user_dict_is_ready());
+    int size = hmm_user_dict_get_size();
+    printf("    initial user dict size: %d\n", size);
+    check("user dict initial size >= 0", size >= 0);
+}
+
+static void test_user_dict_token_extraction(void) {
+    printf("[test_user_dict_token_extraction]\n");
+
+    char *cands[9] = {0};
+    int n = get_candidates_bulk("nihao", cands, 9);
+    check("'nihao' has candidates for token extraction", n > 0);
+
+    if (n > 0) {
+        char tokens[16][16];
+        int types[16];
+        int tc = hmm_user_dict_extract_tokens(0, tokens, types, 16);
+        printf("    candidate[0] '%s' has %d tokens:\n", cands[0], tc);
+        for (int i = 0; i < tc; i++) {
+            printf("      token[%d] = '%s' type=%d\n", i, tokens[i], types[i]);
+        }
+        check("extracted at least 1 token", tc >= 1);
+        // For 你好, tokens should be "ni" and "hao" (or similar)
+        if (tc >= 2 && strcmp(cands[0], "你好") == 0) {
+            check("token[0] is 'ni'", strcmp(tokens[0], "ni") == 0);
+            check("token[1] is 'hao'", strcmp(tokens[1], "hao") == 0);
+        }
+    }
+    free_cands(cands, n);
+}
+
+static void test_user_dict_learn_and_boost(void) {
+    printf("[test_user_dict_learn_and_boost]\n");
+
+    const char *input = "ceshi";
+    char *cands_before[20] = {0};
+    int n_before = get_candidates_bulk(input, cands_before, 20);
+    check("'ceshi' has candidates", n_before > 1);
+
+    int pos_before = -1;
+    for (int i = n_before - 1; i >= 2; i--) {
+        if (cands_before[i] &&
+            hmm_engine_get_candidate_consumed(i) == (int)strlen(input) &&
+            strlen(cands_before[i]) >= 6) {
+            pos_before = i;
+            break;
+        }
+    }
+    check("found a lower-ranked full phrase", pos_before > 0);
+    if (pos_before <= 0) {
+        free_cands(cands_before, n_before);
+        return;
+    }
+
+    char target[128];
+    snprintf(target, sizeof(target), "%s", cands_before[pos_before]);
+    char token_storage[16][16];
+    int types[16];
+    int token_count = hmm_user_dict_extract_tokens(
+        pos_before, token_storage, types, 16);
+    const char *tokens[16];
+    for (int i = 0; i < token_count; ++i) tokens[i] = token_storage[i];
+    check("selected phrase exposes learning tokens", token_count > 0);
+
+    printf("    'ceshi' candidates before learning (top 5): ");
+    for (int i = 0; i < 5 && i < n_before; i++) printf("'%s' ", cands_before[i]);
+    printf("\n    target '%s' position before: %d\n", target, pos_before);
+    free_cands(cands_before, n_before);
+
+    check("decoder selects the target candidate",
+          hmm_engine_select(pos_before));
+    bool any_ok = false;
+    for (int rep = 0; rep < 20; rep++) {
+        bool ok = hmm_user_dict_learn(tokens, types, token_count, target, true);
+        if (ok) any_ok = true;
+    }
+    check("learn succeeds (at least once)", any_ok);
+
+    char *cands_after[20] = {0};
+    int n_after = get_candidates_bulk(input, cands_after, 20);
+    int pos_after = -1;
+    for (int i = 0; i < n_after; i++) {
+        if (cands_after[i] && strcmp(cands_after[i], target) == 0) {
+            pos_after = i;
+            break;
+        }
+    }
+    printf("    target '%s' position after: %d\n", target, pos_after);
+    check("repeated selection raises candidate ranking",
+          pos_after >= 0 && pos_after < pos_before);
+    free_cands(cands_after, n_after);
+}
+
+static void test_user_dict_learn_phrase(void) {
+    printf("[test_user_dict_learn_phrase]\n");
+
+    // Learn a multi-character phrase
+    const char *tokens[] = {"ni", "hao"};
+    int types[] = {16, 16};
+    for (int i = 0; i < 3; i++) {
+        hmm_user_dict_learn(tokens, types, 2, "你好", true);
+    }
+
+    // Verify the phrase appears in candidates
+    char *cands[9] = {0};
+    int n = get_candidates_bulk("nihao", cands, 9);
+    check("'nihao' still returns candidates after learning phrase", n > 0);
+    if (n > 0) {
+        check("first candidate is still '你好'", strcmp(cands[0], "你好") == 0);
+    }
+    free_cands(cands, n);
+}
+
+static void test_user_dict_persist_and_reload(const char *executable,
+                                              const char *so,
+                                              const char *pack) {
+    printf("[test_user_dict_persist_reload]\n");
+    (void)so; (void)pack;
+
+    // Learn something distinctive before persist
+    const char *tokens[] = {"ce", "shi"};
+    int types[] = {16, 16};
+    for (int i = 0; i < 20; i++) {
+        hmm_user_dict_learn(tokens, types, 2, "车时", true);
+    }
+    int size_before = hmm_user_dict_get_size();
+    printf("    size before persist: %d\n", size_before);
+
+    // Persist
+    bool persist_ok = hmm_user_dict_persist();
+    check("persist succeeds", persist_ok);
+
+    // Check file exists
+    char dict_path[4096];
+    snprintf(dict_path, sizeof(dict_path), "tests/test_user_data/user_dict_3_3");
+    struct stat st;
+    bool file_exists = (stat(dict_path, &st) == 0 && st.st_size > 0);
+    check("persisted file exists with data", file_exists);
+    if (file_exists) {
+        printf("    persisted file size: %lld bytes\n", (long long)st.st_size);
+    }
+
+    pid_t pid = fork();
+    if (pid == 0) {
+        execl(executable, executable, "--verify-user-dict", so, pack,
+              "tests/test_user_data", "ceshi", "车时", "10", NULL);
+        _exit(127);
+    }
+    int status = 0;
+    bool child_ok = pid > 0 && waitpid(pid, &status, 0) == pid &&
+                    WIFEXITED(status) && WEXITSTATUS(status) == 0;
+    check("fresh process reloads learned ranking", child_ok);
+
+    // Cleanup test data
+    unlink(dict_path);
+    char bak_path[4096], tmp_path[4096];
+    snprintf(bak_path, sizeof(bak_path), "tests/test_user_data/user_dict_3_3_bak");
+    snprintf(tmp_path, sizeof(tmp_path), "tests/test_user_data/user_dict_3_3_tmp");
+    unlink(bak_path);
+    unlink(tmp_path);
+    rmdir("tests/test_user_data");
+}
+
+static void test_user_dict_clear(void) {
+    printf("[test_user_dict_clear]\n");
+
+    const char *tokens[] = {"ce", "shi"};
+    int types[] = {16, 16};
+    for (int i = 0; i < 20; ++i)
+        hmm_user_dict_learn(tokens, types, 2, "车时", true);
+
+    int size_before = hmm_user_dict_get_size();
+    printf("    size before clear: %d\n", size_before);
+
+    bool ok = hmm_user_dict_clear();
+    check("clear succeeds", ok);
+
+    int size_after = hmm_user_dict_get_size();
+    printf("    size after clear: %d\n", size_after);
+    check("dict size is 0 after clear", size_after == 0);
+
+    char *cands[20] = {0};
+    int count = get_candidates_bulk("ceshi", cands, 20);
+    int position = -1;
+    for (int i = 0; i < count; ++i) {
+        if (strcmp(cands[i], "车时") == 0) {
+            position = i;
+            break;
+        }
+    }
+    check("clear immediately removes learned ranking", position != 1);
+    free_cands(cands, count);
+}
+
 // ── Main ─────────────────────────────────────────────────────────────────────
 
 int main(int argc, char **argv) {
     const char *so = "../source/resources/lib/arm64-v8a/libintegrated_shared_object.so";
     const char *pack = "../hmmoemdata/zh_cn_2025090307";
+    if (argc == 8 && strcmp(argv[1], "--verify-user-dict") == 0) {
+        if (!hmm_engine_init_with_user_data(argv[2], argv[3], argv[4]))
+            return 2;
+        char *cands[20] = {0};
+        int count = get_candidates_bulk(argv[5], cands, 20);
+        int position = -1;
+        for (int i = 0; i < count; ++i) {
+            if (strcmp(cands[i], argv[6]) == 0) {
+                position = i;
+                break;
+            }
+        }
+        free_cands(cands, count);
+        int max_position = atoi(argv[7]);
+        hmm_engine_destroy();
+        return position >= 0 && position <= max_position ? 0 : 3;
+    }
     if (argc > 2) { so = argv[1]; pack = argv[2]; }
+
+    // Use a test-specific user data directory
+    const char *test_user_dir = "tests/test_user_data";
+    mkdir(test_user_dir, 0755);
+    unlink("tests/test_user_data/user_dict_3_3");
+    unlink("tests/test_user_data/user_dict_3_3_tmp");
+    unlink("tests/test_user_data/user_dict_3_3_bak");
 
     test_init(so, pack);
     if (g_fail > 0) { printf("\nEngine init failed — cannot continue.\n"); return 1; }
@@ -555,6 +781,16 @@ int main(int argc, char **argv) {
     test_brute_force_random();
     test_brute_force_incremental();
     test_syllable_breaks();
+
+    // User dictionary tests
+    test_user_dict_init();
+    test_user_dict_token_extraction();
+    test_user_dict_learn_and_boost();
+    test_user_dict_learn_phrase();
+    test_user_dict_clear();
+
+    // Persist/reload test — destroys and reinits engine
+    test_user_dict_persist_and_reload(argv[0], so, pack);
 
     printf("\n══════════════════════════════════\n");
     printf("Results: %d passed, %d failed\n", g_pass, g_fail);
