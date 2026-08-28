@@ -7,7 +7,7 @@ cd "$(cd "$(dirname "$0")" && pwd)"
 ENGINE_DIR="GboardIME/engine"
 TEST_DIR="tests"
 SO_PATH="gboard_apk_source/resources/lib/arm64-v8a/libintegrated_shared_object.so"
-PACK_PATH="hmmoemdata/zh_cn_2025090307"
+PACK_PATH="hmmoemdata/current"
 
 ENGINE_SRCS=(
     "$ENGINE_DIR/hmm_engine.c"

@@ -16,6 +16,7 @@
 #include <dlfcn.h>
 #include <sys/stat.h>
 #include <sys/mman.h>
+#include <sys/socket.h>
 
 #include <os/log.h>
 #if DEBUG
@@ -150,6 +151,24 @@ static int stub_system_property_get(const char *name, char *value) {
     (void)name;
     if (value) value[0] = '\0';
     return 0;
+}
+static const void *stub_system_property_find(const char *name) {
+#if DEBUG
+    char buf[256];
+    int n = snprintf(buf, sizeof(buf), "[system_property] not found: %s\n",
+                     name ? name : "(null)");
+    write(STDERR_FILENO, buf, n > 0 ? (size_t)n : 0);
+#else
+    (void)name;
+#endif
+    return NULL;
+}
+typedef void (*SystemPropertyReadCallback)(void *cookie, const char *name,
+                                           const char *value, uint32_t serial);
+static void stub_system_property_read_callback(
+    const void *property, SystemPropertyReadCallback callback, void *cookie) {
+    (void)property;
+    if (callback) callback(cookie, "", "", 0);
 }
 static void stub_android_set_abort_message(const char *msg) {
     char buf[512];
@@ -607,14 +626,104 @@ static int stub_cxa_thread_atexit_impl(void (*dtor)(void*), void *obj, void *dso
 }
 
 // ── Linux-specific stubs (sched, prctl, sysinfo, etc.) ───────────────────────
+static int stub_clock_gettime(int android_clock_id, struct timespec *time) {
+    clockid_t native_clock_id;
+    switch (android_clock_id) {
+        case 0:  // CLOCK_REALTIME
+            native_clock_id = CLOCK_REALTIME;
+            break;
+        case 1:  // CLOCK_MONOTONIC
+        case 6:  // CLOCK_MONOTONIC_COARSE
+        case 7:  // CLOCK_BOOTTIME
+            native_clock_id = CLOCK_MONOTONIC;
+            break;
+        case 2:  // CLOCK_PROCESS_CPUTIME_ID
+            native_clock_id = CLOCK_PROCESS_CPUTIME_ID;
+            break;
+        case 3:  // CLOCK_THREAD_CPUTIME_ID
+            native_clock_id = CLOCK_THREAD_CPUTIME_ID;
+            break;
+        case 4:  // CLOCK_MONOTONIC_RAW
+            native_clock_id = CLOCK_MONOTONIC_RAW;
+            break;
+        case 5:  // CLOCK_REALTIME_COARSE
+            native_clock_id = CLOCK_REALTIME;
+            break;
+        default:
+            errno = EINVAL;
+            return -1;
+    }
+    return clock_gettime(native_clock_id, time);
+}
 static int stub_sched_setaffinity(int pid, size_t sz, void *m) { (void)pid;(void)sz;(void)m; return 0; }
 static int stub_sched_getaffinity(int pid, size_t sz, void *m) { (void)pid;(void)sz; if(m) memset(m,0xff,sz); return 0; }
+static pid_t stub_gettid(void) {
+    uint64_t thread_id = 0;
+    if (pthread_threadid_np(NULL, &thread_id) != 0) return (pid_t)getpid();
+    return (pid_t)thread_id;
+}
 static int stub_prctl(int op, ...) { (void)op; return 0; }
 static int stub_sysinfo(void *info) { (void)info; return -1; }
 static unsigned long stub_getauxval(unsigned long type) { (void)type; return 0; }
 static int stub_tgkill(int tgid, int tid, int sig) { (void)tgid;(void)tid;(void)sig; return -1; }
+static struct cmsghdr *stub_cmsg_nxthdr(const struct msghdr *message,
+                                        const struct cmsghdr *control) {
+    if (!message || !control || control->cmsg_len < sizeof(struct cmsghdr)) {
+        return NULL;
+    }
+    const unsigned char *end =
+        (const unsigned char *)message->msg_control + message->msg_controllen;
+    size_t aligned_length =
+        (control->cmsg_len + sizeof(size_t) - 1) & ~(sizeof(size_t) - 1);
+    const unsigned char *next =
+        (const unsigned char *)control + aligned_length;
+    if (next + sizeof(struct cmsghdr) > end) return NULL;
+    const struct cmsghdr *next_header = (const struct cmsghdr *)next;
+    if (next + next_header->cmsg_len > end) return NULL;
+    return (struct cmsghdr *)next_header;
+}
+static int stub_inotify_init1(int flags) {
+    (void)flags;
+    errno = ENOSYS;
+    return -1;
+}
+static int stub_inotify_add_watch(int fd, const char *path, uint32_t mask) {
+    (void)fd;
+    (void)path;
+    (void)mask;
+    errno = ENOSYS;
+    return -1;
+}
 static int stub_posix_fadvise(int fd, off_t o, off_t l, int a) { (void)fd;(void)o;(void)l;(void)a; return 0; }
 static int stub_sem_timedwait(void *sem, const void *ts) { (void)sem;(void)ts; errno=ETIMEDOUT; return -1; }
+static void *stub_mmap64(void *addr, size_t length, int prot, int flags,
+                         int fd, off_t offset) {
+    enum {
+        ANDROID_MAP_SHARED = 0x01,
+        ANDROID_MAP_PRIVATE = 0x02,
+        ANDROID_MAP_FIXED = 0x10,
+        ANDROID_MAP_ANONYMOUS = 0x20
+    };
+    int native_flags = flags & ~(ANDROID_MAP_SHARED | ANDROID_MAP_PRIVATE |
+                                 ANDROID_MAP_FIXED | ANDROID_MAP_ANONYMOUS);
+    if (flags & ANDROID_MAP_SHARED) native_flags |= MAP_SHARED;
+    if (flags & ANDROID_MAP_PRIVATE) native_flags |= MAP_PRIVATE;
+    if (flags & ANDROID_MAP_FIXED) native_flags |= MAP_FIXED;
+    if (flags & ANDROID_MAP_ANONYMOUS) native_flags |= MAP_ANON;
+    void *result = mmap(addr, length, prot, native_flags, fd, offset);
+#if DEBUG
+    if (result == MAP_FAILED) {
+        char buf[256];
+        int n = snprintf(buf, sizeof(buf),
+                         "[mmap64] failed len=%zu prot=0x%x flags=0x%x "
+                         "native=0x%x fd=%d offset=%lld errno=%d\n",
+                         length, prot, flags, native_flags, fd,
+                         (long long)offset, errno);
+        write(STDERR_FILENO, buf, n > 0 ? (size_t)n : 0);
+    }
+#endif
+    return result;
+}
 static void *stub_mremap(void *old, size_t oldsz, size_t newsz, int flags, ...) {
     (void)old;(void)oldsz;(void)newsz;(void)flags; errno=ENOMEM; return (void*)-1;
 }
@@ -757,6 +866,8 @@ static const SymEntry s_table[] = {
     E("__android_log_write",            stub_android_log_write),
     E("__android_log_vprint",           stub_android_log_vprint),
     E("__system_property_get",          stub_system_property_get),
+    E("__system_property_find",         stub_system_property_find),
+    E("__system_property_read_callback", stub_system_property_read_callback),
     E("android_set_abort_message",      stub_android_set_abort_message),
 
     E("AAssetManager_fromJava",          stub_AAssetManager_fromJava),
@@ -816,14 +927,20 @@ static const SymEntry s_table[] = {
     E("__cxa_thread_atexit_impl",        stub_cxa_thread_atexit_impl),
 
     // Linux scheduling / process
+    E("clock_gettime",                   stub_clock_gettime),
     E("sched_setaffinity",               stub_sched_setaffinity),
     E("sched_getaffinity",               stub_sched_getaffinity),
+    E("gettid",                          stub_gettid),
     E("prctl",                           stub_prctl),
     E("sysinfo",                         stub_sysinfo),
     E("getauxval",                       stub_getauxval),
     E("tgkill",                          stub_tgkill),
+    E("__cmsg_nxthdr",                   stub_cmsg_nxthdr),
+    E("inotify_init1",                   stub_inotify_init1),
+    E("inotify_add_watch",               stub_inotify_add_watch),
     E("posix_fadvise",                   stub_posix_fadvise),
     E("sem_timedwait",                   stub_sem_timedwait),
+    E("mmap64",                          stub_mmap64),
     E("mremap",                          stub_mremap),
 
     // Timers

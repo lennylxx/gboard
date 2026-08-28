@@ -47,7 +47,6 @@ fn_EnrollBuiltInData g_enrollBuiltInData = NULL;
 fn_EnrollEmptyMutableDict g_enrollEmptyMutableDict = NULL;
 fn_EnrollSettingScheme g_enrollSettingScheme = NULL;
 fn_LoadBuiltInSettingScheme g_loadBuiltInSettingScheme = NULL;
-fn_RefreshData      g_refreshData      = NULL;
 fn_Append           g_append           = NULL;
 fn_FillCandList     g_fillCandList     = NULL;
 fn_GetCandCount     g_getCandCount     = NULL;

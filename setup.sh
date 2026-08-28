@@ -36,7 +36,8 @@ EOF
 cd "$(cd "$(dirname "$0")" && pwd)"
 
 # ── URLs ──────────────────────────────────────────────────────────────────────
-FALLBACK_MANIFEST="https://www.gstatic.com/android/keyboard/hmmpack/2025090313/metadata_2025090313.json"
+FALLBACK_MANIFEST="https://www.gstatic.com/android/keyboard/hmmpack/2026081806/metadata_2026081806.json"
+MANIFEST_SCANNER="./find_latest_hmm_manifest.sh"
 
 # ── Directory layout ─────────────────────────────────────────────────────────
 XAPK_DIR="xapk_unpacked"
@@ -44,6 +45,7 @@ APK_SOURCE="gboard_apk_source"
 RESOURCES="$APK_SOURCE/resources"
 JADX_OUT="$APK_SOURCE/jadx"
 DICT_DIR="hmmoemdata"
+CACHE_FILE="$DICT_DIR/.latest_manifest_url"
 SO_FILE="$RESOURCES/lib/arm64-v8a/libintegrated_shared_object.so"
 
 # ── Parse args ───────────────────────────────────────────────────────────────
@@ -144,8 +146,6 @@ if [[ -n "$DICT_ZIP" ]]; then
     mkdir -p "$DICT_DIR/$DICT_NAME"
     unzip -q -o "$DICT_ZIP" -d "$DICT_DIR/$DICT_NAME"
     echo "Dict pack: $DICT_DIR/$DICT_NAME ($(ls "$DICT_DIR/$DICT_NAME" | wc -l | tr -d ' ') files)"
-elif [[ -d "$DICT_DIR" ]] && [[ -n "$(ls -A "$DICT_DIR" 2>/dev/null)" ]]; then
-    echo "Using existing dict pack: $DICT_DIR/$(ls "$DICT_DIR" | head -1)"
 else
     # Extract manifest URL from decompiled source
     MANIFEST_URL=""
@@ -158,8 +158,16 @@ else
         echo "Using fallback manifest URL (source extraction failed)"
     fi
 
+    SEED_ARGS=(--seed "$FALLBACK_MANIFEST" --seed "$MANIFEST_URL")
+    if [[ -f "$CACHE_FILE" ]]; then
+        SEED_ARGS+=(--seed "$(cat "$CACHE_FILE")")
+    fi
+    MANIFEST_URL=$(bash "$MANIFEST_SCANNER" "${SEED_ARGS[@]}")
+    mkdir -p "$DICT_DIR"
+    printf "%s\n" "$MANIFEST_URL" > "$CACHE_FILE"
+
     echo "Fetching HMM pack manifest: $MANIFEST_URL"
-    MANIFEST_JSON=$(curl -sL "$MANIFEST_URL")
+    MANIFEST_JSON=$(curl -fsSL "$MANIFEST_URL")
 
     echo "Available packs:"
     echo "$MANIFEST_JSON" | jq -r '.packs[] | "  \(.locale)\t\(.name)\t\(.compressed_size) bytes"'
@@ -176,15 +184,25 @@ else
     DICT_NAME=$(echo "$PACK_NAME" | tr '[:upper:]' '[:lower:]')
     ZIP_FILE="${PACK_NAME}.zip"
 
-    echo "Downloading $PACK_NAME..."
-    curl -L -o "$ZIP_FILE" "$PACK_URL"
-    echo "Downloaded: $ZIP_FILE ($(du -h "$ZIP_FILE" | cut -f1))"
+    if [[ -d "$DICT_DIR/$DICT_NAME" ]]; then
+        echo "HMM pack is current: $DICT_DIR/$DICT_NAME"
+    else
+        echo "Downloading $PACK_NAME..."
+        curl -fL -o "$ZIP_FILE" "$PACK_URL"
+        echo "Downloaded: $ZIP_FILE ($(du -h "$ZIP_FILE" | cut -f1))"
 
-    mkdir -p "$DICT_DIR/$DICT_NAME"
-    unzip -q -o "$ZIP_FILE" -d "$DICT_DIR/$DICT_NAME"
-    FILE_COUNT=$(ls "$DICT_DIR/$DICT_NAME" | wc -l | tr -d ' ')
-    echo "Extracted: $DICT_DIR/$DICT_NAME/ ($FILE_COUNT files)"
+        mkdir -p "$DICT_DIR/$DICT_NAME"
+        unzip -q -o "$ZIP_FILE" -d "$DICT_DIR/$DICT_NAME"
+        FILE_COUNT=$(ls "$DICT_DIR/$DICT_NAME" | wc -l | tr -d ' ')
+        echo "Extracted: $DICT_DIR/$DICT_NAME/ ($FILE_COUNT files)"
+    fi
 fi
+
+if [[ -e "$DICT_DIR/current" && ! -L "$DICT_DIR/current" ]]; then
+    echo "ERROR: $DICT_DIR/current exists and is not a symbolic link"
+    exit 1
+fi
+ln -sfn "$DICT_NAME" "$DICT_DIR/current"
 
 # ── Summary ──────────────────────────────────────────────────────────────────
 echo ""
@@ -192,9 +210,8 @@ echo "Setup complete."
 echo "  XAPK:       $XAPK_PATH"
 echo "  Resources:  $RESOURCES/"
 echo "  Sources:    $JADX_OUT/ ($JAVA_COUNT files)"
-if [[ -d "$DICT_DIR" ]] && [[ -n "$(ls -A "$DICT_DIR" 2>/dev/null)" ]]; then
-    PACK=$(ls "$DICT_DIR" | head -1)
-    echo "  Dict pack:  $DICT_DIR/$PACK/"
+if [[ -L "$DICT_DIR/current" ]]; then
+    echo "  Dict pack:  $DICT_DIR/$(readlink "$DICT_DIR/current")/"
 fi
 echo ""
 echo "Next: cd GboardIME && bash build.sh install"

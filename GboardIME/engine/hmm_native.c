@@ -10,7 +10,6 @@ void hmm_resolve_natives(void) {
     g_enrollScheme   = (fn_EnrollDataScheme)jni_find_registered_native_exact("nativeEnrollDataScheme");
     g_enrollFile     = (fn_EnrollDataFile) jni_find_registered_native_exact("nativeEnrollDataFile");
     g_enrollFd       = (fn_EnrollDataFd)   jni_find_registered_native_exact("nativeEnrollDataFd");
-    g_refreshData    = (fn_RefreshData)    jni_find_registered_native_exact("nativeRefreshData");
     g_enrollBuiltInScheme = (fn_EnrollBuiltInDataScheme) jni_find_registered_native_exact("nativeEnrollBuiltInDataScheme");
     g_enrollBuiltInData   = (fn_EnrollBuiltInData)       jni_find_registered_native_exact("nativeEnrollBuiltInData");
     g_enrollEmptyMutableDict = (fn_EnrollEmptyMutableDict) jni_find_registered_native_exact("nativeEnrollEmptyMutableDict");

@@ -8,7 +8,7 @@ extern "C" {
 
 // Initialize the Gboard HMM Pinyin engine.
 // so_path:      path to libintegrated_shared_object.so
-// pack_dir:     path to hmmoemdata/zh_cn_2025090307/
+// pack_dir:     path to hmmoemdata/current/
 // Returns true on success.
 bool hmm_engine_init(const char *so_path, const char *pack_dir);
 

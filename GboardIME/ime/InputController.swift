@@ -33,7 +33,7 @@ class GboardInputController: IMKInputController, PinyinSessionDelegate {
         guard !engineReady else { return }
         let bundle = Bundle.main
         let soPath = bundle.path(forResource: "libintegrated_shared_object", ofType: "so") ?? ""
-        let packDir = bundle.resourcePath.map { $0 + "/hmmoemdata/zh_cn_2025090307" } ?? ""
+        let packDir = bundle.resourcePath.map { $0 + "/hmmoemdata/current" } ?? ""
 
         // User data directory for persistent user dictionary
         let appSupport = FileManager.default.urls(for: .applicationSupportDirectory,

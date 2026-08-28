@@ -319,16 +319,33 @@ static void apply_rela(ElfHandle *h, const Elf64_Rela *rela, size_t count) {
         int64_t   addend = rela[i].r_addend;
 
         void *sym_addr = NULL;
+        const char *sym_name = NULL;
+        bool sym_is_weak = false;
         if (sym_i != 0) {
             const Elf64_Sym_real *sym = &h->symtab[sym_i];
+            sym_name = h->strtab + sym->st_name;
+            sym_is_weak = STB_BIND(sym->st_info) == STB_WEAK;
             if (sym->st_value != 0)
                 sym_addr = h->bias + sym->st_value;
             else {
-                const char *name = h->strtab + sym->st_name;
-                sym_addr = resolve_symbol(name);
-                if (!sym_addr && STB_BIND(sym->st_info) == STB_WEAK)
+                sym_addr = resolve_symbol(sym_name);
+                if (!sym_addr && sym_is_weak)
                     sym_addr = NULL; // weak unresolved is OK
             }
+        }
+
+        if (!sym_addr && sym_name && !sym_is_weak &&
+            (type == R_AARCH64_GLOB_DAT ||
+             type == R_AARCH64_JUMP_SLOT ||
+             type == R_AARCH64_ABS64)) {
+            char buf[512];
+            int n = snprintf(buf, sizeof(buf),
+                             "[elf_loader] unresolved required symbol %s "
+                             "(reloc=%u offset=0x%llx initial=0x%llx)\n",
+                             sym_name, type,
+                             (unsigned long long)rela[i].r_offset,
+                             (unsigned long long)*target);
+            write(STDERR_FILENO, buf, n > 0 ? (size_t)n : 0);
         }
 
         switch (type) {

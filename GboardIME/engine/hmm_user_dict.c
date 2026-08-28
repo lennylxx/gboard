@@ -179,21 +179,8 @@ bool hmm_user_dict_init(const char *user_data_dir, const char *pack_dir) {
         }
     }
 
-    // Refresh data manager first
-    if (g_refreshData && g_dm) {
-        CRASH_PROTECT_BEGIN()
-        g_refreshData(g_env, NULL, g_dm);
-        CRASH_PROTECT_END("nativeRefreshData(pre-userdict)")
-    }
-
     // Enroll setting scheme for the accessor name (critical for data model)
     enroll_accessor_setting_scheme();
-
-    if (g_refreshData && g_dm) {
-        CRASH_PROTECT_BEGIN()
-        g_refreshData(g_env, NULL, g_dm);
-        CRASH_PROTECT_END("nativeRefreshData(userdict)")
-    }
 
     // Create the accessor
     if (!create_accessor(loaded_from_file)) return false;
@@ -347,11 +334,6 @@ bool hmm_user_dict_persist(void) {
     close(fd);
     if (!enrolled) return false;
 
-    if (g_refreshData && g_dm) {
-        CRASH_PROTECT_BEGIN()
-        g_refreshData(g_env, NULL, g_dm);
-        CRASH_PROTECT_END("DataManager nativeRefreshData(persist)")
-    }
     atomic_store(&s_decoder_refresh_pending, true);
     return true;
 }

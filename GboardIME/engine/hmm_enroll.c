@@ -348,7 +348,8 @@ static bool enroll_pack(const char *pack_dir) {
     int nentries = parse_data_scheme(raw, (size_t)sz, all_entries, 128);
     LOGERR("Parsed data_scheme: %d entries from %ld bytes", nentries, sz);
 
-    // Method A: nativeEnrollDataScheme with modified protobuf
+    // Match DownloadDictionaryDataProvider: enroll the rewritten scheme once.
+    // Creator type 5 makes the native data manager open each file from base_path.
     if (g_enrollScheme) {
         size_t mod_len = 0;
         uint8_t *mod = modify_data_scheme(raw, (size_t)sz, abs_pack, &mod_len);
@@ -362,27 +363,42 @@ static bool enroll_pack(const char *pack_dir) {
         CRASH_PROTECT_END("nativeEnrollDataScheme")
     }
 
-    // Method B: nativeEnrollDataFd for ALL entries
+    // The macOS compatibility layer needs explicit FDs because it does not run
+    // inside Android's Superpack file-provider environment.
     if (g_enrollFd) {
         int fd_enrolled = 0, fd_skipped = 0;
         for (int i = 0; i < nentries; i++) {
             if (!all_entries[i].filename[0]) continue;
             char fpath[4608];
-            snprintf(fpath, sizeof(fpath), "%s/%s", abs_pack, all_entries[i].filename);
+            snprintf(fpath, sizeof(fpath), "%s/%s", abs_pack,
+                     all_entries[i].filename);
             struct stat st;
-            if (stat(fpath, &st) != 0) { fd_skipped++; continue; }
+            if (stat(fpath, &st) != 0) {
+                fd_skipped++;
+                continue;
+            }
             int fd = open(fpath, O_RDONLY);
-            if (fd < 0) { fd_skipped++; continue; }
+            if (fd < 0) {
+                fd_skipped++;
+                continue;
+            }
             jstring jid = jni_NewStringUTF(g_env, all_entries[i].data_id);
             jobject jfd = jni_create_file_descriptor(g_env, fd);
+            jboolean ok = JNI_FALSE;
             CRASH_PROTECT_BEGIN()
-            jboolean ok = g_enrollFd(g_env, NULL, g_dm, jid,
-                                      (jint)all_entries[i].type, jfd,
-                                      0, (jint)st.st_size);
-            if (ok) fd_enrolled++; else fd_skipped++;
+            ok = g_enrollFd(g_env, NULL, g_dm, jid,
+                            (jint)all_entries[i].type, jfd,
+                            0, (jint)st.st_size);
             CRASH_PROTECT_END("nativeEnrollDataFd")
+            close(fd);
+            if (ok) {
+                fd_enrolled++;
+            } else {
+                fd_skipped++;
+            }
         }
-        LOGERR("enrollDataFd: %d/%d OK, %d skipped", fd_enrolled, nentries, fd_skipped);
+        LOGERR("enrollDataFd compatibility: %d/%d OK, %d skipped",
+               fd_enrolled, nentries, fd_skipped);
         if (fd_enrolled > enrolled) enrolled = fd_enrolled;
     }
 
@@ -515,14 +531,6 @@ bool hmm_enroll_all(const char *pack_dir) {
                 mut_schemes[mi].accessor, mut_schemes[mi].scheme_file, r);
             CRASH_PROTECT_END("enrollMutSettingScheme")
         }
-    }
-
-    // 5. Refresh data
-    if (g_refreshData) {
-        CRASH_PROTECT_BEGIN()
-        g_refreshData(g_env, NULL, g_dm);
-        LOGERR("refreshData OK");
-        CRASH_PROTECT_END("nativeRefreshData")
     }
 
     return ok;

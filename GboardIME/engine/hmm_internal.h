@@ -141,7 +141,6 @@ extern fn_EnrollBuiltInData g_enrollBuiltInData;
 extern fn_EnrollEmptyMutableDict g_enrollEmptyMutableDict;
 extern fn_EnrollSettingScheme g_enrollSettingScheme;
 extern fn_LoadBuiltInSettingScheme g_loadBuiltInSettingScheme;
-extern fn_RefreshData      g_refreshData;
 extern fn_Append           g_append;
 extern fn_FillCandList     g_fillCandList;
 extern fn_GetCandCount     g_getCandCount;

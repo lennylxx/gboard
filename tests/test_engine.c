@@ -174,6 +174,101 @@ static void test_multiple_candidates(void) {
     free_cands(cands, n);
 }
 
+static void test_long_sentence_candidate_regression(void) {
+    printf("[test_long_sentence_candidate_regression]\n");
+    char *cands[50] = {0};
+    int n = get_candidates_bulk("jintiantianqihenhao", cands, 50);
+
+    check("long sentence returns a full candidate list", n >= 24);
+    check("long sentence first candidate is 今天天气很好",
+          n > 0 && strcmp(cands[0], "今天天气很好") == 0);
+    check("long sentence second candidate is 今天天气",
+          n > 1 && strcmp(cands[1], "今天天气") == 0);
+    check("long sentence includes partial candidate 今天",
+          has_candidate(cands, n, "今天"));
+    check("long sentence first candidate consumes all input",
+          n > 0 && hmm_engine_get_candidate_consumed(0) == 19);
+
+    free_cands(cands, n);
+}
+
+static void test_neural_activation_boundary(void) {
+    printf("[test_neural_activation_boundary]\n");
+    const char *input = "zhongwen";
+    bool appended = true;
+
+    hmm_engine_reset();
+    for (size_t i = 0; input[i]; i++) {
+        char ch[2] = {input[i], '\0'};
+        if (!hmm_engine_append(ch)) {
+            appended = false;
+            break;
+        }
+        if (i == 6) {
+            char *boundary_cands[9] = {0};
+            int boundary_count =
+                hmm_engine_get_candidates(boundary_cands, 9);
+            check("7th character neural boundary returns candidates",
+                  boundary_count > 0);
+            free_cands(boundary_cands, boundary_count);
+        }
+    }
+
+    check("all characters append through neural activation", appended);
+    char *cands[9] = {0};
+    int count = appended ? hmm_engine_get_candidates(cands, 9) : 0;
+    check("neural boundary composition finishes as 中文",
+          count > 0 && strcmp(cands[0], "中文") == 0);
+    free_cands(cands, count);
+}
+
+static void test_neural_bulk_incremental_parity(void) {
+    printf("[test_neural_bulk_incremental_parity]\n");
+    char *incremental[20] = {0};
+    char *bulk[20] = {0};
+    int incremental_count =
+        get_candidates_for("jintiantianqihenhao", incremental, 20);
+    int bulk_count =
+        get_candidates_bulk("jintiantianqihenhao", bulk, 20);
+
+    check("neural incremental and bulk paths both return candidates",
+          incremental_count > 0 && bulk_count > 0);
+    check("neural incremental and bulk paths agree on first candidate",
+          incremental_count > 0 && bulk_count > 0 &&
+          strcmp(incremental[0], bulk[0]) == 0 &&
+          strcmp(bulk[0], "今天天气很好") == 0);
+
+    free_cands(incremental, incremental_count);
+    free_cands(bulk, bulk_count);
+}
+
+static void test_neural_reranker_reset_stress(void) {
+    printf("[test_neural_reranker_reset_stress]\n");
+    const struct {
+        const char *input;
+        const char *expected;
+    } cases[] = {
+        {"zhongwen", "中文"},
+        {"zhongwenshurufa", "中文输入法"},
+        {"jintiantianqihenhao", "今天天气很好"}
+    };
+    bool stable = true;
+
+    for (int round = 0; round < 25 && stable; round++) {
+        for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+            char *cands[9] = {0};
+            int count = get_candidates_bulk(cases[i].input, cands, 9);
+            if (count <= 0 || strcmp(cands[0], cases[i].expected) != 0) {
+                stable = false;
+            }
+            free_cands(cands, count);
+            if (!stable) break;
+        }
+    }
+
+    check("neural reranker survives 25 reset/reuse rounds", stable);
+}
+
 static void test_select_and_continue(void) {
     printf("[test_select_and_continue]\n");
 
@@ -734,7 +829,7 @@ static void test_user_dict_clear(void) {
 
 int main(int argc, char **argv) {
     const char *so = "../source/resources/lib/arm64-v8a/libintegrated_shared_object.so";
-    const char *pack = "../hmmoemdata/zh_cn_2025090307";
+    const char *pack = "../hmmoemdata/current";
     if (argc == 8 && strcmp(argv[1], "--verify-user-dict") == 0) {
         if (!hmm_engine_init_with_user_data(argv[2], argv[3], argv[4]))
             return 2;
@@ -773,6 +868,10 @@ int main(int argc, char **argv) {
     test_reset_between_inputs();
     test_incremental_append();
     test_multiple_candidates();
+    test_long_sentence_candidate_regression();
+    test_neural_activation_boundary();
+    test_neural_bulk_incremental_parity();
+    test_neural_reranker_reset_stress();
     test_select_and_continue();
     test_candidate_range();
     test_full_ime_simulation();

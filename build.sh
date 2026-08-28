@@ -10,7 +10,7 @@ APP_NAME="GboardIME.app"
 INSTALL_DIR="$HOME/Library/Input Methods"
 ENTITLEMENTS="$XCODE_DIR/GboardIME.entitlements"
 SO_SRC="gboard_apk_source/resources/lib/arm64-v8a/libintegrated_shared_object.so"
-PACK_SRC="hmmoemdata/zh_cn_2025090307"
+PACK_SRC="hmmoemdata/current"
 
 usage() {
     echo "Usage: $0 [build|install|uninstall|clean]"
@@ -32,9 +32,9 @@ copy_engine_resources() {
     fi
 
     if [ -d "$PACK_SRC" ]; then
-        rm -rf "$resources/hmmoemdata/zh_cn_2025090307"
-        mkdir -p "$resources/hmmoemdata"
-        cp -R "$PACK_SRC" "$resources/hmmoemdata/zh_cn_2025090307"
+        rm -rf "$resources/hmmoemdata"
+        mkdir -p "$resources/hmmoemdata/current"
+        cp -R "$PACK_SRC/." "$resources/hmmoemdata/current"
         echo "Copied pinyin data pack"
     else
         echo "WARNING: $PACK_SRC not found — offline engine won't work"
