@@ -24,6 +24,7 @@ func gboard_reset()
 class MockDelegate: PinyinSessionDelegate {
     var committedText = ""
     var markedText: String? = nil
+    var candidatePinyin: String? = nil
     var contextBeforeInput = ""
     var contextRequestCount = 0
 
@@ -45,7 +46,7 @@ class MockDelegate: PinyinSessionDelegate {
         canGoPrevious: Bool,
         canGoNext: Bool
     ) {
-        // no-op for testing
+        candidatePinyin = pinyin
     }
     func sessionHideCandidates() {
         // no-op for testing
@@ -54,6 +55,7 @@ class MockDelegate: PinyinSessionDelegate {
     func clear() {
         committedText = ""
         markedText = nil
+        candidatePinyin = nil
     }
 }
 
@@ -482,6 +484,26 @@ func testPunctuationWhileComposing() {
     check("composition cleared", !s.isComposing)
 }
 
+func testVisualPinyinSegmentation() {
+    print("[test_visual_pinyin_segmentation]")
+    let (s, d) = makeSession()
+
+    for ch in "fangan" { _ = s.appendLetter(String(ch)) }
+    check("engine split fangan as fang'an",
+          s.segmentedPinyin == "fang'an")
+    check("candidate window receives fang'an",
+          d.candidatePinyin == "fang'an")
+
+    s.cancel()
+    for ch in "xi" { _ = s.appendLetter(String(ch)) }
+    _ = s.handlePunctuation("'")
+    for ch in "an" { _ = s.appendLetter(String(ch)) }
+    check("explicit separator displays xi'an",
+          s.segmentedPinyin == "xi'an")
+    check("candidate window receives xi'an",
+          d.candidatePinyin == "xi'an")
+}
+
 func testContextLanguageScoring() {
     print("[test_context_language_scoring]")
     let (s, d) = makeSession()
@@ -542,6 +564,7 @@ func testContextLanguageScoring() {
         testBruteForceInitials()
         testChinesePunctuation()
         testPunctuationWhileComposing()
+        testVisualPinyinSegmentation()
         testContextLanguageScoring()
 
         print("\n══════════════════════════════════")

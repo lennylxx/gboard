@@ -22,7 +22,7 @@ bool gboard_select(int index)                       { return hmm_engine_select(i
 int  gboard_get_candidate_consumed(int index)       { return hmm_engine_get_candidate_consumed(index); }
 int  gboard_get_separator(int i)                    { return hmm_engine_get_separator(i); }
 bool gboard_set_separator(int i, int t)             { return hmm_engine_set_separator(i, t); }
-int  gboard_get_syllable_breaks(int *breaks, int m) { return hmm_engine_get_syllable_breaks(breaks, m); }
+int  gboard_get_segmented_pinyin(char *text, int max) { return hmm_engine_get_segmented_pinyin(text, max); }
 void gboard_reset(void)                             { hmm_engine_reset(); }
 void gboard_destroy(void)                           { hmm_engine_destroy(); }
 

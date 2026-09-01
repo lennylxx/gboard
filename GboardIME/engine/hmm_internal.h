@@ -118,8 +118,10 @@ typedef jint     (*fn_GetSeparator)(JNIEnv *, jobject, jlong, jint);
 typedef jboolean (*fn_SetSeparator)(JNIEnv *, jobject, jlong, jint, jint);
 typedef jint     (*fn_GetSegmentCount)(JNIEnv *, jobject, jlong);
 typedef jlong    (*fn_GetSegment)(JNIEnv *, jobject, jlong, jint);
+typedef jobject  (*fn_GetSegmentRange)(JNIEnv *, jobject, jlong, jlong);
 typedef jint     (*fn_GetSegmentTokenCount)(JNIEnv *, jobject, jlong, jlong);
 typedef jlong    (*fn_GetSegmentToken)(JNIEnv *, jobject, jlong, jlong, jint);
+typedef jstring  (*fn_GetTokenString)(JNIEnv *, jobject, jlong, jlong);
 
 // ── Global engine state ─────────────────────────────────────────────────────
 extern ElfHandle *g_elf;
@@ -163,8 +165,10 @@ extern fn_GetSeparator     g_getSeparator;
 extern fn_SetSeparator     g_setSeparator;
 extern fn_GetSegmentCount  g_getSegmentCount;
 extern fn_GetSegment       g_getSegment;
+extern fn_GetSegmentRange  g_getSegmentRange;
 extern fn_GetSegmentTokenCount g_getSegmentTokenCount;
 extern fn_GetSegmentToken  g_getSegmentToken;
+extern fn_GetTokenString   g_getTokenString;
 
 // Refresh the decoder after a mutable dictionary snapshot is re-enrolled.
 bool hmm_engine_refresh_user_dictionary(void);

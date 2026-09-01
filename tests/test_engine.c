@@ -610,10 +610,10 @@ static void test_brute_force_incremental(void) {
     check("brute force incremental: all phrases work", ok == total);
 }
 
-// ── Syllable breaks ─────────────────────────────────────────────────────────
+// ── Visual pinyin segmentation ──────────────────────────────────────────────
 
-static void test_syllable_breaks(void) {
-    printf("[test_syllable_breaks]\n");
+static void test_segmented_pinyin(void) {
+    printf("[test_segmented_pinyin]\n");
 
     struct { const char *input; const char *expected; } cases[] = {
         { "nihao",              "ni'hao" },
@@ -622,6 +622,7 @@ static void test_syllable_breaks(void) {
         { "beijing",            "bei'jing" },
         { "woaini",             "wo'ai'ni" },
         { "xian",               "xian" },
+        { "fangan",             "fang'an" },
         { "jintiantianqihenhao","jin'tian'tian'qi'hen'hao" },
         { "woshizhongguoren",   "wo'shi'zhong'guo'ren" },
     };
@@ -633,24 +634,8 @@ static void test_syllable_breaks(void) {
         char *cands[9] = {0};
         get_candidates_for(pinyin, cands, 9);
 
-        int breaks[16];
-        int n = hmm_engine_get_syllable_breaks(breaks, 16);
-
-        // Build segmented string
         char buf[256] = {0};
-        int pos = 0, prev = 0;
-        int len = (int)strlen(pinyin);
-        for (int i = 0; i < n; i++) {
-            if (prev > 0) buf[pos++] = '\'';
-            int bp = breaks[i];
-            memcpy(buf + pos, pinyin + prev, bp - prev);
-            pos += bp - prev;
-            prev = bp;
-        }
-        if (prev > 0) buf[pos++] = '\'';
-        memcpy(buf + pos, pinyin + prev, len - prev);
-        pos += len - prev;
-        buf[pos] = '\0';
+        hmm_engine_get_segmented_pinyin(buf, sizeof(buf));
 
         bool match = strcmp(buf, cases[c].expected) == 0;
         if (match) ok++;
@@ -658,8 +643,8 @@ static void test_syllable_breaks(void) {
 
         free_cands(cands, 9);
     }
-    printf("    %d/%d syllable breaks correct\n", ok, total);
-    check("syllable breaks match engine segmentation", ok == total);
+    printf("    %d/%d segmented readings correct\n", ok, total);
+    check("segmented pinyin matches engine tokens", ok == total);
 }
 
 // ── User dictionary tests ────────────────────────────────────────────────────
@@ -915,7 +900,7 @@ int main(int argc, char **argv) {
     test_brute_force_phrases();
     test_brute_force_random();
     test_brute_force_incremental();
-    test_syllable_breaks();
+    test_segmented_pinyin();
 
     // User dictionary tests
     test_user_dict_init();

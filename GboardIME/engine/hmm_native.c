@@ -35,8 +35,10 @@ void hmm_resolve_natives(void) {
     g_setSeparator       = (fn_SetSeparator)       jni_find_registered_native_exact("nativeSetSeparator");
     g_getSegmentCount    = (fn_GetSegmentCount)    jni_find_registered_native_exact("nativeGetSegmentCount");
     g_getSegment         = (fn_GetSegment)         jni_find_registered_native_exact("nativeGetSegment");
+    g_getSegmentRange    = (fn_GetSegmentRange)    jni_find_registered_native_exact("nativeGetSegmentRange");
     g_getSegmentTokenCount = (fn_GetSegmentTokenCount) jni_find_registered_native_exact("nativeGetSegmentTokenCount");
     g_getSegmentToken    = (fn_GetSegmentToken)    jni_find_registered_native_exact("nativeGetSegmentToken");
+    g_getTokenString     = (fn_GetTokenString)     jni_find_registered_native_by_sig("nativeGetTokenString", "(JJ)Ljava/lang/String;");
 
     LOGERR("Resolved: factory=%p dm=%p engine=%p enroll=%p append=%p fill=%p count=%p str=%p",
         (void*)g_createFactory, (void*)g_getDataManager, (void*)g_createEngine,

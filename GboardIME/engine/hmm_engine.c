@@ -129,8 +129,10 @@ fn_GetSeparator     g_getSeparator     = NULL;
 fn_SetSeparator     g_setSeparator     = NULL;
 fn_GetSegmentCount  g_getSegmentCount  = NULL;
 fn_GetSegment       g_getSegment       = NULL;
+fn_GetSegmentRange  g_getSegmentRange  = NULL;
 fn_GetSegmentTokenCount g_getSegmentTokenCount = NULL;
 fn_GetSegmentToken  g_getSegmentToken  = NULL;
+fn_GetTokenString   g_getTokenString   = NULL;
 
 // ── Public API ──────────────────────────────────────────────────────────────
 

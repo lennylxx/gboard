@@ -277,36 +277,19 @@ class PinyinSession {
 
     // MARK: - Pinyin segmentation
 
-    /// Segmented pinyin from engine (e.g. "zhong'wen'shu'ru'fa").
+    /// Reading text from the engine's current segment/token structure.
     private(set) var segmentedPinyin: String = ""
 
     private func updateSegmentation() {
         guard !composition.isEmpty else { segmentedPinyin = ""; return }
-        let letters = Array(composition.filter { $0 != "'" })
-        guard !letters.isEmpty else { segmentedPinyin = composition; return }
-
-        // Collect all break positions: engine breaks + user apostrophes
-        var breakSet = Set<Int>()
-        var breaks = [Int32](repeating: 0, count: 16)
-        let n = Int(gboard_get_syllable_breaks(&breaks, Int32(breaks.count)))
-        for i in 0..<n { breakSet.insert(Int(breaks[i])) }
-        for pos in separatorPositions { breakSet.insert(Int(pos)) }
-
-        if !breakSet.isEmpty {
-            let sorted = breakSet.sorted()
-            var parts: [String] = []
-            var prev = 0
-            for bp in sorted where bp > prev && bp < letters.count {
-                parts.append(String(letters[prev..<bp]))
-                prev = bp
-            }
-            parts.append(String(letters[prev...]))
-            segmentedPinyin = parts.joined(separator: "'")
+        var buffer = [CChar](repeating: 0, count: 256)
+        if gboard_get_segmented_pinyin(&buffer, Int32(buffer.count)) > 0 {
+            segmentedPinyin = String(cString: buffer)
         } else {
-            segmentedPinyin = String(letters)
+            segmentedPinyin = String(composition.filter { $0 != "'" })
         }
-        // Preserve trailing apostrophe from user input
-        if composition.hasSuffix("'") {
+
+        if composition.hasSuffix("'") && !segmentedPinyin.hasSuffix("'") {
             segmentedPinyin += "'"
         }
     }

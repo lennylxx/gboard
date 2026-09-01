@@ -53,11 +53,12 @@ int hmm_engine_get_separator(int vertex_index);
 // separator_type: 0 = none, 1 = token separator, 2 = segment separator.
 bool hmm_engine_set_separator(int vertex_index, int separator_type);
 
-// Get syllable boundary positions from the engine's segment/token structure.
+// Get the current composing reading using the same segment/token traversal as
+// Gboard's Java AbstractHmmEngineWrapper.e(), with apostrophes inserted between
+// tokens so the candidate window can visualize the engine's actual split.
 // Must be called after hmm_engine_get_candidates().
-// Writes vertex positions where syllable breaks occur into breaks[].
-// Returns the number of breaks written, or 0 on failure.
-int hmm_engine_get_syllable_breaks(int *breaks, int max_breaks);
+// Returns the number of UTF-8 bytes written, excluding the trailing NUL.
+int hmm_engine_get_segmented_pinyin(char *text, int max_bytes);
 
 // Reset / clear current composition without committing.
 void hmm_engine_reset(void);

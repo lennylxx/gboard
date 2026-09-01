@@ -326,48 +326,71 @@ bool hmm_engine_set_separator(int vertex_index, int separator_type) {
     return result == JNI_TRUE;
 }
 
-int hmm_engine_get_syllable_breaks(int *breaks, int max_breaks) {
-    if (!breaks || max_breaks < 1) return 0;
-    if (!g_getSegmentCount || !g_getSegment || !g_getSegmentTokenCount || !g_getSegmentToken)
+int hmm_engine_get_segmented_pinyin(char *text, int max_bytes) {
+    if (!text || max_bytes < 1) return 0;
+    text[0] = '\0';
+    if (!g_getSegmentCount || !g_getSegment || !g_getSegmentRange ||
+        !g_getSegmentTokenCount || !g_getSegmentToken || !g_getTokenString) {
         return 0;
+    }
 
     jint segCount = 0;
     CRASH_PROTECT_BEGIN()
     segCount = g_getSegmentCount(g_env, NULL, g_engine);
     CRASH_PROTECT_END("getSegmentCount")
 
-    int n = 0;
-    for (jint s = 0; s < segCount && n < max_breaks; s++) {
+    int written = 0;
+    bool has_token = false;
+    for (jint s = 0; s < segCount && written < max_bytes - 1; s++) {
         jlong seg = 0;
         CRASH_PROTECT_BEGIN()
         seg = g_getSegment(g_env, NULL, g_engine, s);
         CRASH_PROTECT_END("getSegment")
         if (!seg) continue;
 
+        jobject range = NULL;
+        CRASH_PROTECT_BEGIN()
+        range = g_getSegmentRange(g_env, NULL, g_engine, seg);
+        CRASH_PROTECT_END("getSegmentRange")
+        if (!range) continue;
+
+        int start_v = 0, end_v = 0;
+        jni_get_range(range, &start_v, &end_v);
+        if (start_v < s_context_end_vertex) continue;
+
         jint tokenCount = 0;
         CRASH_PROTECT_BEGIN()
         tokenCount = g_getSegmentTokenCount(g_env, NULL, g_engine, seg);
         CRASH_PROTECT_END("getSegmentTokenCount")
 
-        for (jint t = 0; t < tokenCount && n < max_breaks; t++) {
+        for (jint t = 0; t < tokenCount && written < max_bytes - 1; t++) {
             jlong token = 0;
             CRASH_PROTECT_BEGIN()
             token = g_getSegmentToken(g_env, NULL, g_engine, seg, t);
             CRASH_PROTECT_END("getSegmentToken")
             if (!token) continue;
 
-            // Token layout: offset 0x18 = start_vertex (int32), 0x1C = end_vertex (int32)
-            int start_v = *(int *)((uint8_t *)token + 0x18);
-            int end_v   = *(int *)((uint8_t *)token + 0x1C);
+            jstring js = NULL;
+            CRASH_PROTECT_BEGIN()
+            js = g_getTokenString(g_env, NULL, g_engine, token);
+            CRASH_PROTECT_END("nativeGetTokenString")
+            const char *token_text = js ? jni_get_string(js) : NULL;
+            if (!token_text || !token_text[0]) continue;
 
-            // Record the end vertex as a syllable break (skip the last one = end of input)
-            if (start_v >= s_context_end_vertex &&
-                end_v > start_v && end_v < g_end_vertex && n < max_breaks) {
-                breaks[n++] = end_v - s_context_end_vertex;
+            if (has_token && written < max_bytes - 1) {
+                text[written++] = '\'';
+                text[written] = '\0';
             }
+            int available = max_bytes - 1 - written;
+            int length = (int)strlen(token_text);
+            if (length > available) length = available;
+            memcpy(text + written, token_text, (size_t)length);
+            written += length;
+            text[written] = '\0';
+            has_token = true;
         }
     }
-    return n;
+    return written;
 }
 
 bool hmm_engine_select(int index) {

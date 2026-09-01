@@ -74,6 +74,8 @@ Switch to GboardIME from the menu bar input source picker, then type pinyin.
 
 Partial selection is supported — selecting a candidate consumes only the pinyin it matched, leaving the rest for continued input (e.g. type `nihao`, select `你`, continue composing from `hao`).
 
+The candidate window visualizes the engine's current segment/token split, such as `fang'an`; typing an apostrophe to force a separator displays `xi'an`.
+
 Candidate ranking uses committed text before the cursor as language-model
 context. The implementation follows Gboard's native TARGET_TOKEN injection
 path: it keeps the last 5 UTF-16 units for Chinese or 20 for Latin text and
