@@ -60,6 +60,10 @@ class PinyinSession {
 
     private var doubleQuoteOpen = true
     private var singleQuoteOpen = true
+    private var pendingLearningText = ""
+    private var pendingLearningTokens: [String] = []
+    private var pendingLearningTypes: [Int32] = []
+    private var pendingLearningValid = true
 
     // MARK: - Key actions (called by InputController or test harness)
 
@@ -123,19 +127,14 @@ class PinyinSession {
         let engineIndex = candidatePage * Self.candidatePageSize + index
         let consumed = Int(gboard_get_candidate_consumed(Int32(engineIndex)))
 
-        // Extract token info for learning BEFORE select mutates engine state
+        // Capture this segment before selection mutates the engine state.
         let tokenCount = gboard_user_dict_extract_token_count(Int32(engineIndex))
         let letterCount = composition.filter { $0 != "'" }.count
+        accumulateLearningSegment(text: text,
+                                  engineIndex: engineIndex,
+                                  tokenCount: Int(tokenCount))
 
         _ = gboard_select(Int32(engineIndex))
-
-        // Learn the selected candidate
-        if tokenCount > 0 && gboard_user_dict_is_ready() {
-            learnCandidate(text: text,
-                           engineIndex: engineIndex,
-                           tokenCount: Int(tokenCount),
-                           isFullMatch: consumed == letterCount)
-        }
 
         delegate?.sessionInsertText(text)
 
@@ -162,6 +161,8 @@ class PinyinSession {
             if !candidates.isEmpty {
                 return .handled
             }
+        } else {
+            commitPendingLearning()
         }
         reset()
         return .handled
@@ -296,8 +297,17 @@ class PinyinSession {
 
     // MARK: - User dictionary learning
 
-    private func learnCandidate(text: String, engineIndex: Int, tokenCount: Int,
-                                isFullMatch: Bool) {
+    private func accumulateLearningSegment(text: String, engineIndex: Int,
+                                           tokenCount: Int) {
+        guard gboard_user_dict_is_ready() else {
+            pendingLearningValid = false
+            return
+        }
+        guard tokenCount > 0 else {
+            pendingLearningValid = false
+            return
+        }
+
         var tokenStrings: [String] = []
         var types: [Int32] = []
 
@@ -313,15 +323,30 @@ class PinyinSession {
             }
         }
 
-        guard !tokenStrings.isEmpty else { return }
+        guard tokenStrings.count == tokenCount, types.count == tokenCount else {
+            pendingLearningValid = false
+            return
+        }
 
-        // Call the C bridge
-        tokenStrings.withCString2DArray { cTokens in
-            types.withUnsafeMutableBufferPointer { cTypes in
-                text.withCString { cValue in
-                    _ = gboard_user_dict_learn(cTokens, cTypes.baseAddress!,
-                                               Int32(tokenStrings.count), cValue,
-                                               isFullMatch)
+        pendingLearningText += text
+        pendingLearningTokens.append(contentsOf: tokenStrings)
+        pendingLearningTypes.append(contentsOf: types)
+    }
+
+    private func commitPendingLearning() {
+        guard pendingLearningValid,
+              !pendingLearningText.isEmpty,
+              !pendingLearningTokens.isEmpty,
+              pendingLearningTokens.count == pendingLearningTypes.count else {
+            return
+        }
+
+        pendingLearningTokens.withCString2DArray { cTokens in
+            pendingLearningTypes.withUnsafeMutableBufferPointer { cTypes in
+                pendingLearningText.withCString { cValue in
+                    _ = gboard_user_dict_learn(
+                        cTokens, cTypes.baseAddress!,
+                        Int32(pendingLearningTokens.count), cValue, true)
                 }
             }
         }
@@ -337,6 +362,10 @@ class PinyinSession {
         hasNextPage = false
         separatorPositions = []
         contextBeforeInput = ""
+        pendingLearningText = ""
+        pendingLearningTokens = []
+        pendingLearningTypes = []
+        pendingLearningValid = true
         gboard_reset()
         delegate?.sessionHideCandidates()
     }

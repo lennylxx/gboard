@@ -242,6 +242,60 @@ func testSelectAndContinue(_ label: String, _ input: String) {
     print("    output: '\(m.committedText)'")
 }
 
+func selectCandidate(_ text: String, in session: PinyinSession) -> Bool {
+    while true {
+        if let index = session.candidates.firstIndex(of: text) {
+            _ = session.selectCandidate(index: index)
+            return true
+        }
+        guard session.hasNextPage else { return false }
+        _ = session.nextPage()
+    }
+}
+
+func candidatePosition(_ text: String, in session: PinyinSession) -> Int? {
+    while true {
+        if let index = session.candidates.firstIndex(of: text) {
+            return session.candidatePage * 9 + index
+        }
+        guard session.hasNextPage else { return nil }
+        _ = session.nextPage()
+    }
+}
+
+func testSegmentedUserDictionaryLearning() {
+    print("[test_segmented_user_dictionary_learning]")
+
+    let (beforeSession, _) = makeSession()
+    for ch in "ceshi" { _ = beforeSession.appendLetter(String(ch)) }
+    let positionBefore = candidatePosition("侧试", in: beforeSession)
+    beforeSession.cancel()
+
+    var allSelectionsSucceeded = true
+    for _ in 0..<20 {
+        let (session, delegate) = makeSession()
+        for ch in "ceshi" { _ = session.appendLetter(String(ch)) }
+
+        if !selectCandidate("侧", in: session) ||
+           session.composition != "shi" ||
+           !selectCandidate("试", in: session) ||
+           delegate.committedText != "侧试" {
+            allSelectionsSucceeded = false
+            break
+        }
+    }
+    check("segmented phrase selections complete", allSelectionsSucceeded)
+
+    let (session, _) = makeSession()
+    for ch in "ceshi" { _ = session.appendLetter(String(ch)) }
+    let positionAfter = candidatePosition("侧试", in: session)
+    print("    '侧试' position before: \(positionBefore.map(String.init) ?? "none"), after: \(positionAfter.map(String.init) ?? "none")")
+    check("segmented phrase is learned as a full candidate",
+          positionAfter != nil &&
+          (positionBefore == nil || positionAfter! < positionBefore!))
+    session.cancel()
+}
+
 // ── Brute force: 50 phrases typed and committed ──────────────────────────────
 
 func testBruteForceTypingSessions() {
@@ -556,6 +610,7 @@ func testContextLanguageScoring() {
         testSelectAndContinue("nihao_shijie", "nihaoshijie")
         testSelectAndContinue("woqunijiaya", "woqunijiaya")
         testSelectAndContinue("zhongwenshuruf", "zhongwenshuruf")
+        testSegmentedUserDictionaryLearning()
         testBruteForceTypingSessions()
         testDeleteAndRetype()
         testMixedSession()
