@@ -12,6 +12,7 @@ bool gboard_init_with_user_data(const char *so_path, const char *pack_dir,
     return hmm_engine_init_with_user_data(so_path, pack_dir, user_data_dir);
 }
 
+bool gboard_set_context(const char *text)          { return hmm_engine_set_context(text); }
 bool gboard_append(const char *pinyin)              { return hmm_engine_append(pinyin); }
 int  gboard_get_candidates(char **out, int max)     { return hmm_engine_get_candidates(out, max); }
 int  gboard_get_candidates_page(char **out, int offset, int max) {

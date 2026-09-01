@@ -24,6 +24,13 @@ func gboard_reset()
 class MockDelegate: PinyinSessionDelegate {
     var committedText = ""
     var markedText: String? = nil
+    var contextBeforeInput = ""
+    var contextRequestCount = 0
+
+    func sessionContextBeforeInput() -> String {
+        contextRequestCount += 1
+        return contextBeforeInput
+    }
 
     func sessionInsertText(_ text: String) {
         committedText += text
@@ -475,6 +482,30 @@ func testPunctuationWhileComposing() {
     check("composition cleared", !s.isComposing)
 }
 
+func testContextLanguageScoring() {
+    print("[test_context_language_scoring]")
+    let (s, d) = makeSession()
+    d.contextBeforeInput = "我对这里很"
+
+    _ = s.appendLetter("b")
+    d.contextBeforeInput = "准备开始"
+    for ch in "ushu" { _ = s.appendLetter(String(ch)) }
+
+    check("session context reranks bushu to 不熟",
+          s.candidates.first == "不熟")
+    check("session captures context once per composition",
+          d.contextRequestCount == 1)
+
+    s.cancel()
+    d.contextBeforeInput = "准备开始"
+    for ch in "bushu" { _ = s.appendLetter(String(ch)) }
+    check("new composition refreshes context",
+          d.contextRequestCount == 2)
+    check("deployment context keeps 部署 first",
+          s.candidates.first == "部署")
+    s.cancel()
+}
+
 // ── Main ─────────────────────────────────────────────────────────────────────
 
 // ── Entry point ──────────────────────────────────────────────────────────────
@@ -511,6 +542,7 @@ func testPunctuationWhileComposing() {
         testBruteForceInitials()
         testChinesePunctuation()
         testPunctuationWhileComposing()
+        testContextLanguageScoring()
 
         print("\n══════════════════════════════════")
         print("Results: \(gPass) passed, \(gFail) failed")

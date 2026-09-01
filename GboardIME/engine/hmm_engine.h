@@ -19,6 +19,12 @@ bool hmm_engine_init(const char *so_path, const char *pack_dir);
 bool hmm_engine_init_with_user_data(const char *so_path, const char *pack_dir,
                                      const char *user_data_dir);
 
+// Set the committed text immediately before the cursor. The engine keeps the
+// same trailing context window as Gboard Java: 5 Chinese UTF-16 code units or
+// 20 Latin UTF-16 code units, stopping at a language or punctuation boundary.
+// Call before appending a new composition.
+bool hmm_engine_set_context(const char *text_before_cursor);
+
 // Append one or more pinyin key characters (e.g. "n", "ni", "nihao").
 // Returns true if the engine accepted the input.
 bool hmm_engine_append(const char *pinyin_input);

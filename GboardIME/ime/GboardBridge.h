@@ -4,6 +4,7 @@
 bool  gboard_init(const char *so_path, const char *pack_dir);
 bool  gboard_init_with_user_data(const char *so_path, const char *pack_dir,
                                   const char *user_data_dir);
+bool  gboard_set_context(const char *text_before_cursor);
 bool  gboard_append(const char *pinyin);
 int   gboard_get_candidates(char **out, int max);
 int   gboard_get_candidates_page(char **out, int offset, int max);

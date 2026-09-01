@@ -269,6 +269,41 @@ static void test_neural_reranker_reset_stress(void) {
     check("neural reranker survives 25 reset/reuse rounds", stable);
 }
 
+static void test_context_language_scoring(void) {
+    printf("[test_context_language_scoring]\n");
+    char *cands[20] = {0};
+
+    hmm_engine_set_context("");
+    int baseline_count = get_candidates_bulk("bushu", cands, 20);
+    check("context baseline prefers 部署",
+          baseline_count > 0 && strcmp(cands[0], "部署") == 0);
+    free_cands(cands, baseline_count);
+
+    hmm_engine_set_context("我对这里很");
+    int contextual_count = get_candidates_bulk("bushu", cands, 20);
+    check("Chinese context reranks bushu to 不熟",
+          contextual_count > 0 && strcmp(cands[0], "不熟") == 0);
+    check("context candidate range excludes committed prefix",
+          contextual_count > 0 &&
+          hmm_engine_get_candidate_consumed(0) == 5);
+    free_cands(cands, contextual_count);
+
+    hmm_engine_set_context("无关前缀我对这里很");
+    int truncated_count = get_candidates_bulk("bushu", cands, 20);
+    check("Chinese context keeps the trailing five characters",
+          truncated_count > 0 && strcmp(cands[0], "不熟") == 0);
+    free_cands(cands, truncated_count);
+
+    hmm_engine_set_context("我对这里很，");
+    int boundary_count = get_candidates_bulk("bushu", cands, 20);
+    check("punctuation ends the Java-compatible context window",
+          boundary_count > 0 && strcmp(cands[0], "部署") == 0);
+    free_cands(cands, boundary_count);
+
+    hmm_engine_set_context("");
+    hmm_engine_reset();
+}
+
 static void test_select_and_continue(void) {
     printf("[test_select_and_continue]\n");
 
@@ -872,6 +907,7 @@ int main(int argc, char **argv) {
     test_neural_activation_boundary();
     test_neural_bulk_incremental_parity();
     test_neural_reranker_reset_stress();
+    test_context_language_scoring();
     test_select_and_continue();
     test_candidate_range();
     test_full_ime_simulation();

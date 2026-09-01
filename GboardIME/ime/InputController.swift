@@ -177,6 +177,32 @@ class GboardInputController: IMKInputController, PinyinSessionDelegate {
 
     private var currentClient: Any?
 
+    func sessionContextBeforeInput() -> String {
+        guard let client = currentClient as? IMKTextInput else { return "" }
+        let selection = client.selectedRange()
+        guard selection.location != NSNotFound, selection.location > 0 else {
+            return ""
+        }
+        let requestedLength = min(21, selection.location)
+        let range = NSRange(
+            location: selection.location - requestedLength,
+            length: requestedLength
+        )
+        guard let text = client.attributedSubstring(from: range)?.string else {
+            return ""
+        }
+
+        let utf16 = text as NSString
+        var start = max(0, utf16.length - 20)
+        if start < utf16.length {
+            let unit = utf16.character(at: start)
+            if unit >= 0xdc00 && unit <= 0xdfff {
+                start += 1
+            }
+        }
+        return utf16.substring(from: start)
+    }
+
     func sessionInsertText(_ text: String) {
         if let client = currentClient as? IMKTextInput {
             client.insertText(text,

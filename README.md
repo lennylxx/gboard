@@ -74,6 +74,13 @@ Switch to GboardIME from the menu bar input source picker, then type pinyin.
 
 Partial selection is supported — selecting a candidate consumes only the pinyin it matched, leaving the rest for continued input (e.g. type `nihao`, select `你`, continue composing from `hao`).
 
+Candidate ranking uses committed text before the cursor as language-model
+context. The implementation follows Gboard's native TARGET_TOKEN injection
+path: it keeps the last 5 UTF-16 units for Chinese or 20 for Latin text and
+stops at punctuation, whitespace, or a language boundary. For example,
+`bushu` normally prefers `部署`, while the context `我对这里很` promotes
+`不熟`.
+
 ### Automatic learning
 
 GboardIME automatically learns from your candidate selections. Each committed Chinese phrase is recorded in a user dictionary (`user_dict_3_3`), stored at `~/Library/Application Support/GboardIME/`. The dictionary persists every 4 hours and on app teardown, so learned phrases survive restarts. Use this to gradually personalize candidate ranking.

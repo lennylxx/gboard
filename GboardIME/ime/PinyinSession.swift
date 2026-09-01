@@ -5,6 +5,7 @@ import Foundation
 
 /// Callback protocol for UI actions (insertText, setMarkedText, candidate display).
 protocol PinyinSessionDelegate: AnyObject {
+    func sessionContextBeforeInput() -> String
     func sessionInsertText(_ text: String)
     func sessionSetMarkedText(_ text: String)
     func sessionShowCandidates(
@@ -15,6 +16,10 @@ protocol PinyinSessionDelegate: AnyObject {
         canGoNext: Bool
     )
     func sessionHideCandidates()
+}
+
+extension PinyinSessionDelegate {
+    func sessionContextBeforeInput() -> String { "" }
 }
 
 /// Result of handling a key action.
@@ -59,6 +64,9 @@ class PinyinSession {
     // MARK: - Key actions (called by InputController or test harness)
 
     func appendLetter(_ ch: String) -> KeyResult {
+        if composition.isEmpty {
+            contextBeforeInput = delegate?.sessionContextBeforeInput() ?? ""
+        }
         composition += ch
         fetchCandidates()
         delegate?.sessionSetMarkedText(segmentedPinyin)
@@ -345,14 +353,19 @@ class PinyinSession {
         candidatePage = 0
         hasNextPage = false
         separatorPositions = []
+        contextBeforeInput = ""
         gboard_reset()
         delegate?.sessionHideCandidates()
     }
 
     /// Separator vertex positions set by user apostrophes.
     private var separatorPositions: [Int32] = []
+    private var contextBeforeInput = ""
 
     private func fetchCandidates() {
+        contextBeforeInput.withCString { context in
+            _ = gboard_set_context(context)
+        }
         gboard_reset()
         // Append only letters (skip apostrophes)
         let letters = String(composition.filter { $0 != "'" })
