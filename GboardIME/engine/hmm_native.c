@@ -1,6 +1,8 @@
 // Native method resolution — resolves JNI function pointers from RegisterNatives.
 #include "hmm_internal.h"
 
+static HmmUserDictNatives s_userDictNatives;
+
 void hmm_resolve_natives(void) {
     g_createFactory  = (fn_CreateFactory)  jni_find_registered_native_exact("nativeCreateEngineFactory");
     g_deleteFactory  = (fn_DeleteFactory)  jni_find_registered_native_exact("nativeDeleteEngineFactory");
@@ -39,9 +41,29 @@ void hmm_resolve_natives(void) {
     g_getSegmentTokenCount = (fn_GetSegmentTokenCount) jni_find_registered_native_exact("nativeGetSegmentTokenCount");
     g_getSegmentToken    = (fn_GetSegmentToken)    jni_find_registered_native_exact("nativeGetSegmentToken");
     g_getTokenString     = (fn_GetTokenString)     jni_find_registered_native_by_sig("nativeGetTokenString", "(JJ)Ljava/lang/String;");
+    g_refreshData        = (fn_RefreshData) jni_find_registered_native_by_sig("nativeRefreshData", "(J)V");
+
+    s_userDictNatives.createAccessor = (fn_CreateMutableDictionaryAccessor) jni_find_registered_native_by_sig("nativeCreateMutableDictionaryAccessor", "(JLjava/lang/String;Ljava/lang/String;Ljava/lang/String;)J");
+    s_userDictNatives.addCount = (fn_AddDictionaryCount) jni_find_registered_native_by_sig("nativeAddCount", "(J[Ljava/lang/String;[ILjava/lang/String;IZ)Z");
+    s_userDictNatives.decreaseCount = (fn_DecreaseDictionaryCount) jni_find_registered_native_by_sig("nativeDecreaseCount", "(J[Ljava/lang/String;[ILjava/lang/String;I)Z");
+    s_userDictNatives.duplicateDictionary = (fn_DuplicateDictionary) jni_find_registered_native_by_sig("nativeDuplicateDictionary", "(J)Z");
+    s_userDictNatives.compact = (fn_CompactDictionary) jni_find_registered_native_by_sig("nativeCompact", "(JI)Z");
+    s_userDictNatives.getDictionarySize = (fn_GetDictionarySize) jni_find_registered_native_by_sig("nativeGetDictionarySize", "(J)I");
+    s_userDictNatives.persist = (fn_PersistDictionary) jni_find_registered_native_by_sig("nativePersist", "(JLjava/lang/String;)Z");
+    s_userDictNatives.refreshData = g_refreshData;
+    s_userDictNatives.closeAccessor = (fn_CloseManager) jni_find_registered_native_by_sig("nativeClose", "(J)V");
+    s_userDictNatives.newEmptyDictionary = (fn_NewEmptyDictionary) jni_find_registered_native_by_sig("nativeNewEmptyDictionary", "(J)Z");
+    s_userDictNatives.enrollMutableDictFd = (fn_EnrollMutableDictFd) jni_find_registered_native_by_sig("nativeEnrollMutableDictFd", "(JLjava/lang/String;ILjava/io/FileDescriptor;III)Z");
+    s_userDictNatives.getCandidateTokenCount = (fn_GetCandidateTokenCount) jni_find_registered_native_by_sig("nativeGetCandidateTokenCount", "(JI)I");
+    s_userDictNatives.getCandidateToken = (fn_GetCandidateToken) jni_find_registered_native_by_sig("nativeGetCandidateToken", "(JII)J");
+    s_userDictNatives.getTokenLanguage = (fn_GetTokenLanguage) jni_find_registered_native_by_sig("nativeGetTokenLanguage", "(JJ)I");
 
     LOGERR("Resolved: factory=%p dm=%p engine=%p enroll=%p append=%p fill=%p count=%p str=%p",
         (void*)g_createFactory, (void*)g_getDataManager, (void*)g_createEngine,
         (void*)g_enrollScheme, (void*)g_append, (void*)g_fillCandList,
         (void*)g_getCandCount, (void*)g_getCandString);
+}
+
+const HmmUserDictNatives *hmm_get_user_dict_natives(void) {
+    return &s_userDictNatives;
 }

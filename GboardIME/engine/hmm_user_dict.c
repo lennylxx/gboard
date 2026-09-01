@@ -7,44 +7,9 @@
 #include <errno.h>
 #include <stdatomic.h>
 
-// ── JNI function pointer types ──────────────────────────────────────────────
-
-typedef jlong    (*fn_CreateAccessor)(JNIEnv *, jclass, jlong, jstring, jstring, jstring);
-typedef jboolean (*fn_AddCount)(JNIEnv *, jclass, jlong, jobject, jintArray,
-                                jstring, jint, jboolean);
-typedef jboolean (*fn_DecreaseCount)(JNIEnv *, jclass, jlong, jobject, jintArray,
-                                     jstring, jint);
-typedef jboolean (*fn_DuplicateDict)(JNIEnv *, jclass, jlong);
-typedef jboolean (*fn_Compact)(JNIEnv *, jclass, jlong, jint);
-typedef jint     (*fn_GetDictSize)(JNIEnv *, jclass, jlong);
-typedef jboolean (*fn_Persist)(JNIEnv *, jclass, jlong, jstring);
-typedef void     (*fn_RefreshAccessor)(JNIEnv *, jclass, jlong);
-typedef void     (*fn_CloseAccessor)(JNIEnv *, jclass, jlong);
-typedef jboolean (*fn_NewEmptyDict)(JNIEnv *, jclass, jlong);
-typedef jboolean (*fn_EnrollMutableDictFd)(JNIEnv *, jclass, jlong, jstring, jint, jobject, jint, jint, jint);
-typedef jint     (*fn_GetCandTokenCount)(JNIEnv *, jobject, jlong, jint);
-typedef jlong    (*fn_GetCandToken)(JNIEnv *, jobject, jlong, jint, jint);
-typedef jstring  (*fn_GetTokenString)(JNIEnv *, jobject, jlong, jlong);
-typedef jint     (*fn_GetTokenLanguage)(JNIEnv *, jobject, jlong, jlong);
-
 // ── Static state ────────────────────────────────────────────────────────────
 
-static fn_CreateAccessor       s_createAccessor = NULL;
-static fn_AddCount             s_addCount = NULL;
-static fn_DecreaseCount        s_decreaseCount = NULL;
-static fn_DuplicateDict        s_duplicateDict  = NULL;
-static fn_Compact              s_compact        = NULL;
-static fn_GetDictSize          s_getDictSize    = NULL;
-static fn_Persist              s_persist        = NULL;
-static fn_RefreshAccessor      s_refreshAccessor = NULL;
-static fn_CloseAccessor        s_closeAccessor  = NULL;
-static fn_NewEmptyDict         s_newEmptyDict   = NULL;
-static fn_EnrollMutableDictFd  s_enrollMutableDictFd = NULL;
-static fn_GetCandTokenCount    s_getCandTokenCount = NULL;
-static fn_GetCandToken         s_getCandToken      = NULL;
-static fn_GetTokenString       s_getTokenString    = NULL;
-static fn_GetTokenLanguage     s_getTokenLanguage  = NULL;
-
+static const HmmUserDictNatives *s_natives = NULL;
 static jlong s_accessor = 0;
 static bool  s_ready = false;
 static atomic_bool s_decoder_refresh_pending = false;
@@ -101,7 +66,8 @@ static bool create_accessor(bool loaded_from_file) {
     jstring jlocale = jni_NewStringUTF(g_env, "");
     jstring jtype = jni_NewStringUTF(g_env, "user_dict_3_3");
     CRASH_PROTECT_BEGIN()
-    s_accessor = s_createAccessor(g_env, NULL, g_factory, jname, jlocale, jtype);
+    s_accessor = s_natives->createAccessor(
+        g_env, NULL, g_factory, jname, jlocale, jtype);
     CRASH_PROTECT_END("nativeCreateMutableDictionaryAccessor")
     if (!s_accessor) return false;
     return true;
@@ -112,43 +78,8 @@ static bool create_accessor(bool loaded_from_file) {
 bool hmm_user_dict_init(const char *user_data_dir, const char *pack_dir) {
     if (s_ready) return true;
 
-    // Resolve native functions
-    s_createAccessor = (fn_CreateAccessor)
-        jni_find_registered_native_by_sig("nativeCreateMutableDictionaryAccessor",
-            "(JLjava/lang/String;Ljava/lang/String;Ljava/lang/String;)J");
-    s_addCount = (fn_AddCount)
-        jni_find_registered_native_by_sig("nativeAddCount",
-            "(J[Ljava/lang/String;[ILjava/lang/String;IZ)Z");
-    s_decreaseCount = (fn_DecreaseCount)
-        jni_find_registered_native_by_sig("nativeDecreaseCount",
-            "(J[Ljava/lang/String;[ILjava/lang/String;I)Z");
-    s_duplicateDict = (fn_DuplicateDict)
-        jni_find_registered_native_by_sig("nativeDuplicateDictionary", "(J)Z");
-    s_compact = (fn_Compact)
-        jni_find_registered_native_by_sig("nativeCompact", "(JI)Z");
-    s_getDictSize = (fn_GetDictSize)
-        jni_find_registered_native_by_sig("nativeGetDictionarySize", "(J)I");
-    s_persist = (fn_Persist)
-        jni_find_registered_native_by_sig("nativePersist", "(JLjava/lang/String;)Z");
-    s_refreshAccessor = (fn_RefreshAccessor)
-        jni_find_registered_native_by_sig("nativeRefreshData", "(J)V");
-    s_closeAccessor = (fn_CloseAccessor)
-        jni_find_registered_native_by_sig("nativeClose", "(J)V");
-    s_newEmptyDict = (fn_NewEmptyDict)
-        jni_find_registered_native_by_sig("nativeNewEmptyDictionary", "(J)Z");
-    s_enrollMutableDictFd = (fn_EnrollMutableDictFd)
-        jni_find_registered_native_by_sig("nativeEnrollMutableDictFd",
-            "(JLjava/lang/String;ILjava/io/FileDescriptor;III)Z");
-    s_getCandTokenCount = (fn_GetCandTokenCount)
-        jni_find_registered_native_by_sig("nativeGetCandidateTokenCount", "(JI)I");
-    s_getCandToken = (fn_GetCandToken)
-        jni_find_registered_native_by_sig("nativeGetCandidateToken", "(JII)J");
-    s_getTokenString = (fn_GetTokenString)
-        jni_find_registered_native_by_sig("nativeGetTokenString", "(JJ)");
-    s_getTokenLanguage = (fn_GetTokenLanguage)
-        jni_find_registered_native_by_sig("nativeGetTokenLanguage", "(JJ)I");
-
-    if (!s_createAccessor || !g_factory) return false;
+    s_natives = hmm_get_user_dict_natives();
+    if (!s_natives->createAccessor || !g_factory) return false;
 
     // Store paths
     if (pack_dir && pack_dir[0])
@@ -160,7 +91,7 @@ bool hmm_user_dict_init(const char *user_data_dir, const char *pack_dir) {
 
     // Load persisted dictionary if available
     bool loaded_from_file = false;
-    if (s_user_data_dir[0] && s_enrollMutableDictFd && g_dm) {
+    if (s_user_data_dir[0] && s_natives->enrollMutableDictFd && g_dm) {
         char dict_path[4096];
         build_path(dict_path, sizeof(dict_path), "");
         struct stat st;
@@ -170,7 +101,8 @@ bool hmm_user_dict_init(const char *user_data_dir, const char *pack_dir) {
                 jstring jid = jni_NewStringUTF(g_env, DICT_FILENAME);
                 jobject jfd = jni_create_file_descriptor(g_env, fd);
                 CRASH_PROTECT_BEGIN()
-                jboolean ok = s_enrollMutableDictFd(g_env, NULL, g_dm, jid,
+                jboolean ok = s_natives->enrollMutableDictFd(
+                    g_env, NULL, g_dm, jid,
                     (jint)23, jfd, 0, (jint)st.st_size, (jint)0);
                 if (ok) loaded_from_file = true;
                 CRASH_PROTECT_END("nativeEnrollMutableDictFd")
@@ -194,7 +126,8 @@ bool hmm_user_dict_init(const char *user_data_dir, const char *pack_dir) {
 bool hmm_user_dict_learn(const char **tokens, const int *token_types,
                          int token_count, const char *value,
                          bool is_full_match) {
-    if (!s_ready || !s_addCount || !s_accessor || !tokens || !token_types ||
+    if (!s_ready || !s_natives->addCount || !s_accessor ||
+        !tokens || !token_types ||
         token_count <= 0 || !value || !value[0]) {
         return false;
     }
@@ -218,17 +151,17 @@ bool hmm_user_dict_learn(const char **tokens, const int *token_types,
     jstring jvalue = jni_NewStringUTF(g_env, value);
     jboolean result = JNI_FALSE;
     CRASH_PROTECT_BEGIN()
-    result = s_addCount(g_env, NULL, s_accessor, token_array, type_array,
-                        jvalue, (jint)1,
-                        is_full_match ? (jboolean)JNI_TRUE
-                                      : (jboolean)JNI_FALSE);
+    result = s_natives->addCount(
+        g_env, NULL, s_accessor, token_array, type_array, jvalue, (jint)1,
+        is_full_match ? (jboolean)JNI_TRUE : (jboolean)JNI_FALSE);
     CRASH_PROTECT_END("nativeAddCount")
     return (bool)result;
 }
 
 bool hmm_user_dict_unlearn(const char **tokens, const int *token_types,
                            int token_count, const char *value) {
-    if (!s_ready || !s_decreaseCount || !s_accessor || !tokens || !token_types ||
+    if (!s_ready || !s_natives->decreaseCount || !s_accessor ||
+        !tokens || !token_types ||
         token_count <= 0 || !value || !value[0]) {
         return false;
     }
@@ -251,8 +184,9 @@ bool hmm_user_dict_unlearn(const char **tokens, const int *token_types,
     free(types);
     jboolean result = JNI_FALSE;
     CRASH_PROTECT_BEGIN()
-    result = s_decreaseCount(g_env, NULL, s_accessor, token_array, type_array,
-                             jni_NewStringUTF(g_env, value), (jint)1);
+    result = s_natives->decreaseCount(
+        g_env, NULL, s_accessor, token_array, type_array,
+        jni_NewStringUTF(g_env, value), (jint)1);
     CRASH_PROTECT_END("nativeDecreaseCount")
     return (bool)result;
 }
@@ -260,7 +194,10 @@ bool hmm_user_dict_unlearn(const char **tokens, const int *token_types,
 // ── Persistence ─────────────────────────────────────────────────────────────
 
 bool hmm_user_dict_persist(void) {
-    if (!s_ready || !s_accessor || !s_user_data_dir[0] || !s_persist) return false;
+    if (!s_ready || !s_accessor || !s_user_data_dir[0] ||
+        !s_natives->persist) {
+        return false;
+    }
 
     char primary[4096], tmp_path[4096], bak_path[4096];
     build_path(primary, sizeof(primary), "");
@@ -271,18 +208,19 @@ bool hmm_user_dict_persist(void) {
     if (access(tmp_path, F_OK) == 0 && unlink(tmp_path) != 0) return false;
 
     // 2. Duplicate dictionary
-    if (s_duplicateDict) {
+    if (s_natives->duplicateDictionary) {
         jboolean duplicate_ok = JNI_FALSE;
         CRASH_PROTECT_BEGIN()
-        duplicate_ok = s_duplicateDict(g_env, NULL, s_accessor);
+        duplicate_ok = s_natives->duplicateDictionary(
+            g_env, NULL, s_accessor);
         CRASH_PROTECT_END("nativeDuplicateDictionary")
         if (!duplicate_ok) return false;
     }
 
     // 3. Compact (ignore return per Android behavior)
-    if (s_compact) {
+    if (s_natives->compact) {
         CRASH_PROTECT_BEGIN()
-        s_compact(g_env, NULL, s_accessor, (jint)COMPACT_TARGET);
+        s_natives->compact(g_env, NULL, s_accessor, (jint)COMPACT_TARGET);
         CRASH_PROTECT_END("nativeCompact")
     }
 
@@ -290,7 +228,7 @@ bool hmm_user_dict_persist(void) {
     jstring jtmp = jni_NewStringUTF(g_env, tmp_path);
     jboolean persist_ok = JNI_FALSE;
     CRASH_PROTECT_BEGIN()
-    persist_ok = s_persist(g_env, NULL, s_accessor, jtmp);
+    persist_ok = s_natives->persist(g_env, NULL, s_accessor, jtmp);
     CRASH_PROTECT_END("nativePersist")
     if (!persist_ok) { unlink(tmp_path); return false; }
 
@@ -318,7 +256,7 @@ bool hmm_user_dict_persist(void) {
 
     // 9. Re-enroll the saved snapshot, then refresh decoder and accessor.
     struct stat saved_stat;
-    if (!s_enrollMutableDictFd ||
+    if (!s_natives->enrollMutableDictFd ||
         stat(primary, &saved_stat) != 0 || saved_stat.st_size <= 0) {
         return false;
     }
@@ -327,7 +265,7 @@ bool hmm_user_dict_persist(void) {
     jobject jfd = jni_create_file_descriptor(g_env, fd);
     jboolean enrolled = JNI_FALSE;
     CRASH_PROTECT_BEGIN()
-    enrolled = s_enrollMutableDictFd(
+    enrolled = s_natives->enrollMutableDictFd(
         g_env, NULL, g_dm, jni_NewStringUTF(g_env, DICT_FILENAME),
         (jint)23, jfd, 0, (jint)saved_stat.st_size, (jint)0);
     CRASH_PROTECT_END("nativeEnrollMutableDictFd(persist)")
@@ -341,9 +279,9 @@ bool hmm_user_dict_persist(void) {
 void hmm_user_dict_refresh_decoder_if_needed(void) {
     if (!atomic_load(&s_decoder_refresh_pending) || !s_accessor) return;
     if (!hmm_engine_refresh_user_dictionary()) return;
-    if (s_refreshAccessor) {
+    if (s_natives->refreshData) {
         CRASH_PROTECT_BEGIN()
-        s_refreshAccessor(g_env, NULL, s_accessor);
+        s_natives->refreshData(g_env, NULL, s_accessor);
         CRASH_PROTECT_END("MutableDictionaryAccessor nativeRefreshData")
     }
     atomic_store(&s_decoder_refresh_pending, false);
@@ -352,10 +290,10 @@ void hmm_user_dict_refresh_decoder_if_needed(void) {
 // ── Query ───────────────────────────────────────────────────────────────────
 
 int hmm_user_dict_get_size(void) {
-    if (!s_ready || !s_getDictSize || !s_accessor) return 0;
+    if (!s_ready || !s_natives->getDictionarySize || !s_accessor) return 0;
     jint size = 0;
     CRASH_PROTECT_BEGIN()
-    size = s_getDictSize(g_env, NULL, s_accessor);
+    size = s_natives->getDictionarySize(g_env, NULL, s_accessor);
     CRASH_PROTECT_END("nativeGetDictionarySize")
     return (int)size;
 }
@@ -363,11 +301,11 @@ int hmm_user_dict_get_size(void) {
 // ── Clear ───────────────────────────────────────────────────────────────────
 
 bool hmm_user_dict_clear(void) {
-    if (!s_ready || !s_accessor || !s_newEmptyDict) return false;
+    if (!s_ready || !s_accessor || !s_natives->newEmptyDictionary) return false;
 
     jboolean cleared = JNI_FALSE;
     CRASH_PROTECT_BEGIN()
-    cleared = s_newEmptyDict(g_env, NULL, s_accessor);
+    cleared = s_natives->newEmptyDictionary(g_env, NULL, s_accessor);
     CRASH_PROTECT_END("nativeNewEmptyDictionary(clear)")
     if (!cleared) return false;
 
@@ -382,12 +320,17 @@ bool hmm_user_dict_clear(void) {
 
 int hmm_user_dict_extract_tokens(int candidate_index,
                                  char tokens[][16], int *types, int max_tokens) {
-    if (!s_getCandTokenCount || !s_getCandToken || !g_engine) return 0;
+    if (!s_natives ||
+        !s_natives->getCandidateTokenCount ||
+        !s_natives->getCandidateToken || !g_engine) {
+        return 0;
+    }
     if (!tokens || !types || max_tokens <= 0) return 0;
 
     jint count = 0;
     CRASH_PROTECT_BEGIN()
-    count = s_getCandTokenCount(g_env, NULL, g_engine, (jint)candidate_index);
+    count = s_natives->getCandidateTokenCount(
+        g_env, NULL, g_engine, (jint)candidate_index);
     CRASH_PROTECT_END("nativeGetCandidateTokenCount")
     if (count <= 0) return 0;
     if (count > max_tokens) count = max_tokens;
@@ -396,14 +339,15 @@ int hmm_user_dict_extract_tokens(int candidate_index,
     for (jint i = 0; i < count; i++) {
         jlong token = 0;
         CRASH_PROTECT_BEGIN()
-        token = s_getCandToken(g_env, NULL, g_engine, (jint)candidate_index, i);
+        token = s_natives->getCandidateToken(
+            g_env, NULL, g_engine, (jint)candidate_index, i);
         CRASH_PROTECT_END("nativeGetCandidateToken")
         if (!token) continue;
 
-        if (s_getTokenString) {
+        if (g_getTokenString) {
             jstring js = NULL;
             CRASH_PROTECT_BEGIN()
-            js = s_getTokenString(g_env, NULL, g_engine, token);
+            js = g_getTokenString(g_env, NULL, g_engine, token);
             CRASH_PROTECT_END("nativeGetTokenString")
             const char *s = js ? jni_get_string(js) : "";
             strncpy(tokens[filled], s && s[0] ? s : "", 15);
@@ -412,10 +356,10 @@ int hmm_user_dict_extract_tokens(int candidate_index,
             tokens[filled][0] = '\0';
         }
 
-        if (s_getTokenLanguage) {
+        if (s_natives->getTokenLanguage) {
             jint t = 0;
             CRASH_PROTECT_BEGIN()
-            t = s_getTokenLanguage(g_env, NULL, g_engine, token);
+            t = s_natives->getTokenLanguage(g_env, NULL, g_engine, token);
             CRASH_PROTECT_END("nativeGetTokenLanguage")
             types[filled] = (int)t;
         } else {
@@ -431,12 +375,13 @@ int hmm_user_dict_extract_tokens(int candidate_index,
 void hmm_user_dict_destroy(void) {
     if (!s_ready) return;
     if (s_user_data_dir[0]) hmm_user_dict_persist();
-    if (s_closeAccessor && s_accessor) {
+    if (s_natives->closeAccessor && s_accessor) {
         CRASH_PROTECT_BEGIN()
-        s_closeAccessor(g_env, NULL, s_accessor);
+        s_natives->closeAccessor(g_env, NULL, s_accessor);
         CRASH_PROTECT_END("nativeClose(destroy)")
     }
     s_accessor = 0;
+    s_natives = NULL;
     s_ready = false;
     atomic_store(&s_decoder_refresh_pending, false);
     s_user_data_dir[0] = '\0';

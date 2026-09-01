@@ -122,6 +122,35 @@ typedef jobject  (*fn_GetSegmentRange)(JNIEnv *, jobject, jlong, jlong);
 typedef jint     (*fn_GetSegmentTokenCount)(JNIEnv *, jobject, jlong, jlong);
 typedef jlong    (*fn_GetSegmentToken)(JNIEnv *, jobject, jlong, jlong, jint);
 typedef jstring  (*fn_GetTokenString)(JNIEnv *, jobject, jlong, jlong);
+typedef jlong    (*fn_CreateMutableDictionaryAccessor)(JNIEnv *, jclass, jlong, jstring, jstring, jstring);
+typedef jboolean (*fn_AddDictionaryCount)(JNIEnv *, jclass, jlong, jobject, jintArray, jstring, jint, jboolean);
+typedef jboolean (*fn_DecreaseDictionaryCount)(JNIEnv *, jclass, jlong, jobject, jintArray, jstring, jint);
+typedef jboolean (*fn_DuplicateDictionary)(JNIEnv *, jclass, jlong);
+typedef jboolean (*fn_CompactDictionary)(JNIEnv *, jclass, jlong, jint);
+typedef jint     (*fn_GetDictionarySize)(JNIEnv *, jclass, jlong);
+typedef jboolean (*fn_PersistDictionary)(JNIEnv *, jclass, jlong, jstring);
+typedef jboolean (*fn_NewEmptyDictionary)(JNIEnv *, jclass, jlong);
+typedef jboolean (*fn_EnrollMutableDictFd)(JNIEnv *, jclass, jlong, jstring, jint, jobject, jint, jint, jint);
+typedef jint     (*fn_GetCandidateTokenCount)(JNIEnv *, jobject, jlong, jint);
+typedef jlong    (*fn_GetCandidateToken)(JNIEnv *, jobject, jlong, jint, jint);
+typedef jint     (*fn_GetTokenLanguage)(JNIEnv *, jobject, jlong, jlong);
+
+typedef struct {
+    fn_CreateMutableDictionaryAccessor createAccessor;
+    fn_AddDictionaryCount addCount;
+    fn_DecreaseDictionaryCount decreaseCount;
+    fn_DuplicateDictionary duplicateDictionary;
+    fn_CompactDictionary compact;
+    fn_GetDictionarySize getDictionarySize;
+    fn_PersistDictionary persist;
+    fn_RefreshData refreshData;
+    fn_CloseManager closeAccessor;
+    fn_NewEmptyDictionary newEmptyDictionary;
+    fn_EnrollMutableDictFd enrollMutableDictFd;
+    fn_GetCandidateTokenCount getCandidateTokenCount;
+    fn_GetCandidateToken getCandidateToken;
+    fn_GetTokenLanguage getTokenLanguage;
+} HmmUserDictNatives;
 
 // ── Global engine state ─────────────────────────────────────────────────────
 extern ElfHandle *g_elf;
@@ -169,6 +198,7 @@ extern fn_GetSegmentRange  g_getSegmentRange;
 extern fn_GetSegmentTokenCount g_getSegmentTokenCount;
 extern fn_GetSegmentToken  g_getSegmentToken;
 extern fn_GetTokenString   g_getTokenString;
+extern fn_RefreshData      g_refreshData;
 
 // Refresh the decoder after a mutable dictionary snapshot is re-enrolled.
 bool hmm_engine_refresh_user_dictionary(void);
@@ -182,4 +212,5 @@ static inline void *hmm_sym(ElfHandle *h, const char *name) {
 
 // ── Module init functions ───────────────────────────────────────────────────
 void hmm_resolve_natives(void);
+const HmmUserDictNatives *hmm_get_user_dict_natives(void);
 bool hmm_enroll_all(const char *pack_dir);

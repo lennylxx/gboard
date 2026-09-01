@@ -113,13 +113,9 @@ static bool create_decoder(void) {
 }
 
 bool hmm_engine_refresh_user_dictionary(void) {
-    if (!g_engine) return false;
-    typedef void (*fn_RefreshEngine)(JNIEnv *, jclass, jlong);
-    fn_RefreshEngine refresh_engine = (fn_RefreshEngine)
-        jni_find_registered_native_by_sig("nativeRefreshData", "(J)V");
-    if (!refresh_engine) return false;
+    if (!g_engine || !g_refreshData) return false;
     CRASH_PROTECT_BEGIN()
-    refresh_engine(g_env, NULL, g_engine);
+    g_refreshData(g_env, NULL, g_engine);
     CRASH_PROTECT_END("HmmEngine nativeRefreshData")
     return true;
 }
@@ -133,6 +129,7 @@ fn_GetSegmentRange  g_getSegmentRange  = NULL;
 fn_GetSegmentTokenCount g_getSegmentTokenCount = NULL;
 fn_GetSegmentToken  g_getSegmentToken  = NULL;
 fn_GetTokenString   g_getTokenString   = NULL;
+fn_RefreshData      g_refreshData      = NULL;
 
 // ── Public API ──────────────────────────────────────────────────────────────
 

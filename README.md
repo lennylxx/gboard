@@ -10,6 +10,35 @@ A macOS input method that runs Gboard's native HMM Pinyin engine via a custom AR
 
 ![preview](preview.png)
 
+## Features
+
+- **Native Pinyin engine** — Runs Gboard's native HMM Pinyin engine directly
+  on Apple Silicon.
+- **Offline candidate generation and ranking** — Generates candidates and
+  performs neural language-model reranking entirely on-device.
+- **Context-aware ranking** — Uses committed text before the cursor to improve
+  candidate ordering. The native TARGET_TOKEN path keeps the last 5 UTF-16
+  units for Chinese or 20 for Latin text and stops at punctuation,
+  whitespace, or a language boundary. For example, `bushu` normally prefers
+  `部署`, while the context `我对这里很` promotes `不熟`.
+- **Partial candidate selection** — Consumes only the Pinyin matched by the
+  selected candidate and preserves the remainder. For example, after typing
+  `nihao` and selecting `你`, `hao` remains available for continued
+  composition.
+- **Pinyin segmentation display** — Shows the engine's segment/token split,
+  such as `fang'an`, and explicit apostrophe separators such as `xi'an`.
+- **Automatic user-dictionary learning** — Stores selected Chinese phrases in
+  `user_dict_3_3` under `~/Library/Application Support/GboardIME/` and
+  persists the dictionary every four hours and on app teardown.
+- **Complete keyboard workflow** — Supports candidate paging, keyboard
+  selection, and Chinese/English mode switching.
+- **Native macOS interface** — Uses InputMethodKit and SwiftUI for the input
+  method and candidate window.
+
+**Learning limitation:** Undo of a just-committed learned entry is not
+supported. InputMethodKit does not reliably expose the context needed to
+distinguish it from normal editing.
+
 ## How it works
 
 Three layers make this possible:
@@ -71,23 +100,6 @@ Switch to GboardIME from the menu bar input source picker, then type pinyin.
 | Return | Commit raw pinyin |
 | Shift | Switch between Chinese and English; commit active composition as raw pinyin |
 | Caps Lock | Switch between GboardIME and ABC when enabled in macOS Text Input settings; commit active composition as raw pinyin |
-
-Partial selection is supported — selecting a candidate consumes only the pinyin it matched, leaving the rest for continued input (e.g. type `nihao`, select `你`, continue composing from `hao`).
-
-The candidate window visualizes the engine's current segment/token split, such as `fang'an`; typing an apostrophe to force a separator displays `xi'an`.
-
-Candidate ranking uses committed text before the cursor as language-model
-context. The implementation follows Gboard's native TARGET_TOKEN injection
-path: it keeps the last 5 UTF-16 units for Chinese or 20 for Latin text and
-stops at punctuation, whitespace, or a language boundary. For example,
-`bushu` normally prefers `部署`, while the context `我对这里很` promotes
-`不熟`.
-
-### Automatic learning
-
-GboardIME automatically learns from your candidate selections. Each committed Chinese phrase is recorded in a user dictionary (`user_dict_3_3`), stored at `~/Library/Application Support/GboardIME/`. The dictionary persists every 4 hours and on app teardown, so learned phrases survive restarts. Use this to gradually personalize candidate ranking.
-
-**Limitation:** Undo of a just-committed learned entry is not supported in the current architecture. InputMethodKit does not reliably expose the context needed to detect "undo of committed text" vs. normal editing.
 
 ## Test
 
