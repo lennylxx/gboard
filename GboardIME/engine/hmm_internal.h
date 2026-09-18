@@ -110,6 +110,7 @@ typedef void     (*fn_Reset)(JNIEnv *, jobject, jlong);
 typedef void     (*fn_SetKeyLayout)(JNIEnv *, jobject, jlong, jbyteArray);
 typedef void     (*fn_BeginSession)(JNIEnv *, jobject, jlong, jbyteArray);
 typedef void     (*fn_HandleInputContext)(JNIEnv *, jobject, jlong, jbyteArray);
+typedef void     (*fn_FinishSession)(JNIEnv *, jobject, jlong, jbyteArray);
 typedef jboolean (*fn_FillTokenCandList)(JNIEnv *, jobject, jlong, jobject);
 typedef jint     (*fn_GetTokenCandCount)(JNIEnv *, jobject, jlong);
 typedef jstring  (*fn_GetTokenCandString)(JNIEnv *, jobject, jlong, jint);
@@ -186,6 +187,7 @@ extern fn_Reset            g_reset;
 extern fn_SetKeyLayout     g_setKeyLayout;
 extern fn_BeginSession     g_beginSession;
 extern fn_HandleInputContext g_handleInputCtx;
+extern fn_FinishSession    g_finishSession;
 extern fn_FillTokenCandList g_fillTokenCandList;
 extern fn_GetTokenCandCount g_getTokenCandCount;
 extern fn_GetTokenCandString g_getTokenCandString;
@@ -202,6 +204,7 @@ extern fn_RefreshData      g_refreshData;
 
 // Refresh the decoder after a mutable dictionary snapshot is re-enrolled.
 bool hmm_engine_refresh_user_dictionary(void);
+void hmm_engine_set_external_context(bool has_context);
 
 // ── Symbol helper ───────────────────────────────────────────────────────────
 static inline void *hmm_sym(ElfHandle *h, const char *name) {

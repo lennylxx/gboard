@@ -27,6 +27,7 @@ static int get_candidates_for(const char *pinyin, char **cands, int max) {
 
 // Helper: reset, append full string at once (like the IME does), get candidates
 static int get_candidates_bulk(const char *pinyin, char **cands, int max) {
+    hmm_engine_prepare_input(pinyin);
     hmm_engine_reset();
     if (!hmm_engine_append(pinyin)) return -1;
     return hmm_engine_get_candidates(cands, max);
@@ -34,6 +35,11 @@ static int get_candidates_bulk(const char *pinyin, char **cands, int max) {
 
 static void free_cands(char **cands, int count) {
     for (int i = 0; i < count; i++) { free(cands[i]); cands[i] = NULL; }
+}
+
+static void set_editor_context(const char *text_before_cursor) {
+    hmm_engine_update_input_context(text_before_cursor, "", "");
+    hmm_engine_set_context(text_before_cursor);
 }
 
 // Check that expected string appears in candidate list
@@ -273,13 +279,13 @@ static void test_context_language_scoring(void) {
     printf("[test_context_language_scoring]\n");
     char *cands[20] = {0};
 
-    hmm_engine_set_context("");
+    set_editor_context("");
     int baseline_count = get_candidates_bulk("bushu", cands, 20);
     check("context baseline prefers 部署",
           baseline_count > 0 && strcmp(cands[0], "部署") == 0);
     free_cands(cands, baseline_count);
 
-    hmm_engine_set_context("我对这里很");
+    set_editor_context("我对这里很");
     int contextual_count = get_candidates_bulk("bushu", cands, 20);
     check("Chinese context reranks bushu to 不熟",
           contextual_count > 0 && strcmp(cands[0], "不熟") == 0);
@@ -288,20 +294,34 @@ static void test_context_language_scoring(void) {
           hmm_engine_get_candidate_consumed(0) == 5);
     free_cands(cands, contextual_count);
 
-    hmm_engine_set_context("无关前缀我对这里很");
+    set_editor_context("无关前缀我对这里很");
     int truncated_count = get_candidates_bulk("bushu", cands, 20);
     check("Chinese context keeps the trailing five characters",
           truncated_count > 0 && strcmp(cands[0], "不熟") == 0);
     free_cands(cands, truncated_count);
 
-    hmm_engine_set_context("我对这里很，");
+    set_editor_context("我对这里很，");
     int boundary_count = get_candidates_bulk("bushu", cands, 20);
     check("punctuation ends the Java-compatible context window",
           boundary_count > 0 && strcmp(cands[0], "部署") == 0);
     free_cands(cands, boundary_count);
 
-    hmm_engine_set_context("");
+    set_editor_context("");
     hmm_engine_reset();
+}
+
+static void test_continuous_phrase_language_scoring(void) {
+    printf("[test_continuous_phrase_language_scoring]\n");
+    char *cands[20] = {0};
+
+    set_editor_context("");
+    int count = get_candidates_bulk("woduizhelihenbushu", cands, 20);
+    check("continuous phrase prefers 我对这里很不熟",
+          count > 0 && strcmp(cands[0], "我对这里很不熟") == 0);
+    if (count > 0 && strcmp(cands[0], "我对这里很不熟") != 0) {
+        printf("    actual first candidate: %s\n", cands[0]);
+    }
+    free_cands(cands, count);
 }
 
 static void test_select_and_continue(void) {
@@ -682,6 +702,58 @@ static void test_user_dict_token_extraction(void) {
     free_cands(cands, n);
 }
 
+static void test_context_overrides_user_frequency(void) {
+    printf("[test_context_overrides_user_frequency]\n");
+    char *cands[20] = {0};
+
+    set_editor_context("");
+    int count = get_candidates_bulk("bushu", cands, 20);
+    check("frequency test starts with 部署",
+          count > 0 && strcmp(cands[0], "部署") == 0);
+
+    char tokens[8][16] = {{0}};
+    int types[8] = {0};
+    int token_count = count > 0
+        ? hmm_user_dict_extract_tokens(0, tokens, types, 8)
+        : 0;
+    free_cands(cands, count);
+    check("部署 exposes learning tokens", token_count > 0);
+
+    const char *token_ptrs[8] = {0};
+    for (int i = 0; i < token_count; i++) token_ptrs[i] = tokens[i];
+    for (int i = 0; i < 50 && token_count > 0; i++) {
+        hmm_user_dict_learn(token_ptrs, types, token_count,
+                            "部署", true);
+    }
+
+    set_editor_context("");
+    count = get_candidates_bulk("bushu", cands, 20);
+    check("standalone bushu respects learned frequency",
+          count > 0 && strcmp(cands[0], "部署") == 0);
+    free_cands(cands, count);
+
+    set_editor_context("我对这里很");
+    count = get_candidates_bulk("bushu", cands, 20);
+    check("context overrides learned deployment frequency",
+          count > 0 && strcmp(cands[0], "不熟") == 0);
+    free_cands(cands, count);
+
+    set_editor_context("");
+    count = get_candidates_bulk("woduizhelihenbushu", cands, 20);
+    check("continuous context overrides learned deployment frequency",
+          count > 0 && strcmp(cands[0], "我对这里很不熟") == 0);
+    free_cands(cands, count);
+
+    bool unlearned = true;
+    for (int i = 0; i < 50 && token_count > 0; i++) {
+        unlearned =
+            hmm_user_dict_unlearn(token_ptrs, types, token_count,
+                                  "部署") &&
+            unlearned;
+    }
+    check("frequency test removes learned deployment counts", unlearned);
+}
+
 static void test_user_dict_learn_and_boost(void) {
     printf("[test_user_dict_learn_and_boost]\n");
 
@@ -850,16 +922,65 @@ static void test_user_dict_clear(void) {
 int main(int argc, char **argv) {
     const char *so = "../source/resources/lib/arm64-v8a/libintegrated_shared_object.so";
     const char *pack = "../hmmoemdata/current";
+    if (argc == 5 && strcmp(argv[1], "--verify-ranking-policy") == 0) {
+        if (!hmm_engine_init_with_user_data(argv[2], argv[3], argv[4]))
+            return 2;
+
+        char *cands[20] = {0};
+        set_editor_context("");
+        int count = get_candidates_bulk("bushu", cands, 20);
+        bool standalone_ok =
+            count > 0 && strcmp(cands[0], "部署") == 0;
+        printf("    standalone bushu: %s\n",
+               count > 0 ? cands[0] : "(none)");
+        free_cands(cands, count);
+
+        set_editor_context("我对这里很");
+        count = get_candidates_bulk("bushu", cands, 20);
+        bool context_ok =
+            count > 0 && strcmp(cands[0], "不熟") == 0;
+        printf("    contextual bushu: %s\n",
+               count > 0 ? cands[0] : "(none)");
+        free_cands(cands, count);
+
+        set_editor_context("");
+        count = get_candidates_bulk("woduizhelihenbushu", cands, 20);
+        bool continuous_ok =
+            count > 0 && strcmp(cands[0], "我对这里很不熟") == 0;
+        printf("    continuous phrase: %s\n",
+               count > 0 ? cands[0] : "(none)");
+        free_cands(cands, count);
+
+        hmm_engine_destroy();
+        return standalone_ok && context_ok && continuous_ok ? 0 : 3;
+    }
+    if (argc == 9 &&
+        strcmp(argv[1], "--verify-user-dict-context") == 0) {
+        if (!hmm_engine_init_with_user_data(argv[2], argv[3], argv[4]))
+            return 2;
+        set_editor_context(argv[5]);
+        char *cands[500] = {0};
+        int count = get_candidates_bulk(argv[6], cands, 500);
+        int position = -1;
+        for (int i = 0; i < count; ++i) {
+            if (strcmp(cands[i], argv[7]) == 0) {
+                position = i;
+            }
+        }
+        free_cands(cands, count);
+        int max_position = atoi(argv[8]);
+        hmm_engine_destroy();
+        return position >= 0 && position <= max_position ? 0 : 3;
+    }
     if (argc == 8 && strcmp(argv[1], "--verify-user-dict") == 0) {
         if (!hmm_engine_init_with_user_data(argv[2], argv[3], argv[4]))
             return 2;
-        char *cands[20] = {0};
-        int count = get_candidates_bulk(argv[5], cands, 20);
+        char *cands[500] = {0};
+        int count = get_candidates_bulk(argv[5], cands, 500);
         int position = -1;
         for (int i = 0; i < count; ++i) {
             if (strcmp(cands[i], argv[6]) == 0) {
                 position = i;
-                break;
             }
         }
         free_cands(cands, count);
@@ -893,6 +1014,7 @@ int main(int argc, char **argv) {
     test_neural_bulk_incremental_parity();
     test_neural_reranker_reset_stress();
     test_context_language_scoring();
+    test_continuous_phrase_language_scoring();
     test_select_and_continue();
     test_candidate_range();
     test_full_ime_simulation();
@@ -905,6 +1027,7 @@ int main(int argc, char **argv) {
     // User dictionary tests
     test_user_dict_init();
     test_user_dict_token_extraction();
+    test_context_overrides_user_frequency();
     test_user_dict_learn_and_boost();
     test_user_dict_learn_phrase();
     test_user_dict_clear();

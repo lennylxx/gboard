@@ -59,26 +59,102 @@ fn_Reset            g_reset            = NULL;
 fn_SetKeyLayout     g_setKeyLayout     = NULL;
 fn_BeginSession     g_beginSession     = NULL;
 fn_HandleInputContext g_handleInputCtx  = NULL;
+fn_FinishSession    g_finishSession    = NULL;
 fn_FillTokenCandList g_fillTokenCandList = NULL;
 fn_GetTokenCandCount g_getTokenCandCount = NULL;
 
 static char s_pack_dir[4096];
+static jlong s_personalized_engine;
+static jlong s_context_engine;
+static bool s_has_external_context;
+static uint64_t s_session_id;
+static uint64_t s_last_session_id;
+static bool s_session_active;
 
-static bool create_decoder(void) {
-    g_engine = 0;
-    const char *etypes[] = {
-        "zh-t-i0-pinyin-x-f0-delight", "zh-t-i0-pinyin", NULL
-    };
-    for (int ei = 0; etypes[ei] && !g_engine; ei++) {
+static size_t put_varint(uint8_t *out, uint64_t value) {
+    size_t written = 0;
+    while (value >= 0x80) {
+        out[written++] = (uint8_t)((value & 0x7f) | 0x80);
+        value >>= 7;
+    }
+    out[written++] = (uint8_t)value;
+    return written;
+}
+
+static size_t put_int_field(uint8_t *out, uint32_t field,
+                            uint64_t value) {
+    size_t written = put_varint(out, ((uint64_t)field << 3));
+    return written + put_varint(out + written, value);
+}
+
+static size_t put_bytes_field(uint8_t *out, uint32_t field,
+                              const uint8_t *bytes, size_t length) {
+    size_t written =
+        put_varint(out, ((uint64_t)field << 3) | 2);
+    written += put_varint(out + written, length);
+    if (length > 0) memcpy(out + written, bytes, length);
+    return written + length;
+}
+
+static size_t encode_span(uint8_t *out, const char *text) {
+    const char *value = text ? text : "";
+    size_t length = strlen(value);
+    size_t written = put_int_field(out, 1, 6);
+    return written + put_bytes_field(
+        out + written, 2, (const uint8_t *)value, length);
+}
+
+static jbyteArray make_byte_array(const uint8_t *bytes, size_t length) {
+    jbyteArray result = jni_NewByteArray(g_env, (jsize)length);
+    if (result && length > 0) {
+        jni_SetByteArrayRegion(g_env, result, 0, (jsize)length,
+                               (const jbyte *)bytes);
+    }
+    return result;
+}
+
+static uint64_t next_session_id(void) {
+    struct timeval now;
+    gettimeofday(&now, NULL);
+    uint64_t result =
+        (uint64_t)now.tv_sec * 1000 + (uint64_t)now.tv_usec / 1000;
+    if (result <= s_last_session_id) result = s_last_session_id + 1;
+    s_last_session_id = result;
+    return result;
+}
+
+static void begin_native_session(jlong engine) {
+    if (!g_beginSession || !engine) return;
+    uint8_t request[16];
+    size_t length = put_int_field(request, 1, s_session_id);
+    jbyteArray payload = make_byte_array(request, length);
+    CRASH_PROTECT_BEGIN()
+    g_beginSession(g_env, NULL, engine, payload);
+    CRASH_PROTECT_END("nativeBeginSession")
+}
+
+static void finish_native_session(jlong engine) {
+    if (!s_session_active || !g_finishSession || !engine) return;
+    uint8_t request[16];
+    size_t length = put_int_field(request, 1, s_session_id);
+    jbyteArray payload = make_byte_array(request, length);
+    CRASH_PROTECT_BEGIN()
+    g_finishSession(g_env, NULL, engine, payload);
+    CRASH_PROTECT_END("nativeFinishSession")
+}
+
+static jlong create_decoder(const char *const *etypes) {
+    jlong engine = 0;
+    for (int ei = 0; etypes[ei] && !engine; ei++) {
         jstring engine_type = jni_NewStringUTF(g_env, etypes[ei]);
         jstring user_id = jni_NewStringUTF(g_env, "");
         CRASH_PROTECT_BEGIN()
-        g_engine = g_createEngine(g_env, NULL, g_factory, engine_type, user_id);
+        engine = g_createEngine(g_env, NULL, g_factory, engine_type, user_id);
         LOGERR("nativeCreateEngine('%s') → %lld",
-               etypes[ei], (long long)g_engine);
+               etypes[ei], (long long)engine);
         CRASH_PROTECT_END("nativeCreateEngine")
     }
-    if (!g_engine) return false;
+    if (!engine) return 0;
 
     if (g_setKeyLayout && s_pack_dir[0]) {
         char scheme_path[4096];
@@ -97,18 +173,102 @@ static bool create_decoder(void) {
                                    (jbyte *)bytes);
             free(bytes);
             CRASH_PROTECT_BEGIN()
-            g_setKeyLayout(g_env, NULL, g_engine, layout);
+            g_setKeyLayout(g_env, NULL, engine, layout);
             CRASH_PROTECT_END("nativeSetKeyboardLayout")
         }
     }
 
-    if (g_beginSession) {
-        jbyteArray session_cfg = jni_NewByteArray(g_env, 0);
-        CRASH_PROTECT_BEGIN()
-        g_beginSession(g_env, NULL, g_engine, session_cfg);
-        CRASH_PROTECT_END("nativeBeginSession")
-    }
+    return engine;
+}
+
+static bool create_decoders(void) {
+    const char *personalized_types[] = {
+        "zh-t-i0-pinyin-x-f0-delight", "zh-t-i0-pinyin", NULL
+    };
+    const char *context_types[] = {
+        "zh-t-i0-pinyin-x-f0-delight-context", NULL
+    };
+    s_personalized_engine = create_decoder(personalized_types);
+    if (!s_personalized_engine) return false;
+    s_context_engine = create_decoder(context_types);
+    if (!s_context_engine) return false;
+    g_engine = s_personalized_engine;
     g_end_vertex = 0;
+    return true;
+}
+
+void hmm_engine_set_external_context(bool has_context) {
+    s_has_external_context = has_context;
+}
+
+void hmm_engine_prepare_input(const char *pinyin_input) {
+    size_t input_length = pinyin_input ? strlen(pinyin_input) : 0;
+    bool prioritize_context =
+        s_has_external_context || input_length >= 12;
+    g_engine = prioritize_context
+        ? s_context_engine
+        : s_personalized_engine;
+}
+
+bool hmm_engine_update_input_context(const char *before_selection,
+                                     const char *selected_text,
+                                     const char *after_selection) {
+    if (!s_session_active || !g_handleInputCtx ||
+        !s_personalized_engine || !s_context_engine) return false;
+
+    const char *before = before_selection ? before_selection : "";
+    const char *selected = selected_text ? selected_text : "";
+    const char *after = after_selection ? after_selection : "";
+    size_t span_capacity =
+        strlen(before) + strlen(selected) + strlen(after) + 96;
+    uint8_t *context = malloc(span_capacity);
+    uint8_t *span = malloc(span_capacity);
+    if (!context || !span) {
+        free(context);
+        free(span);
+        return false;
+    }
+
+    size_t context_length = 0;
+    const char *texts[] = {before, selected, after};
+    for (size_t i = 0; i < 3; i++) {
+        size_t span_length = encode_span(span, texts[i]);
+        context_length += put_bytes_field(
+            context + context_length, 2, span, span_length);
+    }
+    context_length += put_int_field(context + context_length, 3, 1);
+    context_length += put_int_field(context + context_length, 4, 1);
+    context_length += put_int_field(context + context_length, 5, 1);
+    context_length += put_int_field(context + context_length, 6, 0);
+    context_length += put_int_field(
+        context + context_length, 7, selected[0] ? 2 : 1);
+    context_length += put_int_field(context + context_length, 8, 0);
+
+    size_t request_capacity = context_length + 32;
+    uint8_t *request = malloc(request_capacity);
+    if (!request) {
+        free(context);
+        free(span);
+        return false;
+    }
+    size_t request_length =
+        put_bytes_field(request, 1, context, context_length);
+    request_length += put_int_field(
+        request + request_length, 2, s_session_id);
+    jbyteArray payload = make_byte_array(request, request_length);
+
+    const jlong engines[] = {
+        s_personalized_engine, s_context_engine
+    };
+    for (size_t i = 0; i < 2; ++i) {
+        CRASH_PROTECT_BEGIN()
+        g_handleInputCtx(g_env, NULL, engines[i], payload);
+        CRASH_PROTECT_END("nativeHandleInputContext")
+    }
+
+    free(request);
+    free(context);
+    free(span);
     return true;
 }
 
@@ -205,10 +365,14 @@ bool hmm_engine_init_with_user_data(const char *so_path, const char *pack_dir,
     }
 
     // 7. Create HMM engine
-    if (!create_decoder()) {
-        LOGERR("Failed to create engine");
+    if (!create_decoders()) {
+        LOGERR("Failed to create decoders");
         return false;
     }
+    s_session_id = next_session_id();
+    begin_native_session(s_personalized_engine);
+    begin_native_session(s_context_engine);
+    s_session_active = true;
 
     LOGERR("init complete! engine=%lld", (long long)g_engine);
     LOG("append=%p fillCand=%p getCandCount=%p getCandStr=%p",
@@ -218,6 +382,9 @@ bool hmm_engine_init_with_user_data(const char *so_path, const char *pack_dir,
 }
 
 void hmm_engine_destroy(void) {
+    finish_native_session(s_personalized_engine);
+    finish_native_session(s_context_engine);
+    s_session_active = false;
     if (g_engine) hmm_engine_reset();
 
     // Tear down user dictionary (persists if configured)
@@ -232,6 +399,11 @@ void hmm_engine_destroy(void) {
     }
 
     g_factory = 0; g_dm = 0; g_sm = 0; g_engine = 0; g_end_vertex = 0;
+    s_personalized_engine = 0;
+    s_context_engine = 0;
+    s_has_external_context = false;
+    s_session_id = 0;
+    s_session_active = false;
     s_pack_dir[0] = '\0';
 
     elf_unload(g_elf);

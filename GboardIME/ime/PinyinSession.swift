@@ -378,9 +378,10 @@ class PinyinSession {
         contextBeforeInput.withCString { context in
             _ = gboard_set_context(context)
         }
-        gboard_reset()
         // Append only letters (skip apostrophes)
         let letters = String(composition.filter { $0 != "'" })
+        letters.withCString { gboard_prepare_input($0) }
+        gboard_reset()
         guard gboard_append(letters) else {
             candidates = []
             delegate?.sessionHideCandidates()

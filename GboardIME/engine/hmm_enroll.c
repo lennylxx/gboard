@@ -62,6 +62,37 @@ static bool pb_read_varint(const uint8_t *buf, size_t len, size_t *pos,
     return false;
 }
 
+static uint8_t *replace_setting_id(const uint8_t *original,
+                                   size_t original_length,
+                                   const char *setting_id,
+                                   size_t *result_length) {
+    size_t offset = 0;
+    uint64_t tag = 0;
+    uint64_t old_length = 0;
+    if (!pb_read_varint(original, original_length, &offset, &tag) ||
+        tag != ((uint64_t)1 << 3 | 2) ||
+        !pb_read_varint(original, original_length, &offset, &old_length) ||
+        old_length > original_length - offset) {
+        return NULL;
+    }
+
+    size_t id_length = strlen(setting_id);
+    size_t suffix_offset = offset + (size_t)old_length;
+    size_t capacity = original_length + id_length + 16;
+    uint8_t *result = malloc(capacity);
+    if (!result) return NULL;
+
+    size_t written = pb_write_tag(result, 1, 2);
+    written += pb_write_varint(result + written, id_length);
+    memcpy(result + written, setting_id, id_length);
+    written += id_length;
+    memcpy(result + written, original + suffix_offset,
+           original_length - suffix_offset);
+    written += original_length - suffix_offset;
+    *result_length = written;
+    return result;
+}
+
 // Replicates AbstractHmmEngineFactory.k(): add the enabled mutable dictionary
 // to both DictionaryConfig messages in the main setting scheme.
 static uint8_t *add_user_dictionary_to_setting(const uint8_t *orig,
@@ -461,8 +492,6 @@ bool hmm_enroll_all(const char *pack_dir) {
             jbyteArray ba = jni_NewByteArray(g_env, (jsize)setting_size);
             jni_SetByteArrayRegion(g_env, ba, 0, (jsize)setting_size,
                                    (jbyte *)setting_bytes);
-            free(modified);
-            free(sbuf);
             for (int hi = 0; handles[hi]; hi++) {
                 for (int ti = 0; type_strs[ti]; ti++) {
                     jstring st = jni_NewStringUTF(g_env, type_strs[ti]);
@@ -474,7 +503,32 @@ bool hmm_enroll_all(const char *pack_dir) {
                     if (r) setting_ok = true;
                     CRASH_PROTECT_END("nativeEnrollSettingScheme")
                 }
+
+                const char *context_id =
+                    "zh-t-i0-pinyin-x-f0-delight-context";
+                size_t context_size = 0;
+                uint8_t *context_setting = replace_setting_id(
+                    sbuf, (size_t)ssz, context_id, &context_size);
+                if (!context_setting) continue;
+                jbyteArray context_ba =
+                    jni_NewByteArray(g_env, (jsize)context_size);
+                jni_SetByteArrayRegion(
+                    g_env, context_ba, 0, (jsize)context_size,
+                    (jbyte *)context_setting);
+                free(context_setting);
+                jstring context_type = jni_NewStringUTF(g_env, context_id);
+                jstring context_locale = jni_NewStringUTF(g_env, "");
+                CRASH_PROTECT_BEGIN()
+                jboolean context_ok = g_enrollSettingScheme(
+                    g_env, NULL, handles[hi], context_type,
+                    context_locale, context_ba);
+                LOGERR("enrollSettingScheme(context priority) → %d",
+                       context_ok);
+                if (context_ok) setting_ok = true;
+                CRASH_PROTECT_END("nativeEnrollSettingScheme(context)")
             }
+            free(modified);
+            free(sbuf);
         }
     }
 

@@ -35,6 +35,7 @@ echo "═══ Building test_ime (Swift) ═══"
 swiftc -g -parse-as-library -o "$TEST_DIR/test_ime" \
     "$TEST_DIR/test_ime.swift" \
     "GboardIME/ime/PinyinSession.swift" \
+    "GboardIME/ime/SessionContextRetriever.swift" \
     "GboardIME/ime/GboardBridge.c" \
     "${ENGINE_SRCS[@]}" \
     -IGboardIME -import-objc-header GboardIME/ime/GboardBridge.h \

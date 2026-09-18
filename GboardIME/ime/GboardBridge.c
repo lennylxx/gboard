@@ -13,6 +13,11 @@ bool gboard_init_with_user_data(const char *so_path, const char *pack_dir,
 }
 
 bool gboard_set_context(const char *text)          { return hmm_engine_set_context(text); }
+bool gboard_update_input_context(const char *before, const char *selected,
+                                  const char *after) {
+    return hmm_engine_update_input_context(before, selected, after);
+}
+void gboard_prepare_input(const char *pinyin)         { hmm_engine_prepare_input(pinyin); }
 bool gboard_append(const char *pinyin)              { return hmm_engine_append(pinyin); }
 int  gboard_get_candidates(char **out, int max)     { return hmm_engine_get_candidates(out, max); }
 int  gboard_get_candidates_page(char **out, int offset, int max) {

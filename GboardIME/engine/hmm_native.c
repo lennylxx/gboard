@@ -29,6 +29,7 @@ void hmm_resolve_natives(void) {
     g_setKeyLayout   = (fn_SetKeyLayout)   jni_find_registered_native_exact("nativeSetKeyboardLayout");
     g_beginSession   = (fn_BeginSession)   jni_find_registered_native_exact("nativeBeginSession");
     g_handleInputCtx = (fn_HandleInputContext) jni_find_registered_native_exact("nativeHandleInputContext");
+    g_finishSession  = (fn_FinishSession)  jni_find_registered_native_exact("nativeFinishSession");
     g_fillTokenCandList  = (fn_FillTokenCandList)  jni_find_registered_native_exact("nativeFillTokenCandidateList");
     g_getTokenCandCount  = (fn_GetTokenCandCount)  jni_find_registered_native_exact("nativeGetTokenCandidateCount");
     g_getTokenCandString = (fn_GetTokenCandString) jni_find_registered_native_exact("nativeGetTokenCandidateString");

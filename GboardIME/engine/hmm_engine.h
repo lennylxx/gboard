@@ -25,6 +25,15 @@ bool hmm_engine_init_with_user_data(const char *so_path, const char *pack_dir,
 // Call before appending a new composition.
 bool hmm_engine_set_context(const char *text_before_cursor);
 
+// Submit the official HMM around-cursor snapshot for the active native
+// session. Strings are UTF-8 and may be empty.
+bool hmm_engine_update_input_context(const char *before_selection,
+                                     const char *selected_text,
+                                     const char *after_selection);
+
+// Select the ranking policy for a complete pinyin composition before reset.
+void hmm_engine_prepare_input(const char *pinyin_input);
+
 // Append one or more pinyin key characters (e.g. "n", "ni", "nihao").
 // Returns true if the engine accepted the input.
 bool hmm_engine_append(const char *pinyin_input);

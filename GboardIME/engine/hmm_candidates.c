@@ -107,6 +107,7 @@ bool hmm_engine_set_context(const char *text_before_cursor) {
     if (kept >= sizeof(s_context)) kept = sizeof(s_context) - 1;
     if (kept > 0) memcpy(s_context, text + start, kept);
     s_context[kept] = '\0';
+    hmm_engine_set_external_context(s_context[0] != '\0');
     free(points);
     s_context_injected = false;
     s_context_end_vertex = 0;

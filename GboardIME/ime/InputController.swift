@@ -103,6 +103,7 @@ class GboardInputController: IMKInputController, PinyinSessionDelegate {
 
         // ── English mode: pass everything through ────────────────────────
         if !chineseMode {
+            contextTracker.invalidate()
             return false
         }
 
@@ -146,6 +147,7 @@ class GboardInputController: IMKInputController, PinyinSessionDelegate {
             }
             // Ignore modifier-only combos
             else if !(flags.isEmpty || flags == .capsLock) {
+                contextTracker.invalidate()
                 return false
             }
             // Accept a-z for Pinyin
@@ -158,10 +160,14 @@ class GboardInputController: IMKInputController, PinyinSessionDelegate {
             else if session.isComposing {
                 result = session.commitAndPassThrough()
             } else {
+                contextTracker.invalidate()
                 return false
             }
         }
 
+        if case .passThrough = result {
+            contextTracker.invalidate()
+        }
         return result != .passThrough
     }
 
@@ -176,37 +182,72 @@ class GboardInputController: IMKInputController, PinyinSessionDelegate {
     // ── PinyinSessionDelegate ────────────────────────────────────────────
 
     private var currentClient: Any?
+    private var contextTracker = SessionContextTracker()
 
     func sessionContextBeforeInput() -> String {
-        guard let client = currentClient as? IMKTextInput else { return "" }
-        let selection = client.selectedRange()
-        guard selection.location != NSNotFound, selection.location > 0 else {
-            return ""
-        }
-        let requestedLength = min(21, selection.location)
-        let range = NSRange(
-            location: selection.location - requestedLength,
-            length: requestedLength
-        )
-        guard let text = client.attributedSubstring(from: range)?.string else {
-            return ""
-        }
-
-        let utf16 = text as NSString
-        var start = max(0, utf16.length - 20)
-        if start < utf16.length {
-            let unit = utf16.character(at: start)
-            if unit >= 0xdc00 && unit <= 0xdfff {
-                start += 1
+        let clientContext: String?
+        var inputContext: SessionInputContext?
+        var selection = NSRange(location: NSNotFound, length: 0)
+        if let client = currentClient as? IMKTextInput {
+            selection = client.selectedRange()
+            inputContext = SessionContextRetriever.retrieveInputContext(
+                selection: selection
+            ) {
+                client.attributedSubstring(from: $0)
             }
+            clientContext = inputContext.map {
+                SessionContextRetriever.trailingContext(
+                    in: $0.beforeSelection
+                )
+            } ?? SessionContextRetriever.retrieve(selection: selection) {
+                client.attributedSubstring(from: $0)
+            }
+        } else {
+            clientContext = nil
         }
-        return utf16.substring(from: start)
+        let context = contextTracker.resolve(clientContext: clientContext)
+        updateNativeInputContext(
+            inputContext ?? SessionInputContext(
+                beforeSelection: context,
+                selectedText: "",
+                afterSelection: ""
+            )
+        )
+        let source = clientContext == nil ? "fallback" : "client"
+        imeLog(
+            "Context: selection=(\(selection.location),\(selection.length)) " +
+            "source=\(source) utf16=\((context as NSString).length)"
+        )
+        return context
     }
 
     func sessionInsertText(_ text: String) {
         if let client = currentClient as? IMKTextInput {
             client.insertText(text,
                               replacementRange: NSRange(location: NSNotFound, length: 0))
+            contextTracker.recordInsertedText(text)
+            updateNativeInputContext(from: client)
+        }
+    }
+
+    private func updateNativeInputContext(from client: IMKTextInput) {
+        let selection = client.selectedRange()
+        guard let context = SessionContextRetriever.retrieveInputContext(
+            selection: selection,
+            attributedSubstring: { client.attributedSubstring(from: $0) }
+        ) else {
+            return
+        }
+        updateNativeInputContext(context)
+    }
+
+    private func updateNativeInputContext(_ context: SessionInputContext) {
+        context.beforeSelection.withCString { before in
+            context.selectedText.withCString { selected in
+                context.afterSelection.withCString { after in
+                    _ = gboard_update_input_context(before, selected, after)
+                }
+            }
         }
     }
 
@@ -274,6 +315,7 @@ class GboardInputController: IMKInputController, PinyinSessionDelegate {
 
     override func deactivateServer(_ sender: Any!) {
         _ = session.commitRawPinyin()
+        contextTracker.invalidate()
         candidateWindow?.close()
         candidateWindow = nil
         super.deactivateServer(sender)

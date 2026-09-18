@@ -68,6 +68,131 @@ func makeSession() -> (PinyinSession, MockDelegate) {
     return (session, mock)
 }
 
+func substringProvider(
+    _ source: NSString,
+    maximumLength: Int? = nil
+) -> (NSRange) -> NSAttributedString? {
+    { range in
+        guard range.location >= 0,
+              range.length >= 0,
+              NSMaxRange(range) <= source.length,
+              maximumLength.map({ range.length <= $0 }) ?? true else {
+            return nil
+        }
+        return NSAttributedString(string: source.substring(with: range))
+    }
+}
+
+func testSessionContextRetriever() {
+    print("[test_session_context_retriever]")
+
+    let chinese = "我对这里很" as NSString
+    let chineseContext = SessionContextRetriever.retrieve(
+        selection: NSRange(location: chinese.length, length: 0),
+        attributedSubstring: substringProvider(chinese)
+    )
+    check("returns all available Chinese context",
+          chineseContext == "我对这里很")
+
+    let limited = "abcdefghijklmnopqrstuvw" as NSString
+    var requestedLengths: [Int] = []
+    let limitedProvider = substringProvider(limited, maximumLength: 7)
+    let limitedContext = SessionContextRetriever.retrieve(
+        selection: NSRange(location: limited.length, length: 0)
+    ) { range in
+        requestedLengths.append(range.length)
+        return limitedProvider(range)
+    }
+    check("returns longest client-permitted suffix",
+          limitedContext == "qrstuvw")
+    check("retries from 21 down to permitted length",
+          requestedLengths == Array(stride(from: 21, through: 7, by: -1)))
+
+    let surrogateSource = "😀abcdefghijklmnopqrs" as NSString
+    let surrogateContext = SessionContextRetriever.retrieve(
+        selection: NSRange(location: surrogateSource.length, length: 0),
+        attributedSubstring: substringProvider(surrogateSource)
+    )
+    check("drops a leading split surrogate",
+          surrogateContext == "abcdefghijklmnopqrs")
+    check("returned context stays within 20 UTF-16 units",
+          surrogateContext.map { ($0 as NSString).length <= 20 } == true)
+    check("returned context has no replacement character",
+          surrogateContext.map { !$0.contains("\u{fffd}") } == true)
+
+    var requestCount = 0
+    let unavailable: (NSRange) -> NSAttributedString? = { _ in
+        requestCount += 1
+        return nil
+    }
+    let notFound = SessionContextRetriever.retrieve(
+        selection: NSRange(location: NSNotFound, length: 0),
+        attributedSubstring: unavailable
+    )
+    let cursorStart = SessionContextRetriever.retrieve(
+        selection: NSRange(location: 0, length: 0),
+        attributedSubstring: unavailable
+    )
+    check("NSNotFound reports unavailable context", notFound == nil)
+    check("cursor zero returns known empty context", cursorStart == "")
+    check("invalid selections do not request substrings", requestCount == 0)
+
+    let refused = SessionContextRetriever.retrieve(
+        selection: NSRange(location: 4, length: 0),
+        attributedSubstring: unavailable
+    )
+    check("unavailable substring reports unavailable context", refused == nil)
+    check("all shorter ranges are attempted", requestCount == 4)
+
+    let snapshotSource = "beforeSELECTafter" as NSString
+    let snapshot = SessionContextRetriever.retrieveInputContext(
+        selection: NSRange(location: 6, length: 6),
+        attributedSubstring: substringProvider(snapshotSource)
+    )
+    check("snapshot includes text before selection",
+          snapshot?.beforeSelection == "before")
+    check("snapshot includes selected text",
+          snapshot?.selectedText == "SELECT")
+    check("snapshot includes text after selection",
+          snapshot?.afterSelection == "after")
+
+    let longSnapshotSource =
+        ("0123456789" + String(repeating: "a", count: 50) +
+         String(repeating: "b", count: 50) + "0123456789") as NSString
+    let longSnapshot = SessionContextRetriever.retrieveInputContext(
+        selection: NSRange(location: 60, length: 0),
+        attributedSubstring: substringProvider(longSnapshotSource)
+    )
+    check("snapshot limits text before selection to 50 UTF-16 units",
+          longSnapshot?.beforeSelection == String(repeating: "a", count: 50))
+    check("snapshot limits text after selection to 50 UTF-16 units",
+          longSnapshot?.afterSelection == String(repeating: "b", count: 50))
+}
+
+func testSessionContextFallback() {
+    print("[test_session_context_fallback]")
+    var tracker = SessionContextTracker()
+
+    tracker.recordInsertedText("我对这里很")
+    check("uses tracked commits when client context is unavailable",
+          tracker.resolve(clientContext: nil) == "我对这里很")
+    check("client context overrides tracked commits",
+          tracker.resolve(clientContext: "别的前文") == "别的前文")
+    check("updated client context becomes the next fallback",
+          tracker.resolve(clientContext: nil) == "别的前文")
+
+    _ = tracker.resolve(clientContext: "")
+    check("known cursor start clears stale fallback",
+          tracker.resolve(clientContext: nil).isEmpty)
+
+    tracker.recordInsertedText("😀abcdefghijklmnopqrs")
+    check("tracked context does not split surrogate pairs",
+          tracker.fallbackContext == "abcdefghijklmnopqrs")
+
+    tracker.invalidate()
+    check("invalidation clears tracked context", tracker.fallbackContext.isEmpty)
+}
+
 // ── Test harness ─────────────────────────────────────────────────────────────
 
 var gPass = 0
@@ -582,6 +707,22 @@ func testContextLanguageScoring() {
     s.cancel()
 }
 
+func testContinuousPhraseLanguageScoring() {
+    print("[test_continuous_phrase_language_scoring]")
+    let (s, _) = makeSession()
+
+    for ch in "woduizhelihenbushu" {
+        _ = s.appendLetter(String(ch))
+    }
+
+    check("continuous phrase prefers 我对这里很不熟",
+          s.candidates.first == "我对这里很不熟")
+    if let first = s.candidates.first, first != "我对这里很不熟" {
+        print("    actual first candidate: \(first)")
+    }
+    s.cancel()
+}
+
 // ── Main ─────────────────────────────────────────────────────────────────────
 
 // ── Entry point ──────────────────────────────────────────────────────────────
@@ -620,7 +761,10 @@ func testContextLanguageScoring() {
         testChinesePunctuation()
         testPunctuationWhileComposing()
         testVisualPinyinSegmentation()
+        testSessionContextRetriever()
+        testSessionContextFallback()
         testContextLanguageScoring()
+        testContinuousPhraseLanguageScoring()
 
         print("\n══════════════════════════════════")
         print("Results: \(gPass) passed, \(gFail) failed")
