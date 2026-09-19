@@ -31,7 +31,14 @@ A macOS input method that runs Gboard's native HMM Pinyin engine via a custom AR
   `user_dict_3_3` under `~/Library/Application Support/GboardIME/` and
   persists the dictionary every four hours and on app teardown.
 - **Complete keyboard workflow** — Supports candidate paging, keyboard
-  selection, and Chinese/English mode switching.
+  selection, and configurable Chinese/English mode switching (Shift, Caps Lock, or disabled).
+- **Simplified and Traditional Chinese** — Real-time candidate and commit
+  conversion via `Ctrl+Shift+F`, candidate bar status badge, and settings toggle.
+- **Symbols and punctuation mode (?123)** — Quick symbol picker with `Ctrl+1`
+  or `Option+?` covering punctuation, brackets, math, and currency.
+- **Modern frosted glass UI & Preferences** — Native `NSVisualEffectView`
+  candidate panel with automatic dark/light theme adaptation and a dedicated
+  settings window.
 - **Native macOS interface** — Uses InputMethodKit and SwiftUI for the input
   method and candidate window.
 

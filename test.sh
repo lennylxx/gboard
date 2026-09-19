@@ -32,8 +32,10 @@ ENGINE_RC=$?
 
 echo ""
 echo "═══ Building test_ime (Swift) ═══"
-swiftc -g -parse-as-library -o "$TEST_DIR/test_ime" \
+mkdir -p .swift-module-cache
+swiftc -module-cache-path .swift-module-cache -g -parse-as-library -o "$TEST_DIR/test_ime" \
     "$TEST_DIR/test_ime.swift" \
+    "GboardIME/ime/PreferencesManager.swift" \
     "GboardIME/ime/PinyinSession.swift" \
     "GboardIME/ime/SessionContextRetriever.swift" \
     "GboardIME/ime/GboardBridge.c" \

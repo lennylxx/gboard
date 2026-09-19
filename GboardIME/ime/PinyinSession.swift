@@ -30,7 +30,14 @@ enum KeyResult {
 }
 
 class PinyinSession {
-    private static let candidatePageSize = 9
+    var candidatePageSize: Int = 9
+    var isTraditional: Bool = false {
+        didSet {
+            if isComposing && !isSymbolsMode {
+                fillCandidatePage()
+            }
+        }
+    }
 
     private(set) var composition = ""
     private(set) var candidates: [String] = []
@@ -38,7 +45,84 @@ class PinyinSession {
     private(set) var candidatePage = 0
     private(set) var hasNextPage = false
 
+    // MARK: - ?123 Symbols Mode
+    private static let symbolPages: [[String]] = [
+        ["，", "。", "、", "？", "！", "；", "：", "“", "”"],
+        ["《", "》", "【", "】", "（", "）", "——", "……", "～"],
+        ["＋", "－", "×", "÷", "＝", "％", "·", "＆", "§"],
+        ["￥", "＄", "€", "£", "¢", "©", "®", "™", "@"],
+    ]
+
+    private(set) var isSymbolsMode = false
+    private var symbolPageIndex = 0
+
     weak var delegate: PinyinSessionDelegate?
+
+    init() {
+        self.isTraditional = PreferencesManager.shared.isTraditional
+        self.candidatePageSize = PreferencesManager.shared.candidatePageSize
+        NotificationCenter.default.addObserver(
+            forName: PreferencesManager.didChangeNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            guard let self = self else { return }
+            self.isTraditional = PreferencesManager.shared.isTraditional
+            self.candidatePageSize = PreferencesManager.shared.candidatePageSize
+            if self.isComposing && !self.isSymbolsMode {
+                self.fillCandidatePage()
+            }
+        }
+    }
+
+    func toTraditionalIfEnabled(_ text: String) -> String {
+        guard isTraditional else { return text }
+        return (text as NSString).applyingTransform(StringTransform("Hans-Hant"), reverse: false) ?? text
+    }
+
+    func enterSymbolsMode() {
+        if isComposing && !isSymbolsMode {
+            _ = selectCurrent()
+        }
+        isSymbolsMode = true
+        symbolPageIndex = 0
+        // Set marked text so IMKit knows we are composing and routes all key events to handle()
+        delegate?.sessionSetMarkedText("?123")
+        fillSymbolsPage(resetSelection: true)
+    }
+
+    func exitSymbolsMode() {
+        guard isSymbolsMode else { return }
+        isSymbolsMode = false
+        symbolPageIndex = 0
+        delegate?.sessionSetMarkedText("")
+        reset()
+    }
+
+    func toggleSymbolsMode() {
+        if isSymbolsMode {
+            exitSymbolsMode()
+        } else {
+            enterSymbolsMode()
+        }
+    }
+
+    private func fillSymbolsPage(resetSelection: Bool = false) {
+        guard isSymbolsMode else { return }
+        candidates = Self.symbolPages[symbolPageIndex]
+        if resetSelection {
+            selectedIndex = 0
+        }
+        hasNextPage = symbolPageIndex < Self.symbolPages.count - 1
+        let title = "?123 (\(symbolPageIndex + 1)/\(Self.symbolPages.count))"
+        delegate?.sessionShowCandidates(
+            candidates,
+            pinyin: title,
+            selectedIndex: selectedIndex,
+            canGoPrevious: symbolPageIndex > 0,
+            canGoNext: hasNextPage
+        )
+    }
 
     // MARK: - Chinese punctuation
 
@@ -68,6 +152,9 @@ class PinyinSession {
     // MARK: - Key actions (called by InputController or test harness)
 
     func appendLetter(_ ch: String) -> KeyResult {
+        if isSymbolsMode {
+            exitSymbolsMode()
+        }
         if composition.isEmpty {
             contextBeforeInput = delegate?.sessionContextBeforeInput() ?? ""
         }
@@ -78,6 +165,10 @@ class PinyinSession {
     }
 
     func deleteBack() -> KeyResult {
+        if isSymbolsMode {
+            exitSymbolsMode()
+            return .handled
+        }
         guard !composition.isEmpty else { return .passThrough }
         let removed = composition.removeLast()
         if removed == "'" {
@@ -99,6 +190,10 @@ class PinyinSession {
     }
 
     func commitRawPinyin() -> KeyResult {
+        if isSymbolsMode {
+            exitSymbolsMode()
+            return .handled
+        }
         guard !composition.isEmpty else { return .passThrough }
         delegate?.sessionInsertText(composition)
         reset()
@@ -106,7 +201,7 @@ class PinyinSession {
     }
 
     func selectCurrent() -> KeyResult {
-        guard !composition.isEmpty else { return .passThrough }
+        guard isComposing else { return .passThrough }
         guard !candidates.isEmpty else {
             // No candidates — commit raw pinyin
             delegate?.sessionInsertText(composition)
@@ -118,13 +213,21 @@ class PinyinSession {
 
     @discardableResult
     func selectCandidate(index: Int) -> KeyResult {
+        if isSymbolsMode {
+            guard index >= 0 && index < candidates.count else { return .handled }
+            let text = candidates[index]
+            delegate?.sessionInsertText(text)
+            exitSymbolsMode()
+            return .handled
+        }
+
         guard index >= 0 && index < candidates.count else {
             return selectCurrent()
         }
         let text = candidates[index]
 
         // Get the vertex range BEFORE selecting (like Android does)
-        let engineIndex = candidatePage * Self.candidatePageSize + index
+        let engineIndex = candidatePage * candidatePageSize + index
         let consumed = Int(gboard_get_candidate_consumed(Int32(engineIndex)))
 
         // Capture this segment before selection mutates the engine state.
@@ -169,11 +272,22 @@ class PinyinSession {
     }
 
     func selectNumber(_ n: Int) -> KeyResult {
-        guard n >= 1 && n <= 9 && !composition.isEmpty else { return .passThrough }
+        guard n >= 1 && n <= 9 && isComposing else { return .passThrough }
         return selectCandidate(index: n - 1)
     }
 
     func moveLeft() -> KeyResult {
+        if isSymbolsMode {
+            if selectedIndex > 0 {
+                selectedIndex -= 1
+                fillSymbolsPage(resetSelection: false)
+            } else if symbolPageIndex > 0 {
+                symbolPageIndex -= 1
+                selectedIndex = Self.symbolPages[symbolPageIndex].count - 1
+                fillSymbolsPage(resetSelection: false)
+            }
+            return .handled
+        }
         guard !composition.isEmpty && !candidates.isEmpty else { return .passThrough }
         if selectedIndex > 0 {
             selectedIndex -= 1
@@ -187,6 +301,17 @@ class PinyinSession {
     }
 
     func moveRight() -> KeyResult {
+        if isSymbolsMode {
+            if selectedIndex < candidates.count - 1 {
+                selectedIndex += 1
+                fillSymbolsPage(resetSelection: false)
+            } else if symbolPageIndex < Self.symbolPages.count - 1 {
+                symbolPageIndex += 1
+                selectedIndex = 0
+                fillSymbolsPage(resetSelection: false)
+            }
+            return .handled
+        }
         guard !composition.isEmpty && !candidates.isEmpty else { return .passThrough }
         if selectedIndex < candidates.count - 1 {
             selectedIndex += 1
@@ -198,6 +323,13 @@ class PinyinSession {
     }
 
     func previousPage() -> KeyResult {
+        if isSymbolsMode {
+            if symbolPageIndex > 0 {
+                symbolPageIndex -= 1
+                fillSymbolsPage(resetSelection: true)
+            }
+            return .handled
+        }
         guard !composition.isEmpty && candidatePage > 0 else { return .handled }
         candidatePage -= 1
         fillCandidatePage()
@@ -205,6 +337,13 @@ class PinyinSession {
     }
 
     func nextPage() -> KeyResult {
+        if isSymbolsMode {
+            if symbolPageIndex < Self.symbolPages.count - 1 {
+                symbolPageIndex += 1
+                fillSymbolsPage(resetSelection: true)
+            }
+            return .handled
+        }
         guard !composition.isEmpty && !candidates.isEmpty else { return .passThrough }
         guard hasNextPage else { return .handled }
         candidatePage += 1
@@ -213,11 +352,15 @@ class PinyinSession {
     }
 
     func cancel() {
+        if isSymbolsMode {
+            exitSymbolsMode()
+            return
+        }
         delegate?.sessionSetMarkedText("")
         reset()
     }
 
-    var isComposing: Bool { !composition.isEmpty }
+    var isComposing: Bool { !composition.isEmpty || isSymbolsMode }
 
     // MARK: - Punctuation
 
@@ -360,6 +503,8 @@ class PinyinSession {
         selectedIndex = 0
         candidatePage = 0
         hasNextPage = false
+        isSymbolsMode = false
+        symbolPageIndex = 0
         separatorPositions = []
         contextBeforeInput = ""
         pendingLearningText = ""
@@ -402,20 +547,21 @@ class PinyinSession {
     }
 
     private func fillCandidatePage() {
-        let maxCount = Self.candidatePageSize + 1
+        let maxCount = candidatePageSize + 1
         var bufs = [UnsafeMutablePointer<CChar>?](repeating: nil, count: maxCount)
-        let offset = candidatePage * Self.candidatePageSize
+        let offset = candidatePage * candidatePageSize
         let count = Int(gboard_get_candidates_page(&bufs, Int32(offset), Int32(maxCount)))
 
         var results: [String] = []
         for i in 0..<count {
             if let ptr = bufs[i] {
-                results.append(String(cString: ptr))
+                let text = String(cString: ptr)
+                results.append(toTraditionalIfEnabled(text))
             }
         }
 
-        hasNextPage = results.count > Self.candidatePageSize
-        candidates = Array(results.prefix(Self.candidatePageSize))
+        hasNextPage = results.count > candidatePageSize
+        candidates = Array(results.prefix(candidatePageSize))
         selectedIndex = 0
         updateSegmentation()
         notifyCandidates()

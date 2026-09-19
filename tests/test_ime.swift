@@ -723,6 +723,103 @@ func testContinuousPhraseLanguageScoring() {
     s.cancel()
 }
 
+func testTraditionalConversion() {
+    print("[test_traditional_conversion]")
+    let (s, m) = makeSession()
+
+    // 1. Simplified baseline
+    s.isTraditional = false
+    for ch in "fazhan" { _ = s.appendLetter(String(ch)) }
+    check("simplified first candidate is 发展", s.candidates.first == "发展")
+    _ = s.selectCurrent()
+    check("commits 发展 in simplified mode", m.committedText == "发展")
+    m.clear()
+
+    // 2. Switch to Traditional
+    s.isTraditional = true
+    for ch in "fazhan" { _ = s.appendLetter(String(ch)) }
+    check("traditional candidate converted to 發展", s.candidates.first == "發展")
+    _ = s.selectCurrent()
+    check("commits 發展 in traditional mode", m.committedText == "發展")
+    m.clear()
+
+    // 3. Dynamic toggle while composing
+    s.isTraditional = false
+    for ch in "xuexi" { _ = s.appendLetter(String(ch)) }
+    check("pre-toggle is 学习", s.candidates.first == "学习")
+    s.isTraditional = true
+    check("mid-composition toggle updates to 學習", s.candidates.first == "學習")
+    _ = s.selectCurrent()
+    check("commits 學習", m.committedText == "學習")
+    s.isTraditional = false
+    s.cancel()
+}
+
+func testSymbolsMode() {
+    print("[test_symbols_mode]")
+    let (s, m) = makeSession()
+
+    // 1. Enter symbols mode
+    s.enterSymbolsMode()
+    check("is in symbols mode", s.isSymbolsMode)
+    check("isComposing is true in symbols mode", s.isComposing)
+    check("first symbol is ，", s.candidates.first == "，")
+    check("symbols count is 9", s.candidates.count == 9)
+
+    // 2. Paging
+    _ = s.nextPage()
+    check("page 2 first symbol is 《", s.candidates.first == "《")
+    _ = s.previousPage()
+    check("page 1 first symbol is back to ，", s.candidates.first == "，")
+
+    // 3. Selection commits and exits
+    _ = s.selectNumber(2)
+    check("select 2 commits 。", m.committedText == "。")
+    check("exits symbols mode after selection", !s.isSymbolsMode)
+    m.clear()
+
+    // 4. Toggle symbols mode
+    s.toggleSymbolsMode()
+    check("toggleSymbolsMode entered", s.isSymbolsMode)
+    s.toggleSymbolsMode()
+    check("toggleSymbolsMode exited", !s.isSymbolsMode)
+
+    // 5. Letter key exits symbols mode and types pinyin
+    s.enterSymbolsMode()
+    check("re-entered symbols mode", s.isSymbolsMode)
+    _ = s.appendLetter("n")
+    check("appendLetter exits symbols mode", !s.isSymbolsMode)
+    check("composition has letter 'n'", s.composition == "n")
+    s.cancel()
+}
+
+func testPreferencesManager() {
+    print("[test_preferences_manager]")
+    let prefs = PreferencesManager.shared
+
+    // Switch mode
+    let oldSwitch = prefs.switchMode
+    prefs.switchMode = .capsLock
+    check("switchMode updated to capsLock", prefs.switchMode == .capsLock)
+    prefs.switchMode = .disabled
+    check("switchMode updated to disabled", prefs.switchMode == .disabled)
+    prefs.switchMode = oldSwitch
+
+    // Theme mode
+    let oldTheme = prefs.themeMode
+    prefs.themeMode = .dark
+    check("themeMode updated to dark", prefs.themeMode == .dark)
+    prefs.themeMode = oldTheme
+
+    // Traditional mode
+    let oldTrad = prefs.isTraditional
+    prefs.isTraditional = true
+    check("isTraditional set to true", prefs.isTraditional)
+    prefs.toggleTraditional()
+    check("toggleTraditional toggles to false", !prefs.isTraditional)
+    prefs.isTraditional = oldTrad
+}
+
 // ── Main ─────────────────────────────────────────────────────────────────────
 
 // ── Entry point ──────────────────────────────────────────────────────────────
@@ -765,6 +862,9 @@ func testContinuousPhraseLanguageScoring() {
         testSessionContextFallback()
         testContextLanguageScoring()
         testContinuousPhraseLanguageScoring()
+        testTraditionalConversion()
+        testSymbolsMode()
+        testPreferencesManager()
 
         print("\n══════════════════════════════════")
         print("Results: \(gPass) passed, \(gFail) failed")

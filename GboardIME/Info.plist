@@ -30,6 +30,29 @@
     <key>InputMethodConnectionName</key>
     <string>GboardIME_Connection</string>
 
+    <!-- Input modes dictionary for macOS System Settings discovery -->
+    <key>ComponentInputModeDict</key>
+    <dict>
+        <key>tsInputModeListKey</key>
+        <dict>
+            <key>com.lennylxx.inputmethod.GboardIME</key>
+            <dict>
+                <key>tsInputModeDefaultStateKey</key>
+                <true/>
+                <key>tsInputModeIsVisibleKey</key>
+                <true/>
+                <key>tsInputModePrimaryInScriptKey</key>
+                <true/>
+                <key>tsInputModeScriptKey</key>
+                <string>smSimpChinese</string>
+            </dict>
+        </dict>
+        <key>tsVisibleInputModeOrderedArrayKey</key>
+        <array>
+            <string>com.lennylxx.inputmethod.GboardIME</string>
+        </array>
+    </dict>
+
     <!-- Character repertoire — top level, makes it appear under Chinese Simplified -->
     <key>tsInputMethodCharacterRepertoireKey</key>
     <array>
@@ -38,7 +61,7 @@
     <key>TICapsLockLanguageSwitchCapable</key>
     <true/>
 
-    <key>LSBackgroundOnly</key>
+    <key>LSUIElement</key>
     <true/>
     <key>LSMinimumSystemVersion</key>
     <string>13.0</string>
