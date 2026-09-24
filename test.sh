@@ -38,6 +38,7 @@ swiftc -module-cache-path .swift-module-cache -g -parse-as-library -o "$TEST_DIR
     "GboardIME/ime/PreferencesManager.swift" \
     "GboardIME/ime/PinyinSession.swift" \
     "GboardIME/ime/SessionContextRetriever.swift" \
+    "GboardIME/ime/ShiftToggleTracker.swift" \
     "GboardIME/ime/GboardBridge.c" \
     "${ENGINE_SRCS[@]}" \
     -IGboardIME -import-objc-header GboardIME/ime/GboardBridge.h \

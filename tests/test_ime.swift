@@ -791,6 +791,27 @@ func testSymbolsMode() {
     check("appendLetter exits symbols mode", !s.isSymbolsMode)
     check("composition has letter 'n'", s.composition == "n")
     s.cancel()
+    m.clear()
+
+    // 6. Direct punctuation in symbols mode does not double commit
+    s.enterSymbolsMode()
+    check("re-entered symbols mode for punct", s.isSymbolsMode)
+    m.clear()
+    let res = s.handlePunctuation(",")
+    check("handlePunctuation handled", res == .handled)
+    check("only one comma committed without duplicate", m.committedText == "，")
+    check("exited symbols mode after punctuation", !s.isSymbolsMode)
+    m.clear()
+
+    // 7. Entering symbols mode while composing pinyin commits raw pinyin, not candidate 1
+    for ch in "nihao" { _ = s.appendLetter(String(ch)) }
+    check("is composing nihao", s.isComposing && s.composition == "nihao")
+    m.clear()
+    s.enterSymbolsMode()
+    check("raw pinyin committed", m.committedText == "nihao")
+    check("now in symbols mode", s.isSymbolsMode)
+    s.exitSymbolsMode()
+    m.clear()
 }
 
 func testPreferencesManager() {
@@ -818,6 +839,36 @@ func testPreferencesManager() {
     prefs.toggleTraditional()
     check("toggleTraditional toggles to false", !prefs.isTraditional)
     prefs.isTraditional = oldTrad
+}
+
+func testShiftToggleTracker() {
+    print("[test_shift_toggle_tracker]")
+    let tracker = ShiftToggleTracker()
+
+    // 1. Bare Shift toggle
+    check("shift down does not toggle", tracker.handleFlagsChanged(keyCode: 56, modifierFlags: .shift) == .none)
+    check("shift release toggles", tracker.handleFlagsChanged(keyCode: 56, modifierFlags: []) == .shouldToggle)
+
+    // 2. Command + Shift + F (Command held first, then Shift pressed)
+    tracker.cancelTracking()
+    check("cmd down", tracker.handleFlagsChanged(keyCode: 55, modifierFlags: .command) == .none)
+    check("shift down with cmd held does not track", tracker.handleFlagsChanged(keyCode: 56, modifierFlags: [.command, .shift]) == .none)
+    tracker.handleKeyDown(keyCode: 3, modifierFlags: [.command, .shift]) // F
+    check("shift release with cmd held does not toggle", tracker.handleFlagsChanged(keyCode: 56, modifierFlags: .command) == .none)
+    check("cmd release does not toggle", tracker.handleFlagsChanged(keyCode: 55, modifierFlags: []) == .none)
+
+    // 3. Shift pressed first, then Command pressed
+    tracker.cancelTracking()
+    check("shift down alone", tracker.handleFlagsChanged(keyCode: 56, modifierFlags: .shift) == .none)
+    check("cmd down cancels tracking", tracker.handleFlagsChanged(keyCode: 55, modifierFlags: [.shift, .command]) == .none)
+    tracker.handleKeyDown(keyCode: 3, modifierFlags: [.command, .shift]) // F
+    check("shift release does not toggle", tracker.handleFlagsChanged(keyCode: 56, modifierFlags: .command) == .none)
+
+    // 4. Shift used with letter (Shift + A)
+    tracker.cancelTracking()
+    _ = tracker.handleFlagsChanged(keyCode: 56, modifierFlags: .shift)
+    tracker.handleKeyDown(keyCode: 0, modifierFlags: .shift) // 'a'
+    check("shift + letter release does not toggle", tracker.handleFlagsChanged(keyCode: 56, modifierFlags: []) == .none)
 }
 
 // ── Main ─────────────────────────────────────────────────────────────────────
@@ -865,6 +916,7 @@ func testPreferencesManager() {
         testTraditionalConversion()
         testSymbolsMode()
         testPreferencesManager()
+        testShiftToggleTracker()
 
         print("\n══════════════════════════════════")
         print("Results: \(gPass) passed, \(gFail) failed")

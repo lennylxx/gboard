@@ -112,17 +112,22 @@ class GboardInputController: IMKInputController, PinyinSessionDelegate {
         let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
         let keyCode = event.keyCode
         let chars = event.characters ?? ""
+        let charsIgnoring = (event.charactersIgnoringModifiers ?? "").lowercased()
 
         // ── Global shortcuts (active in both Chinese and English mode) ──
-        // 1. Ctrl + Shift + F -> Toggle Simplified / Traditional
-        if flags.contains(.control) && flags.contains(.shift) && (keyCode == 3 || chars.lowercased() == "f") {
-            PreferencesManager.shared.toggleTraditional()
+        // 1. Command + Shift + F -> Toggle Simplified / Traditional
+        let isFKey = (keyCode == 3 || charsIgnoring == "f")
+        let isTradShortcut = isFKey && flags.contains(.command) && flags.contains(.shift) && !flags.contains(.control)
+        if isTradShortcut {
+            toggleTraditional()
             return true
         }
 
         // 2. Ctrl + 1 or Option + ? -> Toggle ?123 Symbols Mode
-        if (flags.contains(.control) && !flags.contains(.command) && (keyCode == 18 || chars == "1")) ||
-           (flags.contains(.option) && !flags.contains(.command) && (keyCode == 44 || chars == "?")) {
+        let isOneKey = (keyCode == 18 || charsIgnoring == "1")
+        let isQuestionOrSlashKey = (keyCode == 44 || charsIgnoring == "?" || charsIgnoring == "/")
+        if (flags.contains(.control) && !flags.contains(.command) && isOneKey) ||
+           (flags.contains(.option) && !flags.contains(.command) && isQuestionOrSlashKey) {
             if !chineseMode {
                 chineseMode = true
             }
@@ -349,17 +354,18 @@ class GboardInputController: IMKInputController, PinyinSessionDelegate {
         // 简繁切换
         let isTrad = PreferencesManager.shared.isTraditional
         let tradItem = NSMenuItem(
-            title: isTrad ? "切换为简体中文 (Ctrl+Shift+F)" : "切换为繁体中文 (Ctrl+Shift+F)",
+            title: isTrad ? "切换为简体中文" : "切换为繁体中文",
             action: #selector(toggleTraditionalMenuAction),
-            keyEquivalent: ""
+            keyEquivalent: "F"
         )
+        tradItem.keyEquivalentModifierMask = [.command, .shift]
         tradItem.target = self
-        tradItem.state = isTrad ? .on : .off
+        tradItem.state = .off
         menu.addItem(tradItem)
 
         // ?123 标点与数字
         let symItem = NSMenuItem(
-            title: "标点与符号 (?123)",
+            title: "标点与符号",
             action: #selector(toggleSymbolsMenuAction),
             keyEquivalent: ""
         )
@@ -400,11 +406,22 @@ class GboardInputController: IMKInputController, PinyinSessionDelegate {
         return menu
     }
 
-    @objc private func toggleTraditionalMenuAction() {
+    private func toggleTraditional() {
+        shiftTracker.cancelTracking()
         PreferencesManager.shared.toggleTraditional()
+        if session.isComposing && !session.isSymbolsMode {
+            session.fillCandidatePage(keepSelection: true)
+        }
+        imeLog("Traditional toggled to: \(PreferencesManager.shared.isTraditional)")
+    }
+
+    @objc private func toggleTraditionalMenuAction() {
+        shiftTracker.cancelTracking()
+        toggleTraditional()
     }
 
     @objc private func toggleSymbolsMenuAction() {
+        shiftTracker.cancelTracking()
         if !chineseMode {
             chineseMode = true
         }

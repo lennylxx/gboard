@@ -62,10 +62,9 @@ do_install() {
 
     echo ""
     echo "To activate:"
-    echo "  1. Click the '+' button at the bottom-left of the Input Sources window"
-    echo "  2. Select 'Chinese, Simplified' on the left"
-    echo "  3. Find and select 'Gboard' on the right, then click 'Add'"
-    echo "  4. Switch to Gboard from the menu bar input source picker"
+    echo "  1. Log out and log back in (or restart)"
+    echo "  2. System Settings → Keyboard → Input Sources → Edit → + → Chinese Simplified → Gboard"
+    echo "  3. Switch to Gboard from the menu bar input source picker"
 }
 
 do_uninstall() {

@@ -33,7 +33,7 @@ A macOS input method that runs Gboard's native HMM Pinyin engine via a custom AR
 - **Complete keyboard workflow** — Supports candidate paging, keyboard
   selection, and configurable Chinese/English mode switching (Shift, Caps Lock, or disabled).
 - **Simplified and Traditional Chinese** — Real-time candidate and commit
-  conversion via `Ctrl+Shift+F`, candidate bar status badge, and settings toggle.
+  conversion via `Cmd+Shift+F`, candidate bar status badge, and settings toggle.
 - **Symbols and punctuation mode (?123)** — Quick symbol picker with `Ctrl+1`
   or `Option+?` covering punctuation, brackets, math, and currency.
 - **Modern frosted glass UI & Preferences** — Native `NSVisualEffectView`

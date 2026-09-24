@@ -31,11 +31,11 @@ enum KeyResult {
 
 class PinyinSession {
     var candidatePageSize: Int = 9
-    var isTraditional: Bool = false {
-        didSet {
-            if isComposing && !isSymbolsMode {
-                fillCandidatePage()
-            }
+    var isTraditional: Bool {
+        get { PreferencesManager.shared.isTraditional }
+        set {
+            guard PreferencesManager.shared.isTraditional != newValue else { return }
+            PreferencesManager.shared.isTraditional = newValue
         }
     }
 
@@ -55,23 +55,28 @@ class PinyinSession {
 
     private(set) var isSymbolsMode = false
     private var symbolPageIndex = 0
+    private var prefsObserver: NSObjectProtocol?
 
     weak var delegate: PinyinSessionDelegate?
 
     init() {
-        self.isTraditional = PreferencesManager.shared.isTraditional
         self.candidatePageSize = PreferencesManager.shared.candidatePageSize
-        NotificationCenter.default.addObserver(
+        self.prefsObserver = NotificationCenter.default.addObserver(
             forName: PreferencesManager.didChangeNotification,
             object: nil,
-            queue: .main
+            queue: nil
         ) { [weak self] _ in
             guard let self = self else { return }
-            self.isTraditional = PreferencesManager.shared.isTraditional
             self.candidatePageSize = PreferencesManager.shared.candidatePageSize
             if self.isComposing && !self.isSymbolsMode {
-                self.fillCandidatePage()
+                self.fillCandidatePage(keepSelection: true)
             }
+        }
+    }
+
+    deinit {
+        if let observer = prefsObserver {
+            NotificationCenter.default.removeObserver(observer)
         }
     }
 
@@ -82,7 +87,7 @@ class PinyinSession {
 
     func enterSymbolsMode() {
         if isComposing && !isSymbolsMode {
-            _ = selectCurrent()
+            _ = commitRawPinyin()
         }
         isSymbolsMode = true
         symbolPageIndex = 0
@@ -391,6 +396,15 @@ class PinyinSession {
     /// Handles a punctuation key: commits composition if needed, then inserts Chinese punctuation.
     /// Exception: apostrophe while composing sets a separator in the engine (e.g. xi'an).
     func handlePunctuation(_ ch: Character) -> KeyResult {
+        if isSymbolsMode {
+            exitSymbolsMode()
+            if let punct = chinesePunctuation(for: ch) {
+                delegate?.sessionInsertText(punct)
+            } else {
+                delegate?.sessionInsertText(String(ch))
+            }
+            return .handled
+        }
         if (ch == "'" || ch == "\u{2019}" || ch == "\u{2018}") && isComposing {
             composition += "'"
             // Track separator at the vertex matching the letter count up to this apostrophe
@@ -546,7 +560,8 @@ class PinyinSession {
         fillCandidatePage()
     }
 
-    private func fillCandidatePage() {
+    func fillCandidatePage(keepSelection: Bool = false) {
+        let oldSelected = selectedIndex
         let maxCount = candidatePageSize + 1
         var bufs = [UnsafeMutablePointer<CChar>?](repeating: nil, count: maxCount)
         let offset = candidatePage * candidatePageSize
@@ -562,7 +577,11 @@ class PinyinSession {
 
         hasNextPage = results.count > candidatePageSize
         candidates = Array(results.prefix(candidatePageSize))
-        selectedIndex = 0
+        if keepSelection && oldSelected < candidates.count {
+            selectedIndex = oldSelected
+        } else {
+            selectedIndex = 0
+        }
         updateSegmentation()
         notifyCandidates()
     }

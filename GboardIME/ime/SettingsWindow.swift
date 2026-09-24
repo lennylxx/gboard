@@ -76,7 +76,7 @@ struct SettingsView: View {
                                 Text("快捷键快速切换：")
                                     .font(.system(size: 12))
                                     .foregroundColor(.secondary)
-                                Text("Control + Shift + F")
+                                Text("Command + Shift + F")
                                     .font(.system(size: 12, weight: .semibold, design: .monospaced))
                                     .padding(.horizontal, 6)
                                     .padding(.vertical, 2)
@@ -167,7 +167,8 @@ struct SettingsView: View {
             Divider()
 
             HStack {
-                Text("Gboard for macOS v1.0")
+                let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.0"
+                Text("Gboard for macOS v\(version)")
                     .font(.system(size: 11))
                     .foregroundColor(.secondary)
                 Spacer()
@@ -204,7 +205,6 @@ final class SettingsWindowController: NSObject {
             win.contentView = NSHostingView(rootView: SettingsView())
             window = win
         }
-        NSApp.setActivationPolicy(.accessory)
         window?.center()
         window?.makeKeyAndOrderFront(nil)
         window?.orderFrontRegardless()

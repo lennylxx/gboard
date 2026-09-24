@@ -121,9 +121,10 @@ void android_stubs_init(const char *asset_base_dir) {
 static int stub_android_log_print(int prio, const char *tag, const char *fmt,
                                   void *a0, void *a1, void *a2, void *a3, void *a4) {
     (void)prio;
+    if (!fmt) return 0;
     char buf[1024];
     int off = snprintf(buf, sizeof(buf), "[%s] ", tag ? tag : "?");
-    if (fmt && off < (int)sizeof(buf) - 1) {
+    if (off < (int)sizeof(buf) - 1) {
         off += snprintf(buf + off, sizeof(buf) - off, fmt, a0, a1, a2, a3, a4);
     }
     if (off < (int)sizeof(buf) - 1) buf[off++] = '\n';
@@ -138,7 +139,11 @@ static int stub_android_log_write(int prio, const char *tag, const char *text) {
     return 0;
 }
 static int stub_android_log_vprint(int prio, const char *tag, const char *fmt, void *ap) {
-    (void)prio; (void)tag; (void)fmt; (void)ap;
+    (void)prio; (void)ap;
+    if (!fmt) return 0;
+    char buf[1024];
+    int n = snprintf(buf, sizeof(buf), "[%s] %s\n", tag ? tag : "?", fmt);
+    write(STDERR_FILENO, buf, n > 0 ? (size_t)n : 0);
     return 0;
 }
 
@@ -390,8 +395,10 @@ static int stub_fprintf(FILE *stream, const char *fmt, void *a0, void *a1, void 
     return fprintf(f, fmt, a0, a1, a2, a3, a4, a5);
 }
 static int stub_vfprintf(FILE *stream, const char *fmt, void *ap) {
-    (void)stream; (void)fmt; (void)ap;
-    return 0;
+    (void)ap;
+    FILE *f = fixup_file(stream);
+    if (!fmt) return 0;
+    return fputs(fmt, f);
 }
 
 // ── pthread wrappers via side-table ───────────────────────────────────────────
