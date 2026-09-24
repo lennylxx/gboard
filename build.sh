@@ -28,6 +28,8 @@ do_build() {
     cd "$XCODE_DIR"
     xcodebuild -quiet \
         -scheme GboardIME \
+        -destination 'platform=macOS' \
+        -derivedDataPath "build/DerivedData" \
         -configuration Release \
         build \
         CONFIGURATION_BUILD_DIR="build/release"
@@ -51,6 +53,13 @@ do_install() {
         "$INSTALL_DIR/$APP_NAME"
 
     echo "Installed and signed."
+
+    # Force macOS LaunchServices to register the new Input Method immediately
+    local lsregister="/System/Library/Frameworks/CoreServices.framework/Versions/Current/Frameworks/LaunchServices.framework/Versions/Current/Support/lsregister"
+    if [ -x "$lsregister" ]; then
+        "$lsregister" -R -f "$INSTALL_DIR/$APP_NAME" 2>/dev/null || true
+    fi
+
     echo ""
     echo "To activate:"
     echo "  1. Log out and log back in (or restart)"
@@ -65,9 +74,9 @@ do_uninstall() {
 }
 
 do_clean() {
-    rm -rf "$BUILD_DIR"
-    rm -f tests/test_engine
-    rm -rf tests/test_engine.dSYM
+    rm -rf "$XCODE_DIR/build"
+    rm -f tests/test_engine tests/test_ime
+    rm -rf tests/test_engine.dSYM tests/test_ime.dSYM .swift-module-cache
     echo "Cleaned."
 }
 

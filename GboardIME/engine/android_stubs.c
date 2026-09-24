@@ -118,15 +118,17 @@ void android_stubs_init(const char *asset_base_dir) {
 #define ANDROID_LOG_WARN    5
 #define ANDROID_LOG_ERROR   6
 
-static int stub_android_log_print(int prio, const char *tag, const char *fmt, ...) {
+static int stub_android_log_print(int prio, const char *tag, const char *fmt,
+                                  void *a0, void *a1, void *a2, void *a3, void *a4) {
     (void)prio;
+    if (!fmt) return 0;
     char buf[1024];
     int off = snprintf(buf, sizeof(buf), "[%s] ", tag ? tag : "?");
-    va_list ap; va_start(ap, fmt);
-    off += vsnprintf(buf + off, sizeof(buf) - off, fmt, ap);
-    va_end(ap);
+    if (off < (int)sizeof(buf) - 1) {
+        off += snprintf(buf + off, sizeof(buf) - off, fmt, a0, a1, a2, a3, a4);
+    }
     if (off < (int)sizeof(buf) - 1) buf[off++] = '\n';
-    write(STDERR_FILENO, buf, off);
+    write(STDERR_FILENO, buf, off > 0 ? (size_t)off : 0);
     return 0;
 }
 static int stub_android_log_write(int prio, const char *tag, const char *text) {
@@ -136,13 +138,12 @@ static int stub_android_log_write(int prio, const char *tag, const char *text) {
     write(STDERR_FILENO, buf, n > 0 ? (size_t)n : 0);
     return 0;
 }
-static int stub_android_log_vprint(int prio, const char *tag, const char *fmt, va_list ap) {
-    (void)prio;
+static int stub_android_log_vprint(int prio, const char *tag, const char *fmt, void *ap) {
+    (void)prio; (void)ap;
+    if (!fmt) return 0;
     char buf[1024];
-    int off = snprintf(buf, sizeof(buf), "[%s] ", tag ? tag : "?");
-    off += vsnprintf(buf + off, sizeof(buf) - off, fmt, ap);
-    if (off < (int)sizeof(buf) - 1) buf[off++] = '\n';
-    write(STDERR_FILENO, buf, off);
+    int n = snprintf(buf, sizeof(buf), "[%s] %s\n", tag ? tag : "?", fmt);
+    write(STDERR_FILENO, buf, n > 0 ? (size_t)n : 0);
     return 0;
 }
 
@@ -388,15 +389,16 @@ static int stub_fputc(int c, FILE *stream) {
 static size_t stub_fread(void *ptr, size_t size, size_t nmemb, FILE *stream) {
     return fread(ptr, size, nmemb, fixup_file(stream));
 }
-static int stub_fprintf(FILE *stream, const char *fmt, ...) {
-    va_list ap;
-    va_start(ap, fmt);
-    int ret = vfprintf(fixup_file(stream), fmt, ap);
-    va_end(ap);
-    return ret;
+static int stub_fprintf(FILE *stream, const char *fmt, void *a0, void *a1, void *a2, void *a3, void *a4, void *a5) {
+    FILE *f = fixup_file(stream);
+    if (!fmt) return 0;
+    return fprintf(f, fmt, a0, a1, a2, a3, a4, a5);
 }
-static int stub_vfprintf(FILE *stream, const char *fmt, va_list ap) {
-    return vfprintf(fixup_file(stream), fmt, ap);
+static int stub_vfprintf(FILE *stream, const char *fmt, void *ap) {
+    (void)ap;
+    FILE *f = fixup_file(stream);
+    if (!fmt) return 0;
+    return fputs(fmt, f);
 }
 
 // ── pthread wrappers via side-table ───────────────────────────────────────────

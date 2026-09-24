@@ -723,6 +723,154 @@ func testContinuousPhraseLanguageScoring() {
     s.cancel()
 }
 
+func testTraditionalConversion() {
+    print("[test_traditional_conversion]")
+    let (s, m) = makeSession()
+
+    // 1. Simplified baseline
+    s.isTraditional = false
+    for ch in "fazhan" { _ = s.appendLetter(String(ch)) }
+    check("simplified first candidate is 发展", s.candidates.first == "发展")
+    _ = s.selectCurrent()
+    check("commits 发展 in simplified mode", m.committedText == "发展")
+    m.clear()
+
+    // 2. Switch to Traditional
+    s.isTraditional = true
+    for ch in "fazhan" { _ = s.appendLetter(String(ch)) }
+    check("traditional candidate converted to 發展", s.candidates.first == "發展")
+    _ = s.selectCurrent()
+    check("commits 發展 in traditional mode", m.committedText == "發展")
+    m.clear()
+
+    // 3. Dynamic toggle while composing
+    s.isTraditional = false
+    for ch in "xuexi" { _ = s.appendLetter(String(ch)) }
+    check("pre-toggle is 学习", s.candidates.first == "学习")
+    s.isTraditional = true
+    check("mid-composition toggle updates to 學習", s.candidates.first == "學習")
+    _ = s.selectCurrent()
+    check("commits 學習", m.committedText == "學習")
+    s.isTraditional = false
+    s.cancel()
+}
+
+func testSymbolsMode() {
+    print("[test_symbols_mode]")
+    let (s, m) = makeSession()
+
+    // 1. Enter symbols mode
+    s.enterSymbolsMode()
+    check("is in symbols mode", s.isSymbolsMode)
+    check("isComposing is true in symbols mode", s.isComposing)
+    check("first symbol is ，", s.candidates.first == "，")
+    check("symbols count is 9", s.candidates.count == 9)
+
+    // 2. Paging
+    _ = s.nextPage()
+    check("page 2 first symbol is 《", s.candidates.first == "《")
+    _ = s.previousPage()
+    check("page 1 first symbol is back to ，", s.candidates.first == "，")
+
+    // 3. Selection commits and exits
+    _ = s.selectNumber(2)
+    check("select 2 commits 。", m.committedText == "。")
+    check("exits symbols mode after selection", !s.isSymbolsMode)
+    m.clear()
+
+    // 4. Toggle symbols mode
+    s.toggleSymbolsMode()
+    check("toggleSymbolsMode entered", s.isSymbolsMode)
+    s.toggleSymbolsMode()
+    check("toggleSymbolsMode exited", !s.isSymbolsMode)
+
+    // 5. Letter key exits symbols mode and types pinyin
+    s.enterSymbolsMode()
+    check("re-entered symbols mode", s.isSymbolsMode)
+    _ = s.appendLetter("n")
+    check("appendLetter exits symbols mode", !s.isSymbolsMode)
+    check("composition has letter 'n'", s.composition == "n")
+    s.cancel()
+    m.clear()
+
+    // 6. Direct punctuation in symbols mode does not double commit
+    s.enterSymbolsMode()
+    check("re-entered symbols mode for punct", s.isSymbolsMode)
+    m.clear()
+    let res = s.handlePunctuation(",")
+    check("handlePunctuation handled", res == .handled)
+    check("only one comma committed without duplicate", m.committedText == "，")
+    check("exited symbols mode after punctuation", !s.isSymbolsMode)
+    m.clear()
+
+    // 7. Entering symbols mode while composing pinyin commits raw pinyin, not candidate 1
+    for ch in "nihao" { _ = s.appendLetter(String(ch)) }
+    check("is composing nihao", s.isComposing && s.composition == "nihao")
+    m.clear()
+    s.enterSymbolsMode()
+    check("raw pinyin committed", m.committedText == "nihao")
+    check("now in symbols mode", s.isSymbolsMode)
+    s.exitSymbolsMode()
+    m.clear()
+}
+
+func testPreferencesManager() {
+    print("[test_preferences_manager]")
+    let prefs = PreferencesManager.shared
+
+    // Switch mode
+    let oldSwitch = prefs.switchMode
+    prefs.switchMode = .capsLock
+    check("switchMode updated to capsLock", prefs.switchMode == .capsLock)
+    prefs.switchMode = .disabled
+    check("switchMode updated to disabled", prefs.switchMode == .disabled)
+    prefs.switchMode = oldSwitch
+
+    // Theme mode
+    let oldTheme = prefs.themeMode
+    prefs.themeMode = .dark
+    check("themeMode updated to dark", prefs.themeMode == .dark)
+    prefs.themeMode = oldTheme
+
+    // Traditional mode
+    let oldTrad = prefs.isTraditional
+    prefs.isTraditional = true
+    check("isTraditional set to true", prefs.isTraditional)
+    prefs.toggleTraditional()
+    check("toggleTraditional toggles to false", !prefs.isTraditional)
+    prefs.isTraditional = oldTrad
+}
+
+func testShiftToggleTracker() {
+    print("[test_shift_toggle_tracker]")
+    let tracker = ShiftToggleTracker()
+
+    // 1. Bare Shift toggle
+    check("shift down does not toggle", tracker.handleFlagsChanged(keyCode: 56, modifierFlags: .shift) == .none)
+    check("shift release toggles", tracker.handleFlagsChanged(keyCode: 56, modifierFlags: []) == .shouldToggle)
+
+    // 2. Command + Shift + F (Command held first, then Shift pressed)
+    tracker.cancelTracking()
+    check("cmd down", tracker.handleFlagsChanged(keyCode: 55, modifierFlags: .command) == .none)
+    check("shift down with cmd held does not track", tracker.handleFlagsChanged(keyCode: 56, modifierFlags: [.command, .shift]) == .none)
+    tracker.handleKeyDown(keyCode: 3, modifierFlags: [.command, .shift]) // F
+    check("shift release with cmd held does not toggle", tracker.handleFlagsChanged(keyCode: 56, modifierFlags: .command) == .none)
+    check("cmd release does not toggle", tracker.handleFlagsChanged(keyCode: 55, modifierFlags: []) == .none)
+
+    // 3. Shift pressed first, then Command pressed
+    tracker.cancelTracking()
+    check("shift down alone", tracker.handleFlagsChanged(keyCode: 56, modifierFlags: .shift) == .none)
+    check("cmd down cancels tracking", tracker.handleFlagsChanged(keyCode: 55, modifierFlags: [.shift, .command]) == .none)
+    tracker.handleKeyDown(keyCode: 3, modifierFlags: [.command, .shift]) // F
+    check("shift release does not toggle", tracker.handleFlagsChanged(keyCode: 56, modifierFlags: .command) == .none)
+
+    // 4. Shift used with letter (Shift + A)
+    tracker.cancelTracking()
+    _ = tracker.handleFlagsChanged(keyCode: 56, modifierFlags: .shift)
+    tracker.handleKeyDown(keyCode: 0, modifierFlags: .shift) // 'a'
+    check("shift + letter release does not toggle", tracker.handleFlagsChanged(keyCode: 56, modifierFlags: []) == .none)
+}
+
 // ── Main ─────────────────────────────────────────────────────────────────────
 
 // ── Entry point ──────────────────────────────────────────────────────────────
@@ -765,6 +913,10 @@ func testContinuousPhraseLanguageScoring() {
         testSessionContextFallback()
         testContextLanguageScoring()
         testContinuousPhraseLanguageScoring()
+        testTraditionalConversion()
+        testSymbolsMode()
+        testPreferencesManager()
+        testShiftToggleTracker()
 
         print("\n══════════════════════════════════")
         print("Results: \(gPass) passed, \(gFail) failed")
