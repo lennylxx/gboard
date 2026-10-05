@@ -40,7 +40,10 @@ class PinyinSession {
     }
 
     private(set) var composition = ""
+    /// Display candidates (converted to Traditional when enabled).
     private(set) var candidates: [String] = []
+    /// Original Simplified candidates from the engine, used for user dictionary learning.
+    private var engineCandidates: [String] = []
     private(set) var selectedIndex = 0
     private(set) var candidatePage = 0
     private(set) var hasNextPage = false
@@ -230,6 +233,7 @@ class PinyinSession {
             return selectCurrent()
         }
         let text = candidates[index]
+        let engineText = engineCandidates[index]
 
         // Get the vertex range BEFORE selecting (like Android does)
         let engineIndex = candidatePage * candidatePageSize + index
@@ -238,7 +242,7 @@ class PinyinSession {
         // Capture this segment before selection mutates the engine state.
         let tokenCount = gboard_user_dict_extract_token_count(Int32(engineIndex))
         let letterCount = composition.filter { $0 != "'" }.count
-        accumulateLearningSegment(text: text,
+        accumulateLearningSegment(text: engineText,
                                   engineIndex: engineIndex,
                                   tokenCount: Int(tokenCount))
 
@@ -514,6 +518,7 @@ class PinyinSession {
     func reset() {
         composition = ""
         candidates = []
+        engineCandidates = []
         selectedIndex = 0
         candidatePage = 0
         hasNextPage = false
@@ -543,6 +548,7 @@ class PinyinSession {
         gboard_reset()
         guard gboard_append(letters) else {
             candidates = []
+            engineCandidates = []
             delegate?.sessionHideCandidates()
             return
         }
@@ -570,13 +576,13 @@ class PinyinSession {
         var results: [String] = []
         for i in 0..<count {
             if let ptr = bufs[i] {
-                let text = String(cString: ptr)
-                results.append(toTraditionalIfEnabled(text))
+                results.append(String(cString: ptr))
             }
         }
 
         hasNextPage = results.count > candidatePageSize
-        candidates = Array(results.prefix(candidatePageSize))
+        engineCandidates = Array(results.prefix(candidatePageSize))
+        candidates = engineCandidates.map(toTraditionalIfEnabled)
         if keepSelection && oldSelected < candidates.count {
             selectedIndex = oldSelected
         } else {

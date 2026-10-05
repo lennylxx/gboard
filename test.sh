@@ -20,6 +20,16 @@ ENGINE_SRCS=(
     "$ENGINE_DIR/android_stubs.c"
 )
 
+echo "═══ Building test_android_stubs (C) ═══"
+clang -g -O0 -DDEBUG=1 -o "$TEST_DIR/test_android_stubs" \
+    "$TEST_DIR/test_android_stubs.c" \
+    "$ENGINE_DIR/android_stubs.c" \
+    -IGboardIME -lpthread
+
+echo "Running test_android_stubs..."
+"$TEST_DIR/test_android_stubs"
+
+echo ""
 echo "═══ Building test_engine (C) ═══"
 clang -g -O0 -DDEBUG=1 -o "$TEST_DIR/test_engine" \
     "$TEST_DIR/test_engine.c" \

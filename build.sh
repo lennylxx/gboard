@@ -75,8 +75,8 @@ do_uninstall() {
 
 do_clean() {
     rm -rf "$XCODE_DIR/build"
-    rm -f tests/test_engine tests/test_ime
-    rm -rf tests/test_engine.dSYM tests/test_ime.dSYM .swift-module-cache
+    rm -f tests/test_engine tests/test_ime tests/test_android_stubs
+    rm -rf tests/test_engine.dSYM tests/test_ime.dSYM tests/test_android_stubs.dSYM .swift-module-cache
     echo "Cleaned."
 }
 

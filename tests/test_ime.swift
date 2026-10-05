@@ -755,6 +755,55 @@ func testTraditionalConversion() {
     s.cancel()
 }
 
+func testTraditionalLearningKeepsSimplifiedDictionary() {
+    print("[test_traditional_learning_keeps_simplified_dictionary]")
+    let prefs = PreferencesManager.shared
+    let oldTrad = prefs.isTraditional
+    defer { prefs.isTraditional = oldTrad }
+
+    prefs.isTraditional = false
+    let (before, _) = makeSession()
+    for ch in "shiyan" { _ = before.appendLetter(String(ch)) }
+    let positionBefore = candidatePosition("试验", in: before)
+    before.cancel()
+
+    prefs.isTraditional = true
+    var allCommitted = true
+    for _ in 0..<20 {
+        let (s1, m1) = makeSession()
+        for ch in "fazhan" { _ = s1.appendLetter(String(ch)) }
+        if !selectCandidate("發展", in: s1) || m1.committedText != "發展" {
+            allCommitted = false
+            break
+        }
+        let (s2, m2) = makeSession()
+        for ch in "shiyan" { _ = s2.appendLetter(String(ch)) }
+        if !selectCandidate("試驗", in: s2) || m2.committedText != "試驗" {
+            allCommitted = false
+            break
+        }
+    }
+    check("traditional selections commit Traditional text", allCommitted)
+
+    prefs.isTraditional = false
+    let (after, _) = makeSession()
+    for ch in "fazhan" { _ = after.appendLetter(String(ch)) }
+    check("simplified first candidate stays 发展 after Traditional learning",
+          after.candidates.first == "发展")
+    check("Traditional 發展 is not learned into Simplified candidates",
+          !after.candidates.contains("發展"))
+    after.cancel()
+
+    let (boosted, _) = makeSession()
+    for ch in "shiyan" { _ = boosted.appendLetter(String(ch)) }
+    let positionAfter = candidatePosition("试验", in: boosted)
+    print("    '试验' position before: \(positionBefore.map(String.init) ?? "none"), after: \(positionAfter.map(String.init) ?? "none")")
+    check("Traditional selections still boost the Simplified word",
+          positionAfter != nil &&
+          (positionBefore == nil || positionAfter! < positionBefore!))
+    boosted.cancel()
+}
+
 func testSymbolsMode() {
     print("[test_symbols_mode]")
     let (s, m) = makeSession()
@@ -914,6 +963,7 @@ func testShiftToggleTracker() {
         testContextLanguageScoring()
         testContinuousPhraseLanguageScoring()
         testTraditionalConversion()
+        testTraditionalLearningKeepsSimplifiedDictionary()
         testSymbolsMode()
         testPreferencesManager()
         testShiftToggleTracker()

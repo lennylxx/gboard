@@ -7,7 +7,10 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdarg.h>
+#include <stdbool.h>
 #include <stdint.h>
+#include <math.h>
+#include <wchar.h>
 #include <pthread.h>
 #include <sys/errno.h>
 #include <sys/types.h>
@@ -118,19 +121,277 @@ void android_stubs_init(const char *asset_base_dir) {
 #define ANDROID_LOG_WARN    5
 #define ANDROID_LOG_ERROR   6
 
-static int stub_android_log_print(int prio, const char *tag, const char *fmt,
-                                  void *a0, void *a1, void *a2, void *a3, void *a4) {
-    (void)prio;
-    if (!fmt) return 0;
-    char buf[1024];
-    int off = snprintf(buf, sizeof(buf), "[%s] ", tag ? tag : "?");
-    if (off < (int)sizeof(buf) - 1) {
-        off += snprintf(buf + off, sizeof(buf) - off, fmt, a0, a1, a2, a3, a4);
+// ── AAPCS64 variadic ABI bridge ───────────────────────────────────────────────
+// The .so follows the standard AArch64 PCS used by Android: variadic arguments
+// are passed like named ones (x0-x7 / v0-v7 first, then 8-byte stack slots),
+// and va_list is a 32-byte struct passed by reference. Apple arm64 instead
+// passes every variadic argument on the stack and uses `char *` as va_list, so
+// the .so's variadic calls cannot be forwarded to macOS printf-family
+// functions. Variadic stubs enter through a trampoline that spills the
+// argument registers into an AAPCS64 va_list, and the formatter below fetches
+// each argument from that va_list according to the format string.
+
+typedef struct {
+    void   *stack;
+    void   *gr_top;
+    void   *vr_top;
+    int32_t gr_offs;
+    int32_t vr_offs;
+} aapcs64_va_list;
+
+typedef struct {
+    uint64_t gr[8];      // x0-x7
+    uint8_t  vr[8][16];  // q0-q7
+} aapcs64_reg_save;
+
+static aapcs64_va_list aapcs64_va_start(const aapcs64_reg_save *regs, void *stack,
+                                        int named_gr) {
+    return (aapcs64_va_list){
+        .stack   = stack,
+        .gr_top  = (void *)(regs->gr + 8),
+        .vr_top  = (void *)(regs->vr + 8),
+        .gr_offs = -(8 - named_gr) * 8,
+        .vr_offs = -8 * 16,
+    };
+}
+
+static uint64_t aapcs64_arg_gr(aapcs64_va_list *ap) {
+    uint64_t v;
+    if (ap->gr_offs < 0) {
+        memcpy(&v, (char *)ap->gr_top + ap->gr_offs, 8);
+        ap->gr_offs += 8;
+    } else {
+        memcpy(&v, ap->stack, 8);
+        ap->stack = (char *)ap->stack + 8;
     }
-    if (off < (int)sizeof(buf) - 1) buf[off++] = '\n';
-    write(STDERR_FILENO, buf, off > 0 ? (size_t)off : 0);
+    return v;
+}
+
+static double aapcs64_arg_double(aapcs64_va_list *ap) {
+    double v;
+    if (ap->vr_offs < 0) {
+        memcpy(&v, (char *)ap->vr_top + ap->vr_offs, 8);
+        ap->vr_offs += 16;
+    } else {
+        memcpy(&v, ap->stack, 8);
+        ap->stack = (char *)ap->stack + 8;
+    }
+    return v;
+}
+
+// Android arm64 long double is IEEE binary128 (one q register, or a 16-byte
+// aligned stack slot); macOS long double is binary64.
+static double aapcs64_arg_long_double(aapcs64_va_list *ap) {
+    uint64_t lo, hi;
+    if (ap->vr_offs < 0) {
+        char *slot = (char *)ap->vr_top + ap->vr_offs;
+        memcpy(&lo, slot, 8); memcpy(&hi, slot + 8, 8);
+        ap->vr_offs += 16;
+    } else {
+        uintptr_t slot = ((uintptr_t)ap->stack + 15) & ~(uintptr_t)15;
+        memcpy(&lo, (void *)slot, 8); memcpy(&hi, (void *)(slot + 8), 8);
+        ap->stack = (void *)(slot + 16);
+    }
+    int exp = (int)((hi >> 48) & 0x7fff);
+    double frac = (double)(((hi & 0xffffffffffffULL) << 4) | (lo >> 60)) / 0x1p52;
+    double v = exp == 0x7fff ? (frac != 0 ? NAN : INFINITY)
+             : exp == 0      ? ldexp(frac, -16382)
+                             : ldexp(1.0 + frac, exp - 16383);
+    return (hi >> 63) ? -v : v;
+}
+
+typedef struct { char *buf; size_t cap; size_t len; } FmtOut;
+
+static void fmt_put(FmtOut *o, const char *s, size_t n) {
+    if (o->len < o->cap) {
+        size_t room = o->cap - o->len;
+        memcpy(o->buf + o->len, s, n < room ? n : room);
+    }
+    o->len += n;
+}
+
+// Formats a single conversion with the host printf (host ABI, fixed arity).
+#define FMT_PUT_SPEC(o, spec, val) do {                                   \
+    char *dst_ = (o)->len < (o)->cap ? (o)->buf + (o)->len : NULL;        \
+    int n_ = snprintf(dst_, dst_ ? (o)->cap - (o)->len : 0, spec, val);   \
+    if (n_ > 0) (o)->len += (size_t)n_;                                   \
+} while (0)
+
+// vsnprintf over an AAPCS64 va_list. Returns the untruncated length; `buf`
+// is always NUL-terminated when cap > 0. Positional (%n$) conversions are not
+// supported and are emitted verbatim; %n is ignored (bionic rejects it).
+static size_t aapcs64_vformat(char *buf, size_t cap, const char *fmt,
+                              aapcs64_va_list ap) {
+    FmtOut o = { buf, cap, 0 };
+    const char *p = fmt ? fmt : "";
+    while (*p) {
+        if (*p != '%') {
+            const char *next = strchr(p, '%');
+            size_t n = next ? (size_t)(next - p) : strlen(p);
+            fmt_put(&o, p, n);
+            p += n;
+            continue;
+        }
+        const char *start = p++;
+        char spec[64] = "%";
+        size_t sl = 1;
+        while (*p && strchr("-+ #0'", *p)) {
+            if (sl < 16) spec[sl++] = *p;
+            p++;
+        }
+        if (*p == '*') {
+            p++;
+            int w = (int)aapcs64_arg_gr(&ap);
+            if (w < 0) { spec[sl++] = '-'; w = -w; }
+            sl += (size_t)snprintf(spec + sl, sizeof(spec) - sl, "%d", w);
+        } else {
+            while (*p >= '0' && *p <= '9') { if (sl < 32) spec[sl++] = *p; p++; }
+        }
+        if (*p == '.') {
+            p++;
+            if (*p == '*') {
+                p++;
+                int prec = (int)aapcs64_arg_gr(&ap);
+                if (prec >= 0)
+                    sl += (size_t)snprintf(spec + sl, sizeof(spec) - sl, ".%d", prec);
+            } else {
+                spec[sl++] = '.';
+                while (*p >= '0' && *p <= '9') { if (sl < 48) spec[sl++] = *p; p++; }
+            }
+        }
+        // Integer width in bits for d/i/o/u/x/X (Android arm64 is LP64).
+        int bits = 32;
+        bool wide = false, quad = false;
+        if (p[0] == 'h' && p[1] == 'h')      { bits = 8;  p += 2; }
+        else if (p[0] == 'h')                { bits = 16; p += 1; }
+        else if (p[0] == 'l' && p[1] == 'l') { bits = 64; p += 2; }
+        else if (p[0] && strchr("ljztq", p[0])) { bits = 64; wide = p[0] == 'l'; p += 1; }
+        else if (p[0] == 'L')                { quad = true; p += 1; }
+        char conv = *p;
+        if (conv) p++;
+        spec[sl] = '\0';
+
+        switch (conv) {
+        case 'd': case 'i': {
+            uint64_t raw = aapcs64_arg_gr(&ap);
+            long long v = bits == 8  ? (long long)(signed char)raw
+                        : bits == 16 ? (long long)(short)raw
+                        : bits == 32 ? (long long)(int)raw
+                                     : (long long)raw;
+            strcat(spec, "lld");
+            FMT_PUT_SPEC(&o, spec, v);
+            break;
+        }
+        case 'o': case 'u': case 'x': case 'X': {
+            uint64_t raw = aapcs64_arg_gr(&ap);
+            unsigned long long v = bits == 8  ? (unsigned char)raw
+                                 : bits == 16 ? (unsigned short)raw
+                                 : bits == 32 ? (unsigned int)raw
+                                              : raw;
+            char tail[4] = { 'l', 'l', conv, '\0' };
+            strcat(spec, tail);
+            FMT_PUT_SPEC(&o, spec, v);
+            break;
+        }
+        case 'c':
+            strcat(spec, wide ? "lc" : "c");
+            FMT_PUT_SPEC(&o, spec, (int)aapcs64_arg_gr(&ap));
+            break;
+        case 's': {
+            uintptr_t ptr = (uintptr_t)aapcs64_arg_gr(&ap);
+            if (wide) {
+                strcat(spec, "ls");
+                FMT_PUT_SPEC(&o, spec, (const wchar_t *)ptr);
+            } else {
+                strcat(spec, "s");
+                FMT_PUT_SPEC(&o, spec, ptr ? (const char *)ptr : "(null)");
+            }
+            break;
+        }
+        case 'p':
+            strcat(spec, "p");
+            FMT_PUT_SPEC(&o, spec, (void *)(uintptr_t)aapcs64_arg_gr(&ap));
+            break;
+        case 'f': case 'F': case 'e': case 'E':
+        case 'g': case 'G': case 'a': case 'A': {
+            double v = quad ? aapcs64_arg_long_double(&ap) : aapcs64_arg_double(&ap);
+            char tail[2] = { conv, '\0' };
+            strcat(spec, tail);
+            FMT_PUT_SPEC(&o, spec, v);
+            break;
+        }
+        case 'm':
+            strcat(spec, "s");
+            FMT_PUT_SPEC(&o, spec, strerror(errno));
+            break;
+        case 'n':
+            (void)aapcs64_arg_gr(&ap);
+            break;
+        case '%':
+            fmt_put(&o, "%", 1);
+            break;
+        default:
+            fmt_put(&o, start, (size_t)(p - start));
+            break;
+        }
+    }
+    if (cap) buf[o.len < cap ? o.len : cap - 1] = '\0';
+    return o.len;
+}
+
+#if defined(__aarch64__) || defined(__arm64__)
+#define AAPCS64_STR2(x) #x
+#define AAPCS64_STR(x) AAPCS64_STR2(x)
+// Entry point for a variadic stub: saves x0-x7 / q0-q7 into an
+// aapcs64_reg_save on the stack and calls
+// `int handler(const aapcs64_reg_save *regs, void *caller_stack_args)`.
+#define AAPCS64_VARIADIC_ENTRY(name, handler)                \
+    __attribute__((naked)) static void name(void) {          \
+        __asm__ volatile(                                    \
+            "stp x29, x30, [sp, #-16]!\n"                    \
+            "mov x29, sp\n"                                  \
+            "sub sp, sp, #192\n"                             \
+            "stp x0, x1, [sp, #0]\n"                         \
+            "stp x2, x3, [sp, #16]\n"                        \
+            "stp x4, x5, [sp, #32]\n"                        \
+            "stp x6, x7, [sp, #48]\n"                        \
+            "stp q0, q1, [sp, #64]\n"                        \
+            "stp q2, q3, [sp, #96]\n"                        \
+            "stp q4, q5, [sp, #128]\n"                       \
+            "stp q6, q7, [sp, #160]\n"                       \
+            "mov x0, sp\n"                                   \
+            "add x1, x29, #16\n"                             \
+            "bl " AAPCS64_STR(__USER_LABEL_PREFIX__) #handler "\n" \
+            "mov sp, x29\n"                                  \
+            "ldp x29, x30, [sp], #16\n"                      \
+            "ret\n");                                        \
+    }
+#else
+// The .so is arm64-only; on other architectures the stubs are never called.
+#define AAPCS64_VARIADIC_ENTRY(name, handler) \
+    static int name(void) { return -1; }
+#endif
+
+static int android_log_vprint_impl(int prio, const char *tag, const char *fmt,
+                                   aapcs64_va_list ap) {
+    (void)prio;
+    char buf[1024];
+    int off = snprintf(buf, sizeof(buf), "[%.64s] ", tag ? tag : "?");
+    size_t n = (size_t)off + aapcs64_vformat(buf + off, sizeof(buf) - (size_t)off, fmt, ap);
+    if (n > sizeof(buf) - 2) n = sizeof(buf) - 2;
+    buf[n++] = '\n';
+    write(STDERR_FILENO, buf, n);
     return 0;
 }
+
+__attribute__((used))
+static int android_log_print_bridge(const aapcs64_reg_save *regs, void *stack) {
+    return android_log_vprint_impl((int)regs->gr[0], (const char *)regs->gr[1],
+                                   (const char *)regs->gr[2],
+                                   aapcs64_va_start(regs, stack, 3));
+}
+AAPCS64_VARIADIC_ENTRY(stub_android_log_print, android_log_print_bridge)
+
 static int stub_android_log_write(int prio, const char *tag, const char *text) {
     (void)prio;
     char buf[1024];
@@ -138,13 +399,10 @@ static int stub_android_log_write(int prio, const char *tag, const char *text) {
     write(STDERR_FILENO, buf, n > 0 ? (size_t)n : 0);
     return 0;
 }
-static int stub_android_log_vprint(int prio, const char *tag, const char *fmt, void *ap) {
-    (void)prio; (void)ap;
-    if (!fmt) return 0;
-    char buf[1024];
-    int n = snprintf(buf, sizeof(buf), "[%s] %s\n", tag ? tag : "?", fmt);
-    write(STDERR_FILENO, buf, n > 0 ? (size_t)n : 0);
-    return 0;
+// AAPCS64 passes va_list (a 32-byte struct) by reference.
+static int stub_android_log_vprint(int prio, const char *tag, const char *fmt,
+                                   const aapcs64_va_list *ap) {
+    return android_log_vprint_impl(prio, tag, fmt, *ap);
 }
 
 // ── Android system properties ─────────────────────────────────────────────────
@@ -389,17 +647,25 @@ static int stub_fputc(int c, FILE *stream) {
 static size_t stub_fread(void *ptr, size_t size, size_t nmemb, FILE *stream) {
     return fread(ptr, size, nmemb, fixup_file(stream));
 }
-static int stub_fprintf(FILE *stream, const char *fmt, void *a0, void *a1, void *a2, void *a3, void *a4, void *a5) {
-    FILE *f = fixup_file(stream);
-    if (!fmt) return 0;
-    return fprintf(f, fmt, a0, a1, a2, a3, a4, a5);
+static int stub_vfprintf(FILE *stream, const char *fmt, const aapcs64_va_list *ap) {
+    char stack_buf[1024];
+    char *out = stack_buf;
+    size_t n = aapcs64_vformat(stack_buf, sizeof(stack_buf), fmt, *ap);
+    if (n >= sizeof(stack_buf)) {
+        out = malloc(n + 1);
+        if (!out) return -1;
+        aapcs64_vformat(out, n + 1, fmt, *ap);
+    }
+    size_t written = fwrite(out, 1, n, fixup_file(stream));
+    if (out != stack_buf) free(out);
+    return written == n ? (int)n : -1;
 }
-static int stub_vfprintf(FILE *stream, const char *fmt, void *ap) {
-    (void)ap;
-    FILE *f = fixup_file(stream);
-    if (!fmt) return 0;
-    return fputs(fmt, f);
+__attribute__((used))
+static int fprintf_bridge(const aapcs64_reg_save *regs, void *stack) {
+    aapcs64_va_list ap = aapcs64_va_start(regs, stack, 2);
+    return stub_vfprintf((FILE *)regs->gr[0], (const char *)regs->gr[1], &ap);
 }
+AAPCS64_VARIADIC_ENTRY(stub_fprintf, fprintf_bridge)
 
 // ── pthread wrappers via side-table ───────────────────────────────────────────
 // CRITICAL: Bionic pthread_mutex_t = 40 bytes, macOS = 64 bytes.
