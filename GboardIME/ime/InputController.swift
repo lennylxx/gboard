@@ -77,9 +77,15 @@ class GboardInputController: IMKInputController, PinyinSessionDelegate {
     override func handle(_ event: NSEvent!, client sender: Any!) -> Bool {
         self.currentClient = sender
 
-        // ── Shift toggle detection ───────────────────────────────────────
+        // ── Shift / CapsLock toggle detection ───────────────────────────
+        let switchMode = PreferencesManager.shared.switchMode
         if event.type == .flagsChanged {
-            if shiftTracker.handleFlagsChanged(keyCode: event.keyCode, modifierFlags: event.modifierFlags) == .shouldToggle {
+            if switchMode == .shift {
+                if shiftTracker.handleFlagsChanged(keyCode: event.keyCode, modifierFlags: event.modifierFlags) == .shouldToggle {
+                    toggleChineseMode()
+                    return true
+                }
+            } else if switchMode == .capsLock && event.keyCode == 57 {
                 toggleChineseMode()
                 return true
             }
@@ -87,9 +93,11 @@ class GboardInputController: IMKInputController, PinyinSessionDelegate {
         }
 
         if event.type == .keyUp {
-            if shiftTracker.handleKeyUp(keyCode: event.keyCode) == .shouldToggle {
-                toggleChineseMode()
-                return true
+            if switchMode == .shift {
+                if shiftTracker.handleKeyUp(keyCode: event.keyCode) == .shouldToggle {
+                    toggleChineseMode()
+                    return true
+                }
             }
             return false
         }
@@ -101,6 +109,32 @@ class GboardInputController: IMKInputController, PinyinSessionDelegate {
         // Shift key itself as keyDown — ignore
         if event.keyCode == 56 || event.keyCode == 60 { return false }
 
+        let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        let keyCode = event.keyCode
+        let chars = event.characters ?? ""
+        let charsIgnoring = (event.charactersIgnoringModifiers ?? "").lowercased()
+
+        // ── Global shortcuts (active in both Chinese and English mode) ──
+        // 1. Command + Shift + F -> Toggle Simplified / Traditional
+        let isFKey = (keyCode == 3 || charsIgnoring == "f")
+        let isTradShortcut = isFKey && flags.contains(.command) && flags.contains(.shift) && !flags.contains(.control)
+        if isTradShortcut {
+            toggleTraditional()
+            return true
+        }
+
+        // 2. Ctrl + 1 or Option + ? -> Toggle ?123 Symbols Mode
+        let isOneKey = (keyCode == 18 || charsIgnoring == "1")
+        let isQuestionOrSlashKey = (keyCode == 44 || charsIgnoring == "?" || charsIgnoring == "/")
+        if (flags.contains(.control) && !flags.contains(.command) && isOneKey) ||
+           (flags.contains(.option) && !flags.contains(.command) && isQuestionOrSlashKey) {
+            if !chineseMode {
+                chineseMode = true
+            }
+            session.toggleSymbolsMode()
+            return true
+        }
+
         // ── English mode: pass everything through ────────────────────────
         if !chineseMode {
             contextTracker.invalidate()
@@ -108,10 +142,6 @@ class GboardInputController: IMKInputController, PinyinSessionDelegate {
         }
 
         // ── Chinese mode ─────────────────────────────────────────────────
-        let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
-        let keyCode = event.keyCode
-        let chars = event.characters ?? ""
-
         let result: KeyResult
 
         switch keyCode {
@@ -294,11 +324,15 @@ class GboardInputController: IMKInputController, PinyinSessionDelegate {
                 _ = self?.session.nextPage()
             }
         )
+        var rect = NSRect.zero
         if let client = currentClient as? IMKTextInput {
-            var rect = NSRect.zero
             client.attributes(forCharacterIndex: 0, lineHeightRectangle: &rect)
-            candidateWindow?.show(near: rect)
         }
+        if rect.isEmpty || rect == .zero {
+            let mouseLoc = NSEvent.mouseLocation
+            rect = NSRect(x: mouseLoc.x, y: mouseLoc.y, width: 1, height: 1)
+        }
+        candidateWindow?.show(near: rect)
     }
 
     func sessionHideCandidates() {
@@ -307,6 +341,104 @@ class GboardInputController: IMKInputController, PinyinSessionDelegate {
     }
 
     // ── IMKit required ─────────────────────────────────────────────────────
+
+    override func menu() -> NSMenu! {
+        let menu = NSMenu(title: "Gboard")
+
+        let titleItem = NSMenuItem(title: "Gboard 拼音输入法", action: nil, keyEquivalent: "")
+        titleItem.isEnabled = false
+        menu.addItem(titleItem)
+
+        menu.addItem(NSMenuItem.separator())
+
+        // 简繁切换
+        let isTrad = PreferencesManager.shared.isTraditional
+        let tradItem = NSMenuItem(
+            title: isTrad ? "切换为简体中文" : "切换为繁体中文",
+            action: #selector(toggleTraditionalMenuAction),
+            keyEquivalent: "F"
+        )
+        tradItem.keyEquivalentModifierMask = [.command, .shift]
+        tradItem.target = self
+        tradItem.state = .off
+        menu.addItem(tradItem)
+
+        // ?123 标点与数字
+        let symItem = NSMenuItem(
+            title: "标点与符号",
+            action: #selector(toggleSymbolsMenuAction),
+            keyEquivalent: ""
+        )
+        symItem.target = self
+        symItem.state = session.isSymbolsMode ? .on : .off
+        menu.addItem(symItem)
+
+        menu.addItem(NSMenuItem.separator())
+
+        // 中英文切换模式子菜单
+        let switchSubmenu = NSMenu(title: "中英文切换按键")
+        for mode in ChineseEnglishSwitchMode.allCases {
+            let item = NSMenuItem(
+                title: mode.displayName,
+                action: #selector(changeSwitchModeAction(_:)),
+                keyEquivalent: ""
+            )
+            item.target = self
+            item.tag = mode.rawValue
+            item.state = (PreferencesManager.shared.switchMode == mode) ? .on : .off
+            switchSubmenu.addItem(item)
+        }
+        let switchItem = NSMenuItem(title: "中英文切换按键", action: nil, keyEquivalent: "")
+        switchItem.submenu = switchSubmenu
+        menu.addItem(switchItem)
+
+        menu.addItem(NSMenuItem.separator())
+
+        // 偏好设置
+        let prefItem = NSMenuItem(
+            title: "偏好设置...",
+            action: #selector(openPreferencesAction),
+            keyEquivalent: ","
+        )
+        prefItem.target = self
+        menu.addItem(prefItem)
+
+        return menu
+    }
+
+    private func toggleTraditional() {
+        shiftTracker.cancelTracking()
+        PreferencesManager.shared.toggleTraditional()
+        if session.isComposing && !session.isSymbolsMode {
+            session.fillCandidatePage(keepSelection: true)
+        }
+        imeLog("Traditional toggled to: \(PreferencesManager.shared.isTraditional)")
+    }
+
+    @objc private func toggleTraditionalMenuAction() {
+        shiftTracker.cancelTracking()
+        toggleTraditional()
+    }
+
+    @objc private func toggleSymbolsMenuAction() {
+        shiftTracker.cancelTracking()
+        if !chineseMode {
+            chineseMode = true
+        }
+        session.toggleSymbolsMode()
+    }
+
+    @objc private func changeSwitchModeAction(_ sender: NSMenuItem) {
+        if let mode = ChineseEnglishSwitchMode(rawValue: sender.tag) {
+            PreferencesManager.shared.switchMode = mode
+        }
+    }
+
+    @objc private func openPreferencesAction() {
+        DispatchQueue.main.async {
+            SettingsWindowController.shared.show()
+        }
+    }
 
     override func commitComposition(_ sender: Any!) {
         currentClient = sender

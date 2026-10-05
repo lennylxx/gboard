@@ -1,14 +1,31 @@
 import Cocoa
 import SwiftUI
 
-// MARK: - Helper to load bundled PNGs as NSImage
+// MARK: - Non-Activating Panel
+// CRITICAL: Must be an NSPanel with canBecomeKey = false so mouse clicks
+// (e.g. clicking candidates, paging chevrons, symbols, or gear button)
+// never steal keyboard focus from the active client application.
+// Otherwise, macOS IMKit deactivates the input controller and commits/resets input.
 
-private func bundledImage(_ name: String) -> NSImage? {
-    guard let path = Bundle.main.path(forResource: name, ofType: "png") else { return nil }
-    return NSImage(contentsOfFile: path)
+final class CandidatePanel: NSPanel {
+    override var canBecomeKey: Bool { false }
+    override var canBecomeMain: Bool { false }
 }
 
-// MARK: - SwiftUI candidate panel (Gboard-inspired design)
+// MARK: - AppKit First-Mouse Hosting View
+// Allows single-click interaction on background/floating windows without needing a preliminary click to activate.
+
+final class FirstMouseHostingView<Content: View>: NSHostingView<Content> {
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool {
+        return true
+    }
+
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        return super.hitTest(point)
+    }
+}
+
+// MARK: - Modern Candidate View (Crisp Google Gboard Palette with Native Glass Accent)
 
 struct CandidateView: View {
     let candidates: [String]
@@ -20,83 +37,183 @@ struct CandidateView: View {
     let onPrevious: () -> Void
     let onNext: () -> Void
 
-    // Gboard light theme colors
-    private let bgColor     = Color(red: 0.945, green: 0.953, blue: 0.961) // #F1F3F4
-    private let keyColor    = Color.white
-    private let labelColor  = Color(red: 0.259, green: 0.259, blue: 0.259) // #424242
-    private let accentColor = Color(red: 0.098, green: 0.451, blue: 0.910) // #1873E8
-    private let divColor    = Color(red: 0.878, green: 0.878, blue: 0.878) // #E0E0E0
-    private let hintColor   = Color(red: 0.098, green: 0.451, blue: 0.910).opacity(0.7) // accent blue
-    private let cornerRadius: CGFloat = 8
+    @Environment(\.colorScheme) private var systemColorScheme
+    @ObservedObject private var prefs = PreferencesManager.shared
+
+    private var isDark: Bool {
+        switch prefs.themeMode {
+        case .system: return systemColorScheme == .dark
+        case .light: return false
+        case .dark: return true
+        }
+    }
+
+    // Google Gboard signature blue
+    private var accentColor: Color {
+        if isDark {
+            return Color(red: 0.54, green: 0.71, blue: 0.97) // Google Blue 200
+        } else {
+            return Color(red: 0.098, green: 0.451, blue: 0.910) // Google Blue 600 (#1973E8)
+        }
+    }
+
+    private var textColor: Color {
+        if isDark {
+            return Color(red: 0.95, green: 0.96, blue: 0.98)
+        } else {
+            return Color(red: 0.125, green: 0.129, blue: 0.141) // #202124 Google dark grey
+        }
+    }
+
+    private var hintColor: Color {
+        if isDark {
+            return Color(red: 0.65, green: 0.68, blue: 0.74)
+        } else {
+            return Color(red: 0.098, green: 0.451, blue: 0.910).opacity(0.72) // Gboard accent blue
+        }
+    }
+
+    private var headerBackground: Color {
+        if isDark {
+            return Color(red: 0.13, green: 0.14, blue: 0.16).opacity(0.92)
+        } else {
+            return Color(red: 0.957, green: 0.961, blue: 0.965).opacity(0.95) // #F4F5F6
+        }
+    }
+
+    private var rowBackground: Color {
+        if isDark {
+            return Color(red: 0.18, green: 0.19, blue: 0.22).opacity(0.90)
+        } else {
+            return Color.white.opacity(0.96) // Crisp white card for high contrast
+        }
+    }
+
+    private var dividerColor: Color {
+        if isDark {
+            return Color.white.opacity(0.12)
+        } else {
+            return Color(red: 0.878, green: 0.878, blue: 0.878) // #E0E0E0
+        }
+    }
+
+    private var borderColor: Color {
+        if isDark {
+            return Color.white.opacity(0.18)
+        } else {
+            return Color(red: 0.82, green: 0.82, blue: 0.84)
+        }
+    }
 
     var body: some View {
         VStack(spacing: 0) {
-            // Pinyin preedit strip
+            // Header: Pinyin preedit strip + Status Badges + Settings shortcut
             HStack(spacing: 6) {
                 Text(pinyin)
-                    .font(.system(size: 13, weight: .medium))
+                    .font(.system(size: 13, weight: .semibold, design: .rounded))
                     .foregroundColor(accentColor)
-                Spacer()
-            }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 6)
-            .background(bgColor)
 
-            Divider().background(divColor)
+                if prefs.isTraditional {
+                    Text("繁")
+                        .font(.system(size: 9, weight: .bold))
+                        .foregroundColor(accentColor)
+                        .padding(.horizontal, 4)
+                        .padding(.vertical, 1)
+                        .background(accentColor.opacity(0.18))
+                        .clipShape(RoundedRectangle(cornerRadius: 3))
+                }
+
+                if pinyin.contains("?123") {
+                    Text("符号")
+                        .font(.system(size: 9, weight: .bold))
+                        .foregroundColor(accentColor)
+                        .padding(.horizontal, 4)
+                        .padding(.vertical, 1)
+                        .background(accentColor.opacity(0.18))
+                        .clipShape(RoundedRectangle(cornerRadius: 3))
+                }
+
+                Spacer(minLength: 8)
+
+                // Gear icon: Open preferences without interfering with input session
+                Button {
+                    DispatchQueue.main.async {
+                        SettingsWindowController.shared.show()
+                    }
+                } label: {
+                    Image(systemName: "gearshape.fill")
+                        .font(.system(size: 11))
+                        .foregroundColor(hintColor.opacity(0.85))
+                        .padding(4)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .help("打开 Gboard 偏好设置")
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 5)
+            .background(headerBackground)
+
+            Divider().background(dividerColor)
 
             // Candidate row
             ScrollViewReader { proxy in
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 0) {
                         ForEach(Array(candidates.enumerated()), id: \.offset) { i, cand in
+                            let isSelected = (i == selectedIndex)
                             Button {
                                 onSelect(i)
                             } label: {
-                                HStack(alignment: .firstTextBaseline, spacing: 2) {
+                                HStack(alignment: .firstTextBaseline, spacing: 3) {
                                     Text("\(i + 1).")
-                                        .font(.system(size: 11))
-                                        .foregroundColor(hintColor)
+                                        .font(.system(size: 11, weight: isSelected ? .semibold : .regular))
+                                        .foregroundColor(isSelected ? accentColor : hintColor)
                                     Text(cand)
-                                        .font(.system(size: 18, weight: .regular))
-                                        .foregroundColor(labelColor)
+                                        .font(.system(size: 18, weight: isSelected ? .medium : .regular))
+                                        .foregroundColor(isSelected ? accentColor : textColor)
                                 }
+                                .padding(.horizontal, 7)
                                 .frame(minWidth: 36, minHeight: 36)
-                                .padding(.horizontal, 4)
-                                .padding(.vertical, 2)
+                                .contentShape(Rectangle())
                             }
                             .buttonStyle(.plain)
                             .background(
-                                RoundedRectangle(cornerRadius: 6)
-                                    .fill(i == selectedIndex ? accentColor.opacity(0.08) : Color.clear)
+                                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                                    .fill(isSelected ? accentColor.opacity(isDark ? 0.22 : 0.12) : Color.clear)
+                            )
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                                    .stroke(isSelected ? accentColor.opacity(isDark ? 0.45 : 0.3) : Color.clear, lineWidth: 1)
                             )
                             .id(i)
 
                             if i < candidates.count - 1 {
                                 Divider()
-                                    .frame(height: 28)
-                                    .background(divColor)
+                                    .frame(height: 22)
+                                    .background(dividerColor)
                             }
                         }
 
                         Divider()
-                            .frame(height: 28)
-                            .background(divColor)
+                            .frame(height: 22)
+                            .background(dividerColor)
 
                         VStack(spacing: 0) {
                             pageButton(
                                 systemName: "chevron.up",
                                 enabled: canGoPrevious,
-                                help: "Previous candidate page (-)",
+                                help: "上一页 (-)",
                                 action: onPrevious
                             )
                             pageButton(
                                 systemName: "chevron.down",
                                 enabled: canGoNext,
-                                help: "Next candidate page (=)",
+                                help: "下一页 (=)",
                                 action: onNext
                             )
                         }
-                        .frame(width: 30, height: 38)
+                        .frame(width: 28, height: 36)
                     }
                     .padding(.horizontal, 4)
                 }
@@ -106,13 +223,12 @@ struct CandidateView: View {
             }
             .id(selectedIndex)
             .frame(height: 38)
-            .background(keyColor)
+            .background(rowBackground)
         }
-        .background(bgColor)
-        .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
+        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
         .overlay(
-            RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                .strokeBorder(divColor, lineWidth: 1)
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .strokeBorder(borderColor, lineWidth: 1)
         )
     }
 
@@ -125,8 +241,8 @@ struct CandidateView: View {
         Button(action: action) {
             Image(systemName: systemName)
                 .font(.system(size: 9, weight: .semibold))
-                .foregroundColor(enabled ? hintColor : Color.gray.opacity(0.35))
-                .frame(width: 30, height: 14)
+                .foregroundColor(enabled ? hintColor : hintColor.opacity(0.3))
+                .frame(width: 28, height: 16)
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
@@ -135,11 +251,12 @@ struct CandidateView: View {
     }
 }
 
-// MARK: - Window controller
+// MARK: - Window Controller
 
-class CandidateWindowController: NSObject {
-    private var window: NSWindow?
-    private var hostingView: NSHostingView<CandidateView>?
+final class CandidateWindowController: NSObject {
+    private var window: CandidatePanel?
+    private var visualEffectView: NSVisualEffectView?
+    private var hostingView: FirstMouseHostingView<CandidateView>?
     private var onSelect: ((Int) -> Void)?
 
     func update(
@@ -164,28 +281,58 @@ class CandidateWindowController: NSObject {
             onNext: onNext
         )
         let width = candidateWindowWidth(candidates: candidates, pinyin: pinyin)
+        let height: CGFloat = 70
+
         if window == nil {
-            let w = NSWindow(
-                contentRect: NSRect(x: 0, y: 0, width: width, height: 68),
-                styleMask: [.borderless],
+            let w = CandidatePanel(
+                contentRect: NSRect(x: 0, y: 0, width: width, height: height),
+                styleMask: [.nonactivatingPanel, .borderless],
                 backing: .buffered,
                 defer: false
             )
             w.level = NSWindow.Level(rawValue: Int(CGWindowLevelKey.popUpMenuWindow.rawValue))
             w.isOpaque = false
             w.backgroundColor = .clear
-            w.hasShadow = false
-            let hv = NSHostingView(rootView: view)
-            hv.frame = NSRect(x: 0, y: 0, width: width, height: 68)
+            w.hasShadow = true
+            w.isFloatingPanel = true
+            w.becomesKeyOnlyIfNeeded = false
+
+            // NSVisualEffectView backdrop with rounded corners
+            let vfx = NSVisualEffectView(frame: NSRect(x: 0, y: 0, width: width, height: height))
+            vfx.material = .popover
+            vfx.blendingMode = .behindWindow
+            vfx.state = .active
+            vfx.wantsLayer = true
+            vfx.layer?.cornerRadius = 10
+            vfx.layer?.masksToBounds = true
+            w.contentView = vfx
+            visualEffectView = vfx
+
+            let hv = FirstMouseHostingView(rootView: view)
+            hv.frame = vfx.bounds
+            hv.autoresizingMask = [.width, .height]
             hv.wantsLayer = true
             hv.layer?.backgroundColor = NSColor.clear.cgColor
-            w.contentView = hv
+            vfx.addSubview(hv)
+
             window = w
             hostingView = hv
         } else {
             hostingView?.rootView = view
-            window?.setContentSize(NSSize(width: width, height: 68))
+            window?.setContentSize(NSSize(width: width, height: height))
+            visualEffectView?.frame = NSRect(x: 0, y: 0, width: width, height: height)
         }
+
+        let isDark: Bool
+        switch PreferencesManager.shared.themeMode {
+        case .system:
+            isDark = NSApp.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+        case .dark:
+            isDark = true
+        case .light:
+            isDark = false
+        }
+        visualEffectView?.material = isDark ? .hudWindow : .popover
     }
 
     private func candidateWindowWidth(candidates: [String], pinyin: String) -> CGFloat {
@@ -198,25 +345,23 @@ class CandidateWindowController: NSObject {
             let textWidth = text.size(withAttributes: [
                 .font: NSFont.systemFont(ofSize: 18)
             ]).width
-            return max(36, numberWidth + 2 + textWidth) + 8
+            return max(36, numberWidth + 3 + textWidth) + 14
         }
 
         let rowWidth = candidateWidths.reduce(0, +)
             + CGFloat(candidates.count)
-            + 38
+            + 36
         let pinyinWidth = (pinyin as NSString).size(withAttributes: [
-            .font: NSFont.systemFont(ofSize: 13, weight: .medium)
-        ]).width + 24
-        let contentWidth = ceil(max(120, max(rowWidth, pinyinWidth)))
+            .font: NSFont.systemFont(ofSize: 13, weight: .semibold)
+        ]).width + 65
+        let contentWidth = ceil(max(130, max(rowWidth, pinyinWidth)))
         let screenWidth = NSScreen.main?.visibleFrame.width ?? contentWidth
         return min(contentWidth, screenWidth - 24)
     }
 
     func show(near rect: NSRect) {
         guard let w = window else { return }
-        // Position just below the cursor rect
-        var origin = NSPoint(x: rect.minX, y: rect.minY - 73)
-        // Keep on screen
+        var origin = NSPoint(x: rect.minX, y: rect.minY - 76)
         if let screen = NSScreen.main {
             let sw = screen.visibleFrame
             if origin.x + w.frame.width > sw.maxX { origin.x = sw.maxX - w.frame.width }

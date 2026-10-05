@@ -10,6 +10,8 @@
 		AA000001000000000000001A /* main.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA000001000000000000001F /* main.swift */; };
 		AA000001000000000000002A /* InputController.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA000001000000000000002F /* InputController.swift */; };
 		AA000001000000000000003A /* CandidateWindow.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA000001000000000000003F /* CandidateWindow.swift */; };
+		GG00000100000000000000PA /* PreferencesManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = GG00000100000000000000PF /* PreferencesManager.swift */; };
+		HH00000100000000000000WA /* SettingsWindow.swift in Sources */ = {isa = PBXBuildFile; fileRef = HH00000100000000000000WF /* SettingsWindow.swift */; };
 		EE00000100000000000000PA /* PinyinSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = EE00000100000000000000PF /* PinyinSession.swift */; };
 		FF00000100000000000000SA /* ShiftToggleTracker.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF00000100000000000000SF /* ShiftToggleTracker.swift */; };
 		GG00000100000000000000SA /* SessionContextRetriever.swift in Sources */ = {isa = PBXBuildFile; fileRef = GG00000100000000000000SF /* SessionContextRetriever.swift */; };
@@ -49,6 +51,8 @@
 		EE00000100000000000000PF /* PinyinSession.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PinyinSession.swift; sourceTree = "<group>"; };
 		FF00000100000000000000SF /* ShiftToggleTracker.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ShiftToggleTracker.swift; sourceTree = "<group>"; };
 		GG00000100000000000000SF /* SessionContextRetriever.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionContextRetriever.swift; sourceTree = "<group>"; };
+		GG00000100000000000000PF /* PreferencesManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PreferencesManager.swift; sourceTree = "<group>"; };
+		HH00000100000000000000WF /* SettingsWindow.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsWindow.swift; sourceTree = "<group>"; };
 		AA000001000000000000009F /* Cocoa.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Cocoa.framework; path = System/Library/Frameworks/Cocoa.framework; sourceTree = SDKROOT; };
 		AA00000100000000000000AF /* InputMethodKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = InputMethodKit.framework; path = System/Library/Frameworks/InputMethodKit.framework; sourceTree = SDKROOT; };
 		AA00000100000000000000BF /* GboardIME.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = GboardIME.app; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -95,6 +99,8 @@
 			children = (
 				AA000001000000000000001F /* main.swift */,
 				AA000001000000000000002F /* InputController.swift */,
+				GG00000100000000000000PF /* PreferencesManager.swift */,
+				HH00000100000000000000WF /* SettingsWindow.swift */,
 				EE00000100000000000000PF /* PinyinSession.swift */,
 				FF00000100000000000000SF /* ShiftToggleTracker.swift */,
 				GG00000100000000000000SF /* SessionContextRetriever.swift */,
@@ -243,6 +249,8 @@
 			files = (
 				AA000001000000000000001A /* main.swift in Sources */,
 				AA000001000000000000002A /* InputController.swift in Sources */,
+				GG00000100000000000000PA /* PreferencesManager.swift in Sources */,
+				HH00000100000000000000WA /* SettingsWindow.swift in Sources */,
 				EE00000100000000000000PA /* PinyinSession.swift in Sources */,
 				FF00000100000000000000SA /* ShiftToggleTracker.swift in Sources */,
 				GG00000100000000000000SA /* SessionContextRetriever.swift in Sources */,

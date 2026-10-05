@@ -103,6 +103,11 @@ if [[ ! -f "$BASE_APK" ]]; then
         BASE_APK=$(find "$XAPK_DIR" -name "*.apk" -size +10M | head -1)
     fi
 fi
+
+# Fallback: if no nested APK was found, check if the input file itself is an APK
+if [[ -z "$BASE_APK" && -f "$XAPK_DIR/AndroidManifest.xml" ]]; then
+    BASE_APK="$XAPK_PATH"
+fi
 echo "Base APK: $BASE_APK"
 
 if [[ -f "$XAPK_DIR/manifest.json" ]]; then

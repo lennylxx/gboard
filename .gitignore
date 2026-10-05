@@ -3,7 +3,9 @@ gboard_apk_source/
 hmmoemdata/
 xapk_unpacked/
 *.xapk
+*.apk
 *.zip
+.swift-module-cache/
 
 # Build artifacts
 GboardIME/build/
@@ -11,6 +13,7 @@ GboardIME/build/
 *.dSYM/
 tests/test_engine
 tests/test_ime
+tests/test_android_stubs
 
 # Xcode
 DerivedData/

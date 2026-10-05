@@ -1,7 +1,7 @@
 import Cocoa
 
 /// Tracks bare-Shift key presses to determine when to toggle Chinese/English mode.
-/// A "bare Shift" is when Shift is pressed and released without any other key in between.
+/// A "bare Shift" is when Shift is pressed and released without any other key or modifier in between.
 class ShiftToggleTracker {
 
     enum Result {
@@ -13,10 +13,32 @@ class ShiftToggleTracker {
     private var shiftKeyUsedWithOtherKey = false
 
     func handleFlagsChanged(keyCode: UInt16, modifierFlags: NSEvent.ModifierFlags) -> Result {
-        guard isShiftKey(keyCode) else { return .none }
+        let otherModifiers = modifierFlags.intersection([.command, .control, .option])
 
+        // 1. If another key/modifier changed (not Shift)
+        if !isShiftKey(keyCode) {
+            if trackedShiftKeyCode != nil {
+                // Any other modifier (Cmd, Ctrl, Opt) was pressed or released while tracking Shift
+                cancelTracking()
+            }
+            return .none
+        }
+
+        // 2. Shift key itself changed:
         if modifierFlags.contains(.shift) {
-            startTrackingShift(keyCode)
+            // Shift was pressed down: only track if NO other modifiers are held
+            if otherModifiers.isEmpty {
+                startTrackingShift(keyCode)
+            } else {
+                cancelTracking()
+            }
+            return .none
+        }
+
+        // 3. Shift was released:
+        // If other modifiers are still held down, it's not a bare Shift
+        if !otherModifiers.isEmpty {
+            cancelTracking()
             return .none
         }
 
@@ -25,18 +47,33 @@ class ShiftToggleTracker {
 
     func handleKeyDown(keyCode: UInt16, modifierFlags: NSEvent.ModifierFlags) {
         if isShiftKey(keyCode) {
-            startTrackingShift(keyCode)
+            let otherModifiers = modifierFlags.intersection([.command, .control, .option])
+            if otherModifiers.isEmpty {
+                startTrackingShift(keyCode)
+            } else {
+                cancelTracking()
+            }
             return
         }
 
-        if trackedShiftKeyCode != nil && modifierFlags.contains(.shift) {
+        if trackedShiftKeyCode != nil {
             shiftKeyUsedWithOtherKey = true
         }
     }
 
     func handleKeyUp(keyCode: UInt16) -> Result {
-        guard isShiftKey(keyCode) else { return .none }
+        guard isShiftKey(keyCode) else {
+            if trackedShiftKeyCode != nil {
+                shiftKeyUsedWithOtherKey = true
+            }
+            return .none
+        }
         return finishTrackingShift()
+    }
+
+    func cancelTracking() {
+        trackedShiftKeyCode = nil
+        shiftKeyUsedWithOtherKey = false
     }
 
     private func isShiftKey(_ keyCode: UInt16) -> Bool {
