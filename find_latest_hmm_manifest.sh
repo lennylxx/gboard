@@ -4,7 +4,7 @@ set -euo pipefail
 BASE_URL="https://www.gstatic.com/android/keyboard/hmmpack"
 END_DATE=$(date -u "+%Y%m%d")
 MAX_REVISION=20
-JOBS=8
+JOBS=50
 SEEDS=()
 
 usage() {
@@ -12,13 +12,14 @@ usage() {
 Usage: find_latest_hmm_manifest.sh --seed URL [--seed URL ...] [OPTIONS]
 
 Finds the newest public Gboard HMM manifest by probing Google's date-based CDN
-namespace with bounded, parallel HEAD requests.
+namespace with parallel HEAD requests from a single curl process, so they
+share one connection instead of each opening its own (requires curl 7.66+).
 
 Options:
   --seed URL          Known manifest URL to start from; may be repeated
   --end-date DATE     Last UTC date to check, in YYYYMMDD format
   --max-revision NUM  Highest two-digit revision to check (default: 20)
-  --jobs NUM          Concurrent HEAD requests (default: 8)
+  --jobs NUM          Concurrent HEAD requests (default: 50)
   -h, --help          Show this help
 EOF
 }
@@ -90,34 +91,40 @@ if [[ "$START_DATE" > "$END_DATE" ]]; then
     exit 0
 fi
 
+if ! curl --help all 2>/dev/null | grep -q -- '--parallel-max'; then
+    echo "curl 7.66 or newer is required (missing --parallel support)." >&2
+    exit 1
+fi
+
 TMP_DIR=$(mktemp -d "${TMPDIR:-/tmp}/gboard-hmm-manifest.XXXXXX")
 trap 'rm -rf "$TMP_DIR"' EXIT
-CANDIDATES="$TMP_DIR/candidates"
-HITS="$TMP_DIR/hits"
+CANDIDATES="$TMP_DIR/candidates.cfg"
+RESULTS="$TMP_DIR/results"
 
+candidate_count=0
 date_value="$START_DATE"
 while [[ "$date_value" < "$END_DATE" || "$date_value" == "$END_DATE" ]]; do
     revision=0
     while [[ $revision -le $MAX_REVISION ]]; do
-        printf "%s%02d\n" "$date_value" "$revision" >> "$CANDIDATES"
+        printf -v version "%s%02d" "$date_value" "$revision"
+        printf 'url = "%s/%s/metadata_%s.json"\noutput = "/dev/null"\n' \
+            "$BASE_URL" "$version" "$version"
+        candidate_count=$((candidate_count + 1))
         revision=$((revision + 1))
     done
     date_value=$(next_date "$date_value")
-done
+done > "$CANDIDATES"
 
-candidate_count=$(wc -l < "$CANDIDATES" | tr -d ' ')
 echo "Checking $candidate_count HMM manifest candidates from $START_DATE to $END_DATE..." >&2
 
-export BASE_URL
-xargs -n 1 -P "$JOBS" sh -c '
-    version="$1"
-    url="$BASE_URL/$version/metadata_$version.json"
-    if curl -fsSI --connect-timeout 5 --max-time 10 "$url" >/dev/null 2>&1; then
-        echo "$version"
-    fi
-' sh < "$CANDIDATES" > "$HITS"
+# Unreachable candidates are treated as misses, matching a 404.
+curl -sI --parallel --parallel-max "$JOBS" \
+    --connect-timeout 5 --max-time 10 \
+    -w '%{http_code} %{url_effective}\n' \
+    -K "$CANDIDATES" > "$RESULTS" 2>/dev/null || true
 
-LATEST_VERSION=$(sort -n "$HITS" | tail -1)
+LATEST_VERSION=$(sed -nE 's#^200 .*/metadata_([0-9]{10})\.json$#\1#p' "$RESULTS" |
+    sort -n | tail -1)
 if [[ -z "$LATEST_VERSION" ]]; then
     echo "No newer manifest was reachable; retaining the seed." >&2
     echo "$SEED_URL"
