@@ -128,3 +128,5 @@ clean       清理构建产物
 本项目为独立研究项目，与 Google 无关，也未获得 Google 的认可或支持。
 Google、Gboard 和 Android 均为 Google LLC 的商标。详情请参阅
 [NOTICE](NOTICE)。
+
+提交贡献须遵守[贡献指南](CONTRIBUTING.zh-CN.md)中的版权与法律原则。

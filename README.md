@@ -119,3 +119,6 @@ Runs both C engine tests and Swift IME tests.
 ## Legal
 
 This is an independent research project. Google, Gboard, and Android are trademarks of Google LLC. Not affiliated with or endorsed by Google. See [NOTICE](NOTICE).
+
+Contributions must follow the copyright and legal principles in
+[CONTRIBUTING](CONTRIBUTING.md).
