@@ -23,15 +23,61 @@ copy_engine_resources() {
     echo "Copied native engine and pinyin data pack"
 }
 
+has_xcodebuild() {
+    xcodebuild -version >/dev/null 2>&1
+}
+
+build_with_xcodebuild() {
+    echo "Building GboardIME (Release) with xcodebuild..."
+    (
+        cd "$XCODE_DIR"
+        xcodebuild -quiet \
+            -scheme GboardIME \
+            -configuration Release \
+            build \
+            CONFIGURATION_BUILD_DIR="build/release"
+    )
+}
+
+# Fallback for machines with only the Command Line Tools installed. Mirrors the
+# Xcode project's Release settings; update both when adding sources or flags.
+build_with_swiftc() {
+    echo "Building GboardIME (Release) with swiftc (Xcode not found)..."
+    local target="arm64-apple-macos13.0"
+    local app="$BUILD_DIR/$APP_NAME"
+    local obj_dir="$BUILD_DIR/obj"
+    local c_srcs=("$XCODE_DIR"/ime/*.c "$XCODE_DIR"/engine/*.c)
+    local objs=()
+
+    rm -rf "$app" "$obj_dir"
+    mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources" "$obj_dir"
+
+    for src in "${c_srcs[@]}"; do
+        local obj="$obj_dir/$(basename "${src%.c}").o"
+        clang -c -Os -target "$target" \
+            -I"$XCODE_DIR/engine" -I"$XCODE_DIR/ime" \
+            -o "$obj" "$src"
+        objs+=("$obj")
+    done
+
+    swiftc -O -swift-version 5 -target "$target" \
+        -I"$XCODE_DIR/engine" -I"$XCODE_DIR/ime" \
+        -import-objc-header "$XCODE_DIR/ime/GboardBridge.h" \
+        -framework Cocoa -framework InputMethodKit \
+        -o "$app/Contents/MacOS/GboardIME" \
+        "$XCODE_DIR"/ime/*.swift "${objs[@]}"
+
+    cp "$XCODE_DIR/Info.plist" "$app/Contents/Info.plist"
+    printf 'APPL????' > "$app/Contents/PkgInfo"
+    rm -rf "$obj_dir"
+}
+
 do_build() {
-    echo "Building GboardIME (Release)..."
-    cd "$XCODE_DIR"
-    xcodebuild -quiet \
-        -scheme GboardIME \
-        -configuration Release \
-        build \
-        CONFIGURATION_BUILD_DIR="build/release"
-    cd ..
+    if has_xcodebuild; then
+        build_with_xcodebuild
+    else
+        build_with_swiftc
+    fi
     copy_engine_resources "$BUILD_DIR/$APP_NAME"
     echo "Built: $BUILD_DIR/$APP_NAME"
 }
@@ -54,8 +100,8 @@ do_install() {
     echo ""
     echo "To activate:"
     echo "  1. Log out and log back in (or restart)"
-    echo "  2. System Settings → Keyboard → Input Sources → Edit → + → Chinese Simplified → Gboard"
-    echo "  3. Switch to Gboard from the menu bar input source picker"
+    echo "  2. System Settings → Keyboard → Input Sources → Edit → + → Chinese, Simplified → GboardIME"
+    echo "  3. Switch to GboardIME from the menu bar input source picker"
 }
 
 do_uninstall() {

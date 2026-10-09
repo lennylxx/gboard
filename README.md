@@ -50,8 +50,9 @@ Three layers make this possible:
 ## Prerequisites
 
 - macOS 13.0+ on Apple Silicon
-- Xcode (command line tools)
-- `brew install jadx jq`
+- Xcode or the Xcode Command Line Tools (`build.sh` falls back to `swiftc`
+  when `xcodebuild` is unavailable)
+- `brew install jq`
 
 ## Quick start
 
@@ -73,6 +74,8 @@ Three layers make this possible:
 --dict PATH     Use a local dict zip instead of downloading
 --locale CODE   zh_CN (default), zh_TW, zh_HK, ko
 ```
+
+Optional: `./decompile.sh` decompiles the Java sources into `gboard_apk_source/jadx/` for reverse-engineering (requires `brew install jadx`; not needed to build).
 
 ### build.sh commands
 

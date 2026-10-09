@@ -1,16 +1,16 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Extract Gboard XAPK, decompile Java, and download HMM dict pack.
+# Extract Gboard XAPK and download HMM dict pack.
 #
 # You must supply your own Gboard XAPK file. This project does not
 # distribute or automate downloading Google's proprietary binaries.
 #
-# The dict manifest URL is extracted from decompiled source
-# (HmmSuperpacksConfig / defpackage/lap.java → hmm_superpacks_manifest_url)
-# which points to a JSON on gstatic.com listing locale packs with download URLs.
+# The newest dict manifest (a JSON on gstatic.com listing locale packs with
+# download URLs) is located by find_latest_hmm_manifest.sh, which probes the
+# CDN's date-based namespace forward from a known manifest URL.
 #
-# Prerequisites: brew install jadx jq curl unzip
+# Prerequisites: brew install jq curl unzip
 
 usage() {
     cat <<'EOF'
@@ -43,7 +43,6 @@ MANIFEST_SCANNER="./find_latest_hmm_manifest.sh"
 XAPK_DIR="xapk_unpacked"
 APK_SOURCE="gboard_apk_source"
 RESOURCES="$APK_SOURCE/resources"
-JADX_OUT="$APK_SOURCE/jadx"
 DICT_DIR="hmmoemdata"
 CACHE_FILE="$DICT_DIR/.latest_manifest_url"
 SO_FILE="$RESOURCES/lib/arm64-v8a/libintegrated_shared_object.so"
@@ -77,7 +76,7 @@ fi
 
 # ── Check prerequisites ─────────────────────────────────────────────────────
 missing=()
-for cmd in jadx jq unzip curl; do
+for cmd in jq unzip curl; do
     command -v "$cmd" >/dev/null || missing+=("$cmd")
 done
 if [[ ${#missing[@]} -gt 0 ]]; then
@@ -124,16 +123,8 @@ else
     echo "WARNING: libintegrated_shared_object.so not found!"
 fi
 
-# ── Step 3: Decompile Java sources with jadx ────────────────────────────────
-echo "Decompiling Java sources (this may take a few minutes)..."
-rm -rf "$JADX_OUT"
-jadx --quiet --no-res --output-dir "$JADX_OUT" "$BASE_APK" || true  # some classes fail to decompile (normal for obfuscated APKs)
-JAVA_COUNT=$(find "$JADX_OUT" -name "*.java" | wc -l | tr -d ' ')
-echo "Decompiled $JAVA_COUNT Java files"
-
-# ── Step 4: Download HMM dict pack from Google's CDN ────────────────────────
-# The manifest URL is in the decompiled source (HmmSuperpacksConfig / lap.java).
-# It lists available locale packs with direct download URLs.
+# ── Step 3: Download HMM dict pack from Google's CDN ────────────────────────
+# The manifest lists available locale packs with direct download URLs.
 #
 # Manifest URL pattern:
 #   https://www.gstatic.com/android/keyboard/hmmpack/<version>/metadata_<version>.json
@@ -147,18 +138,7 @@ if [[ -n "$DICT_ZIP" ]]; then
     unzip -q -o "$DICT_ZIP" -d "$DICT_DIR/$DICT_NAME"
     echo "Dict pack: $DICT_DIR/$DICT_NAME ($(ls "$DICT_DIR/$DICT_NAME" | wc -l | tr -d ' ') files)"
 else
-    # Extract manifest URL from decompiled source
-    MANIFEST_URL=""
-    MANIFEST_FILE=$(grep -rl "hmm_superpacks_manifest_url" "$JADX_OUT" 2>/dev/null | head -1)
-    if [[ -n "$MANIFEST_FILE" ]]; then
-        MANIFEST_URL=$(grep -o 'https://[^"]*metadata[^"]*\.json' "$MANIFEST_FILE" | head -1)
-    fi
-    if [[ -z "$MANIFEST_URL" ]]; then
-        MANIFEST_URL="$FALLBACK_MANIFEST"
-        echo "Using fallback manifest URL (source extraction failed)"
-    fi
-
-    SEED_ARGS=(--seed "$FALLBACK_MANIFEST" --seed "$MANIFEST_URL")
+    SEED_ARGS=(--seed "$FALLBACK_MANIFEST")
     if [[ -f "$CACHE_FILE" ]]; then
         SEED_ARGS+=(--seed "$(cat "$CACHE_FILE")")
     fi
@@ -209,9 +189,8 @@ echo ""
 echo "Setup complete."
 echo "  XAPK:       $XAPK_PATH"
 echo "  Resources:  $RESOURCES/"
-echo "  Sources:    $JADX_OUT/ ($JAVA_COUNT files)"
 if [[ -L "$DICT_DIR/current" ]]; then
     echo "  Dict pack:  $DICT_DIR/$(readlink "$DICT_DIR/current")/"
 fi
 echo ""
-echo "Next: cd GboardIME && bash build.sh install"
+echo "Next: ./build.sh install"

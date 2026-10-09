@@ -52,13 +52,14 @@ InputMethodKit 无法可靠区分“撤销已上屏文本”和普通文本编�
 ## 环境要求
 
 - 搭载 Apple 芯片且运行 macOS 13.0 或更高版本的 Mac
-- Xcode 或 Xcode Command Line Tools
-- `jadx` 和 `jq`
+- Xcode 或 Xcode Command Line Tools（未安装 Xcode 时，`build.sh` 会改用
+  `swiftc` 构建）
+- `jq`
 
 可通过 Homebrew 安装所需的命令行工具：
 
 ```bash
-brew install jadx jq
+brew install jq
 ```
 
 ## 快速开始
@@ -81,6 +82,8 @@ brew install jadx jq
 --dict PATH     使用本地词典 ZIP 文件，而不从网络下载
 --locale CODE   数据区域：zh_CN（默认）、zh_TW、zh_HK 或 ko
 ```
+
+可选：`./decompile.sh` 会把 Java 源码反编译到 `gboard_apk_source/jadx/`，用于逆向分析（需要 `brew install jadx`；构建时不需要）。
 
 ### `build.sh` 命令
 
