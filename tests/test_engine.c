@@ -645,6 +645,9 @@ static void test_segmented_pinyin(void) {
         { "fangan",             "fang'an" },
         { "jintiantianqihenhao","jin'tian'tian'qi'hen'hao" },
         { "woshizhongguoren",   "wo'shi'zhong'guo'ren" },
+        { "github",             "github" },
+        { "woyaogithub",        "wo'yao'github" },
+        { "yongpythonxie",      "yong'python'xie" },
     };
     int total = sizeof(cases) / sizeof(cases[0]);
     int ok = 0;
@@ -665,6 +668,60 @@ static void test_segmented_pinyin(void) {
     }
     printf("    %d/%d segmented readings correct\n", ok, total);
     check("segmented pinyin matches engine tokens", ok == total);
+}
+
+static void test_english_mixed_input(void) {
+    printf("[test_english_mixed_input]\n");
+    static const struct { const char *input; const char *expected; } cases[] = {
+        { "github",        "GitHub" },
+        { "woyaogithub",   "我要GitHub" },
+        { "yongpythonxie", "用Python写" },
+        { "zhongwen",      "中文" },
+        { "women",         "我们" },
+    };
+    for (size_t c = 0; c < sizeof(cases) / sizeof(cases[0]); c++) {
+        char *cands[9] = {0};
+        int n = get_candidates_bulk(cases[c].input, cands, 9);
+        char label[128];
+        snprintf(label, sizeof(label), "'%s' first candidate is %s",
+                 cases[c].input, cases[c].expected);
+        check(label, n > 0 && strcmp(cands[0], cases[c].expected) == 0);
+        if (n > 0 && strcmp(cands[0], cases[c].expected) != 0)
+            printf("    got '%s'\n", cands[0]);
+        free_cands(cands, n);
+    }
+
+    char *cands[9] = {0};
+    int n = get_candidates_bulk("github", cands, 9);
+    char tokens[16][16];
+    int types[16];
+    int tc = n > 0 ? hmm_user_dict_extract_tokens(0, tokens, types, 16) : 0;
+    bool all_english = tc == 6;
+    for (int i = 0; i < tc; i++) all_english = all_english && types[i] == 0;
+    check("'GitHub' tokens are six English letters", all_english);
+    if (n > 0) {
+        check("token extraction refuses truncated token lists",
+              hmm_user_dict_extract_tokens(0, tokens, types, 3) == 0);
+    }
+    free_cands(cands, n);
+
+    // Context-bearing input switches to the context engine, which must keep
+    // the same English setting.
+    set_editor_context("我觉得");
+    for (size_t c = 0; c < sizeof(cases) / sizeof(cases[0]); c++) {
+        char *ctx_cands[9] = {0};
+        int ctx_n = get_candidates_bulk(cases[c].input, ctx_cands, 9);
+        char label[160];
+        snprintf(label, sizeof(label),
+                 "with context, '%s' first candidate is %s",
+                 cases[c].input, cases[c].expected);
+        check(label, ctx_n > 0 &&
+                     strcmp(ctx_cands[0], cases[c].expected) == 0);
+        if (ctx_n > 0 && strcmp(ctx_cands[0], cases[c].expected) != 0)
+            printf("    got '%s'\n", ctx_cands[0]);
+        free_cands(ctx_cands, ctx_n);
+    }
+    set_editor_context("");
 }
 
 // ── User dictionary tests ────────────────────────────────────────────────────
@@ -698,6 +755,11 @@ static void test_user_dict_token_extraction(void) {
             check("token[0] is 'ni'", strcmp(tokens[0], "ni") == 0);
             check("token[1] is 'hao'", strcmp(tokens[1], "hao") == 0);
         }
+        // Learning routes language-0 selections to the English dictionary.
+        bool pinyin_language = tc > 0;
+        for (int i = 0; i < tc; i++)
+            pinyin_language = pinyin_language && types[i] != 0;
+        check("Pinyin tokens are not English language", pinyin_language);
     }
     free_cands(cands, n);
 }
@@ -848,6 +910,11 @@ static void test_user_dict_persist_and_reload(const char *executable,
     for (int i = 0; i < 20; i++) {
         hmm_user_dict_learn(tokens, types, 2, "车时", true);
     }
+    const char *english_tokens[] = {"g", "i", "t", "h", "u", "b"};
+    int english_types[] = {0, 0, 0, 0, 0, 0};
+    for (int i = 0; i < 20; i++) {
+        hmm_user_dict_learn(english_tokens, english_types, 6, "GITHUB", true);
+    }
     int size_before = hmm_user_dict_get_size();
     printf("    size before persist: %d\n", size_before);
 
@@ -875,6 +942,26 @@ static void test_user_dict_persist_and_reload(const char *executable,
     bool child_ok = pid > 0 && waitpid(pid, &status, 0) == pid &&
                     WIFEXITED(status) && WEXITSTATUS(status) == 0;
     check("fresh process reloads learned ranking", child_ok);
+
+    char english_path[4096];
+    snprintf(english_path, sizeof(english_path),
+             "tests/test_user_data/user_dict_3_3_english");
+    check("English selection persisted to user_dict_3_3_english",
+          stat(english_path, &st) == 0 && st.st_size > 0);
+
+    pid = fork();
+    if (pid == 0) {
+        execl(executable, executable, "--verify-user-dict", so, pack,
+              "tests/test_user_data", "github", "GITHUB", "1", NULL);
+        _exit(127);
+    }
+    status = 0;
+    child_ok = pid > 0 && waitpid(pid, &status, 0) == pid &&
+               WIFEXITED(status) && WEXITSTATUS(status) == 0;
+    check("fresh process reloads learned English ranking", child_ok);
+    unlink(english_path);
+    unlink("tests/test_user_data/user_dict_3_3_english_bak");
+    unlink("tests/test_user_data/user_dict_3_3_english_tmp");
 
     // Cleanup test data
     unlink(dict_path);
@@ -996,6 +1083,9 @@ int main(int argc, char **argv) {
     unlink("tests/test_user_data/user_dict_3_3");
     unlink("tests/test_user_data/user_dict_3_3_tmp");
     unlink("tests/test_user_data/user_dict_3_3_bak");
+    unlink("tests/test_user_data/user_dict_3_3_english");
+    unlink("tests/test_user_data/user_dict_3_3_english_tmp");
+    unlink("tests/test_user_data/user_dict_3_3_english_bak");
 
     test_init(so, pack);
     if (g_fail > 0) { printf("\nEngine init failed — cannot continue.\n"); return 1; }
@@ -1023,6 +1113,7 @@ int main(int argc, char **argv) {
     test_brute_force_random();
     test_brute_force_incremental();
     test_segmented_pinyin();
+    test_english_mixed_input();
 
     // User dictionary tests
     test_user_dict_init();

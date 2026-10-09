@@ -26,8 +26,11 @@ GboardIME 是一款适用于 macOS 的中文输入法。本项目通过自定义
   继续参与转换。例如，输入 `nihao` 后选择“你”，`hao` 会保留用于后续选词。
 - **拼音切分显示**：根据引擎的 segment/token 结果显示实际拼音切分，例如
   `fang'an`；输入撇号强制分隔时会显示 `xi'an`。
-- **用户词典自动学习**：自动学习用户选择的中文词组，并写入
-  `user_dict_3_3`。词典保存在
+- **中英文混合输入**：使用 Gboard 的英文 token 与系统词典，在拼音输入
+  中直接给出英文单词。例如，`woyaogithub` 得到“我要GitHub”，
+  `yongpythonxie` 得到“用Python写”。
+- **用户词典自动学习**：自动学习用户选择的中文和中英混合词组，写入
+  `user_dict_3_3`；纯英文单词写入 `user_dict_3_3_english`。词典保存在
   `~/Library/Application Support/GboardIME/`，每 4 小时以及应用退出时
   自动持久化。
 - **完整的键盘操作**：支持候选翻页、键盘选词和中英文模式切换。

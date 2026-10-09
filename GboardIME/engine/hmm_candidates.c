@@ -342,6 +342,8 @@ int hmm_engine_get_segmented_pinyin(char *text, int max_bytes) {
 
     int written = 0;
     bool has_token = false;
+    int prev_language = -1;
+    const HmmUserDictNatives *lang_natives = hmm_get_user_dict_natives();
     for (jint s = 0; s < segCount && written < max_bytes - 1; s++) {
         jlong seg = 0;
         CRASH_PROTECT_BEGIN()
@@ -378,7 +380,17 @@ int hmm_engine_get_segmented_pinyin(char *text, int max_bytes) {
             const char *token_text = js ? jni_get_string(js) : NULL;
             if (!token_text || !token_text[0]) continue;
 
-            if (has_token && written < max_bytes - 1) {
+            /* English tokens are single letters; keep a word contiguous. */
+            int language = -1;
+            if (lang_natives && lang_natives->getTokenLanguage) {
+                CRASH_PROTECT_BEGIN()
+                language = lang_natives->getTokenLanguage(g_env, NULL, g_engine, token);
+                CRASH_PROTECT_END("nativeGetTokenLanguage")
+            }
+            bool join = has_token && language == 0 && prev_language == 0;
+            prev_language = language;
+
+            if (has_token && !join && written < max_bytes - 1) {
                 text[written++] = '\'';
                 text[written] = '\0';
             }

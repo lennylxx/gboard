@@ -93,32 +93,28 @@ static uint8_t *replace_setting_id(const uint8_t *original,
     return result;
 }
 
-// Replicates AbstractHmmEngineFactory.k(): add the enabled mutable dictionary
-// to both DictionaryConfig messages in the main setting scheme.
-static uint8_t *add_user_dictionary_to_setting(const uint8_t *orig,
-                                                size_t orig_len,
-                                                size_t *out_len) {
-    uint8_t entry[128];
-    uint8_t entry_body[96];
-    size_t body_len = 0;
-    body_len += pb_write_tag(entry_body + body_len, 1, 0);
-    body_len += pb_write_varint(entry_body + body_len, 2);  // type 3
-    body_len += pb_write_string(entry_body + body_len, 2, "user_dict_3_3");
-    body_len += pb_write_tag(entry_body + body_len, 3, 0);
-    body_len += pb_write_varint(entry_body + body_len, 2);  // flags 3
+typedef struct {
+    int field;
+    const uint8_t *bytes;
+    size_t length;
+} SettingAppend;
 
-    size_t entry_len = 0;
-    entry_len += pb_write_tag(entry + entry_len, 1, 2);
-    entry_len += pb_write_varint(entry + entry_len, body_len);
-    memcpy(entry + entry_len, entry_body, body_len);
-    entry_len += body_len;
-
-    uint8_t *out = malloc(orig_len + entry_len * 2 + 32);
+// Appends serialized bytes to the end of selected length-delimited
+// SettingScheme fields, preserving all other fields unchanged.
+static uint8_t *append_to_setting_fields(const uint8_t *orig, size_t orig_len,
+                                         const SettingAppend *appends,
+                                         int append_count, size_t *out_len) {
+    size_t extra = 32;
+    for (int i = 0; i < append_count; i++) extra += appends[i].length + 16;
+    uint8_t *out = malloc(orig_len + extra);
     if (!out) return NULL;
+    // Each append is applied once, to the first occurrence of its field, so
+    // the buffer size above stays valid even if a field is repeated.
+    bool applied[8] = {false};
+    if (append_count > (int)(sizeof(applied) / sizeof(applied[0]))) goto invalid;
 
     size_t in_pos = 0;
     size_t out_pos = 0;
-    int modified = 0;
     while (in_pos < orig_len) {
         size_t field_start = in_pos;
         uint64_t tag;
@@ -138,14 +134,22 @@ static uint8_t *add_user_dictionary_to_setting(const uint8_t *orig,
                 goto invalid;
             }
             const uint8_t *value = orig + in_pos;
-            if (field == 4 || field == 5) {
+            const SettingAppend *match = NULL;
+            for (int i = 0; i < append_count; i++) {
+                if (appends[i].field == field && !applied[i]) {
+                    match = &appends[i];
+                    applied[i] = true;
+                    break;
+                }
+            }
+            if (match) {
                 out_pos += pb_write_tag(out + out_pos, field, 2);
-                out_pos += pb_write_varint(out + out_pos, value_len + entry_len);
+                out_pos += pb_write_varint(out + out_pos,
+                                           value_len + match->length);
                 memcpy(out + out_pos, value, (size_t)value_len);
                 out_pos += (size_t)value_len;
-                memcpy(out + out_pos, entry, entry_len);
-                out_pos += entry_len;
-                modified++;
+                memcpy(out + out_pos, match->bytes, match->length);
+                out_pos += match->length;
             } else {
                 memcpy(out + out_pos, orig + field_start,
                        in_pos + (size_t)value_len - field_start);
@@ -167,13 +171,81 @@ static uint8_t *add_user_dictionary_to_setting(const uint8_t *orig,
         }
     }
 
-    LOGERR("Added user_dict_3_3 to %d setting dictionary configs", modified);
+    for (int i = 0; i < append_count; i++) {
+        if (!applied[i]) {
+            LOGERR("SettingScheme field %d not found; append skipped",
+                   appends[i].field);
+        }
+    }
     *out_len = out_pos;
     return out;
 
 invalid:
     free(out);
     return NULL;
+}
+
+// Serializes one DictionaryConfig entry (aohs): raw type, name, raw flags.
+static size_t pb_write_dictionary_entry(uint8_t *buf, int raw_type,
+                                        const char *name, int raw_flags) {
+    uint8_t body[128];
+    size_t body_len = 0;
+    body_len += pb_write_tag(body + body_len, 1, 0);
+    body_len += pb_write_varint(body + body_len, (uint64_t)raw_type);
+    body_len += pb_write_string(body + body_len, 2, name);
+    body_len += pb_write_tag(body + body_len, 3, 0);
+    body_len += pb_write_varint(body + body_len, (uint64_t)raw_flags);
+
+    size_t n = pb_write_tag(buf, 1, 2);
+    n += pb_write_varint(buf + n, body_len);
+    memcpy(buf + n, body, body_len);
+    return n + body_len;
+}
+
+// Replicates PinyinHmmEngineFactory (ioa) with chinese_english_mixed_input
+// enabled: X() adds the English token dictionary to the token list (field 2)
+// and q() adds English system/user/contacts dictionaries to the primary
+// DictionaryConfig (field 4 only).
+static uint8_t *add_english_mixed_input_to_setting(const uint8_t *orig,
+                                                    size_t orig_len,
+                                                    size_t *out_len) {
+    uint8_t tokens[96];
+    size_t tokens_len = pb_write_string(
+        tokens, 1, "zh_t_i0_pinyin_android_english_token_dictionary");
+
+    uint8_t dicts[256];
+    size_t dicts_len = 0;
+    dicts_len += pb_write_dictionary_entry(
+        dicts + dicts_len, 1,
+        "zh_t_i0_pinyin_android_system_english_dictionary", 1);
+    dicts_len += pb_write_dictionary_entry(
+        dicts + dicts_len, 2, "user_dict_3_3_english", 2);
+    dicts_len += pb_write_dictionary_entry(
+        dicts + dicts_len, 3, "contacts_dict_3_3_english", 3);
+
+    const SettingAppend appends[] = {
+        {2, tokens, tokens_len},
+        {4, dicts, dicts_len},
+    };
+    uint8_t *out = append_to_setting_fields(orig, orig_len, appends, 2, out_len);
+    if (out) LOGERR("Added English mixed-input dictionaries to setting scheme");
+    return out;
+}
+
+// Replicates AbstractHmmEngineFactory.k(): add the enabled mutable dictionary
+// to both DictionaryConfig messages in the main setting scheme.
+static uint8_t *add_user_dictionary_to_setting(const uint8_t *orig,
+                                                size_t orig_len,
+                                                size_t *out_len) {
+    uint8_t entry[128];
+    size_t entry_len = pb_write_dictionary_entry(entry, 2, "user_dict_3_3", 2);
+    const SettingAppend appends[] = {
+        {4, entry, entry_len},
+        {5, entry, entry_len},
+    };
+    uint8_t *out = append_to_setting_fields(orig, orig_len, appends, 2, out_len);
+    if (out) LOGERR("Added user_dict_3_3 to setting dictionary configs");
+    return out;
 }
 
 // ── Data scheme (DataScheme / aogz) parsing ─────────────────────────────────
@@ -358,16 +430,17 @@ static uint8_t *modify_data_scheme(const uint8_t *orig, size_t orig_len,
 
 // ── Data pack enrollment ────────────────────────────────────────────────────
 
-static bool enroll_pack(const char *pack_dir) {
+static bool enroll_data_scheme_file(const char *pack_dir,
+                                    const char *scheme_name) {
     int enrolled = 0;
     char abs_pack[4096];
     if (realpath(pack_dir, abs_pack) == NULL)
         snprintf(abs_pack, sizeof(abs_pack), "%s", pack_dir);
 
     char scheme_path[4096];
-    snprintf(scheme_path, sizeof(scheme_path), "%s/data_scheme", pack_dir);
+    snprintf(scheme_path, sizeof(scheme_path), "%s/%s", pack_dir, scheme_name);
     FILE *fp = fopen(scheme_path, "rb");
-    if (!fp) { LOGERR("data_scheme not found"); return false; }
+    if (!fp) { LOGERR("%s not found", scheme_name); return false; }
     fseek(fp, 0, SEEK_END);
     long sz = ftell(fp);
     fseek(fp, 0, SEEK_SET);
@@ -377,7 +450,7 @@ static bool enroll_pack(const char *pack_dir) {
 
     ParsedEntry all_entries[128];
     int nentries = parse_data_scheme(raw, (size_t)sz, all_entries, 128);
-    LOGERR("Parsed data_scheme: %d entries from %ld bytes", nentries, sz);
+    LOGERR("Parsed %s: %d entries from %ld bytes", scheme_name, nentries, sz);
 
     // Match DownloadDictionaryDataProvider: enroll the rewritten scheme once.
     // Creator type 5 makes the native data manager open each file from base_path.
@@ -434,8 +507,15 @@ static bool enroll_pack(const char *pack_dir) {
     }
 
     free(raw);
-    LOGERR("enroll_pack total: %d enrolled", enrolled);
+    LOGERR("%s total: %d enrolled", scheme_name, enrolled);
     return enrolled > 0;
+}
+
+static bool enroll_pack(const char *pack_dir) {
+    bool ok = enroll_data_scheme_file(pack_dir, "data_scheme");
+    // English token and reconversion data used by en_user_dictionary_accessor.
+    enroll_data_scheme_file(pack_dir, "en_data_scheme");
+    return ok;
 }
 
 // ── Public enrollment entry point ───────────────────────────────────────────
@@ -454,6 +534,9 @@ bool hmm_enroll_all(const char *pack_dir) {
             {"contacts_dict_3_3", 24, 0},
             {"user_dict_3_3", 23, 0},
             {"shortcuts_dict_3_3", 24, 4},
+            {"contacts_dict_3_3_english", 24, 0},
+            {"user_dict_3_3_english", 23, 0},
+            {"shortcuts_dict_3_3_english", 24, 4},
             {NULL, 0, 0}
         };
         for (int i = 0; mut_dicts[i].name; i++) {
@@ -485,10 +568,17 @@ bool hmm_enroll_all(const char *pack_dir) {
             uint8_t *sbuf = malloc((size_t)ssz);
             fread(sbuf, 1, (size_t)ssz, sfp);
             fclose(sfp);
-            size_t setting_size = (size_t)ssz;
+            size_t base_size = (size_t)ssz;
+            uint8_t *english = add_english_mixed_input_to_setting(
+                sbuf, (size_t)ssz, &base_size);
+            const uint8_t *base_bytes = english ? english : sbuf;
+            if (!english) base_size = (size_t)ssz;
+
+            size_t setting_size = base_size;
             uint8_t *modified = add_user_dictionary_to_setting(
-                sbuf, setting_size, &setting_size);
-            const uint8_t *setting_bytes = modified ? modified : sbuf;
+                base_bytes, base_size, &setting_size);
+            const uint8_t *setting_bytes = modified ? modified : base_bytes;
+            if (!modified) setting_size = base_size;
             jbyteArray ba = jni_NewByteArray(g_env, (jsize)setting_size);
             jni_SetByteArrayRegion(g_env, ba, 0, (jsize)setting_size,
                                    (jbyte *)setting_bytes);
@@ -508,7 +598,7 @@ bool hmm_enroll_all(const char *pack_dir) {
                     "zh-t-i0-pinyin-x-f0-delight-context";
                 size_t context_size = 0;
                 uint8_t *context_setting = replace_setting_id(
-                    sbuf, (size_t)ssz, context_id, &context_size);
+                    base_bytes, base_size, context_id, &context_size);
                 if (!context_setting) continue;
                 jbyteArray context_ba =
                     jni_NewByteArray(g_env, (jsize)context_size);
@@ -528,6 +618,7 @@ bool hmm_enroll_all(const char *pack_dir) {
                 CRASH_PROTECT_END("nativeEnrollSettingScheme(context)")
             }
             free(modified);
+            free(english);
             free(sbuf);
         }
     }
@@ -561,6 +652,9 @@ bool hmm_enroll_all(const char *pack_dir) {
             {"zh_t_i0_pinyin_user_dictionary_accessor",          "pinyin_mutable_dictionary_accessor_setting_scheme"},
             {"zh_t_i0_pinyin_shortcuts_dictionary_accessor",     "shortcuts_mutable_dictionary_accessor_setting_scheme"},
             {"zh_t_i0_pinyin_user_dictionary_accessor",          "pinyin_mutable_dictionary_accessor_setting_scheme_secondary"},
+            {"en_contacts_dictionary_accessor",                  "en_mutable_dictionary_accessor_setting_scheme"},
+            {"en_user_dictionary_accessor",                      "en_mutable_dictionary_accessor_setting_scheme"},
+            {"en_shortcut_dictionary_accessor",                  "en_mutable_dictionary_accessor_setting_scheme"},
             {NULL, NULL}
         };
         for (int mi = 0; mut_schemes[mi].accessor; mi++) {

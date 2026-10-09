@@ -27,9 +27,13 @@ A macOS input method that runs Gboard's native HMM Pinyin engine via a custom AR
   composition.
 - **Pinyin segmentation display** — Shows the engine's segment/token split,
   such as `fang'an`, and explicit apostrophe separators such as `xi'an`.
-- **Automatic user-dictionary learning** — Stores selected Chinese phrases in
-  `user_dict_3_3` under `~/Library/Application Support/GboardIME/` and
-  persists the dictionary every four hours and on app teardown.
+- **Chinese-English mixed input** — Offers English words inside Pinyin
+  input using Gboard's English token and system dictionaries. For example,
+  `woyaogithub` yields `我要GitHub` and `yongpythonxie` yields `用Python写`.
+- **Automatic user-dictionary learning** — Stores selected Chinese and mixed
+  phrases in `user_dict_3_3` and pure English words in
+  `user_dict_3_3_english` under `~/Library/Application Support/GboardIME/`,
+  persisting both every four hours and on app teardown.
 - **Complete keyboard workflow** — Supports candidate paging, keyboard
   selection, and Chinese/English mode switching.
 - **Native macOS interface** — Uses InputMethodKit and SwiftUI for the input
