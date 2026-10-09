@@ -8,7 +8,8 @@ enum {
     SEPARATOR_TOKEN = 1,
     SEPARATOR_SEGMENT = 2,
     END_VERTEX_SENTINEL = 32767,
-    CONTEXT_MAX_UTF8_BYTES = 256
+    CONTEXT_MAX_UTF8_BYTES = 256,
+    PREDICTION_MAX_CANDIDATES = 50
 };
 
 typedef struct {
@@ -290,6 +291,55 @@ int hmm_engine_get_candidates_page(char **candidates, int offset, int max_count)
 
 int hmm_engine_get_candidates(char **candidates, int max_count) {
     return hmm_engine_get_candidates_page(candidates, 0, max_count);
+}
+
+int hmm_engine_get_predictions(char **candidates, int max_count) {
+    if (!candidates || max_count < 1 || !g_fillPredictionCandList ||
+        !g_getPredictionCandCount || !g_getPredictionCandString) {
+        hmm_engine_reset();
+        return 0;
+    }
+    // Mirrors Gboard hbe.g(): inject context as TARGET_TOKEN input, fill
+    // predictions, then reset so the next composition starts clean.
+    hmm_engine_prepare_input("");
+    hmm_engine_reset();
+    if (!s_context[0] || !g_engine) return 0;
+    append_context();
+
+    int filled = 0;
+    if (s_context_end_vertex > 0) {
+        jboolean ok = JNI_FALSE;
+        CRASH_PROTECT_BEGIN()
+        ok = g_fillPredictionCandList(g_env, NULL, g_engine);
+        CRASH_PROTECT_END("nativeFillPredictionCandidateList")
+
+        jint count = 0;
+        if (ok) {
+            CRASH_PROTECT_BEGIN()
+            count = g_getPredictionCandCount(g_env, NULL, g_engine);
+            CRASH_PROTECT_END("nativeGetPredictionCandidateCount")
+        }
+        if (count > PREDICTION_MAX_CANDIDATES) {
+            count = PREDICTION_MAX_CANDIDATES;
+        }
+        for (jint i = 0; i < count && filled < max_count; i++) {
+            jstring js = NULL;
+            CRASH_PROTECT_BEGIN()
+            js = g_getPredictionCandString(g_env, NULL, g_engine, i);
+            CRASH_PROTECT_END("nativeGetPredictionCandidateString")
+            const char *s = js ? jni_get_string(js) : NULL;
+            if (!s || !*s) continue;
+            bool duplicate = false;
+            for (int j = 0; j < filled && !duplicate; j++) {
+                duplicate = strcmp(candidates[j], s) == 0;
+            }
+            if (!duplicate) candidates[filled++] = strdup(s);
+        }
+        LOG("predictions for '%s' → %d", s_context, filled);
+    }
+
+    hmm_engine_reset();
+    return filled;
 }
 
 int hmm_engine_get_candidate_consumed(int index) {

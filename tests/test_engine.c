@@ -1004,6 +1004,64 @@ static void test_user_dict_clear(void) {
     free_cands(cands, count);
 }
 
+static void test_next_word_prediction(void) {
+    printf("[test_next_word_prediction]\n");
+    char *cands[20] = {0};
+
+    set_editor_context("");
+    int count = hmm_engine_get_predictions(cands, 20);
+    check("prediction: empty context yields none", count == 0);
+    free_cands(cands, count);
+
+    set_editor_context("你好");
+    char *many[100] = {0};
+    count = hmm_engine_get_predictions(many, 100);
+    check("prediction: capped at 50", count > 0 && count <= 50);
+    free_cands(many, count);
+    count = hmm_engine_get_predictions(cands, 20);
+    printf("    你好 →");
+    for (int i = 0; i < count && i < 9; i++) printf(" %s", cands[i]);
+    printf("\n");
+    check("prediction: '你好' yields predictions", count > 0);
+    bool unique = true;
+    for (int i = 0; i < count; i++)
+        for (int j = i + 1; j < count; j++)
+            if (strcmp(cands[i], cands[j]) == 0) unique = false;
+    check("prediction: results are unique", unique);
+    free_cands(cands, count);
+
+    set_editor_context("生日快");
+    count = hmm_engine_get_predictions(cands, 20);
+    printf("    生日快 →");
+    for (int i = 0; i < count && i < 9; i++) printf(" %s", cands[i]);
+    printf("\n");
+    check("prediction: '生日快' predicts '乐'",
+          has_candidate(cands, count, "乐"));
+    free_cands(cands, count);
+
+    set_editor_context("你好。");
+    count = hmm_engine_get_predictions(cands, 20);
+    check("prediction: trailing punctuation yields none", count == 0);
+    free_cands(cands, count);
+
+    // Empty context still discards an active composition.
+    set_editor_context("");
+    count = get_candidates_bulk("nihao", cands, 9);
+    free_cands(cands, count);
+    count = hmm_engine_get_predictions(cands, 20);
+    free_cands(cands, count);
+    count = hmm_engine_get_candidates(cands, 9);
+    check("prediction: empty context resets composition", count == 0);
+    free_cands(cands, count);
+
+    // Decoding still works after prediction.
+    set_editor_context("");
+    count = get_candidates_bulk("nihao", cands, 9);
+    check("prediction: decoding works afterwards",
+          count > 0 && strcmp(cands[0], "你好") == 0);
+    free_cands(cands, count);
+}
+
 // ── Main ─────────────────────────────────────────────────────────────────────
 
 int main(int argc, char **argv) {
@@ -1114,6 +1172,7 @@ int main(int argc, char **argv) {
     test_brute_force_incremental();
     test_segmented_pinyin();
     test_english_mixed_input();
+    test_next_word_prediction();
 
     // User dictionary tests
     test_user_dict_init();

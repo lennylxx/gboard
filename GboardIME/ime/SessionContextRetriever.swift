@@ -156,6 +156,23 @@ enum SessionContextRetriever {
     }
 }
 
+/// Detects when IMKit starts routing events for a different text client.
+struct SessionClientTracker {
+    private(set) weak var current: AnyObject?
+
+    /// Records `client` and returns true if it replaces a different one.
+    mutating func update(to client: AnyObject?) -> Bool {
+        let previous = current
+        current = client
+        guard let previous else { return false }
+        return previous !== client
+    }
+
+    mutating func clear() {
+        current = nil
+    }
+}
+
 struct SessionContextTracker {
     private(set) var fallbackContext = ""
 

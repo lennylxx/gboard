@@ -135,6 +135,9 @@ typedef jboolean (*fn_EnrollMutableDictFd)(JNIEnv *, jclass, jlong, jstring, jin
 typedef jint     (*fn_GetCandidateTokenCount)(JNIEnv *, jobject, jlong, jint);
 typedef jlong    (*fn_GetCandidateToken)(JNIEnv *, jobject, jlong, jint, jint);
 typedef jint     (*fn_GetTokenLanguage)(JNIEnv *, jobject, jlong, jlong);
+typedef jboolean (*fn_FillPredictionCandList)(JNIEnv *, jobject, jlong);
+typedef jint     (*fn_GetPredictionCandCount)(JNIEnv *, jobject, jlong);
+typedef jstring  (*fn_GetPredictionCandString)(JNIEnv *, jobject, jlong, jint);
 
 typedef struct {
     fn_CreateMutableDictionaryAccessor createAccessor;
@@ -201,6 +204,9 @@ extern fn_GetSegmentTokenCount g_getSegmentTokenCount;
 extern fn_GetSegmentToken  g_getSegmentToken;
 extern fn_GetTokenString   g_getTokenString;
 extern fn_RefreshData      g_refreshData;
+extern fn_FillPredictionCandList   g_fillPredictionCandList;
+extern fn_GetPredictionCandCount   g_getPredictionCandCount;
+extern fn_GetPredictionCandString  g_getPredictionCandString;
 
 // Refresh the decoder after a mutable dictionary snapshot is re-enrolled.
 bool hmm_engine_refresh_user_dictionary(void);

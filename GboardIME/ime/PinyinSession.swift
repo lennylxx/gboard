@@ -38,6 +38,21 @@ class PinyinSession {
     private(set) var candidatePage = 0
     private(set) var hasNextPage = false
 
+    /// Next-word predictions shown after a commit while nothing is composing.
+    private(set) var predictions: [String] = []
+    private(set) var predictionPage = 0
+    private var predictionContext = ""
+    var isPredicting: Bool { !predictions.isEmpty }
+    private static let maxPredictions = 50
+
+    /// Predictions on the current page, selectable with 1-9.
+    var visiblePredictions: [String] {
+        let start = predictionPage * Self.candidatePageSize
+        guard start < predictions.count else { return [] }
+        let end = min(start + Self.candidatePageSize, predictions.count)
+        return Array(predictions[start..<end])
+    }
+
     weak var delegate: PinyinSessionDelegate?
 
     // MARK: - Chinese punctuation
@@ -69,6 +84,7 @@ class PinyinSession {
 
     func appendLetter(_ ch: String) -> KeyResult {
         if composition.isEmpty {
+            dismissPredictions()
             contextBeforeInput = delegate?.sessionContextBeforeInput() ?? ""
         }
         composition += ch
@@ -106,6 +122,9 @@ class PinyinSession {
     }
 
     func selectCurrent() -> KeyResult {
+        if composition.isEmpty && isPredicting {
+            return selectPrediction(index: 0)
+        }
         guard !composition.isEmpty else { return .passThrough }
         guard !candidates.isEmpty else {
             // No candidates — commit raw pinyin
@@ -130,6 +149,10 @@ class PinyinSession {
         // Capture this segment before selection mutates the engine state.
         let tokenCount = gboard_user_dict_extract_token_count(Int32(engineIndex))
         let letterCount = composition.filter { $0 != "'" }.count
+        if committedInComposition.isEmpty {
+            predictionContext = contextBeforeInput
+        }
+        committedInComposition += text
         accumulateLearningSegment(text: text,
                                   engineIndex: engineIndex,
                                   tokenCount: Int(tokenCount))
@@ -161,16 +184,104 @@ class PinyinSession {
             if !candidates.isEmpty {
                 return .handled
             }
+            // Undecodable remainder: commit its letters rather than drop them.
+            let raw = remaining.filter { $0 != "'" }
+            if !raw.isEmpty {
+                delegate?.sessionInsertText(raw)
+                committedInComposition += raw
+            }
         } else {
             commitPendingLearning()
         }
+        let committedContext = predictionContext + committedInComposition
         reset()
+        showPredictions(context: committedContext)
         return .handled
     }
 
     func selectNumber(_ n: Int) -> KeyResult {
-        guard n >= 1 && n <= 9 && !composition.isEmpty else { return .passThrough }
+        guard n >= 1 && n <= 9 else { return .passThrough }
+        if composition.isEmpty && isPredicting {
+            let result = selectPrediction(index: n - 1)
+            if result == .passThrough { dismissPredictions() }
+            return result
+        }
+        guard !composition.isEmpty else { return .passThrough }
         return selectCandidate(index: n - 1)
+    }
+
+    // MARK: - Next-word prediction
+
+    /// Commits a prediction and chains the next one, like Gboard's
+    /// AbstractHmmChineseDecodeProcessor.Z(): plain commit, no learning.
+    @discardableResult
+    func selectPrediction(index: Int) -> KeyResult {
+        let visible = visiblePredictions
+        guard composition.isEmpty, index >= 0, index < visible.count else {
+            return .passThrough
+        }
+        let text = visible[index]
+        delegate?.sessionInsertText(text)
+        showPredictions(context: predictionContext + text)
+        return .handled
+    }
+
+    func dismissPredictions() {
+        guard isPredicting else { return }
+        predictions = []
+        predictionPage = 0
+        predictionContext = ""
+        delegate?.sessionHideCandidates()
+    }
+
+    func previousPredictionPage() {
+        guard isPredicting, predictionPage > 0 else { return }
+        predictionPage -= 1
+        notifyPredictions()
+    }
+
+    func nextPredictionPage() {
+        guard isPredicting,
+              (predictionPage + 1) * Self.candidatePageSize < predictions.count
+        else { return }
+        predictionPage += 1
+        notifyPredictions()
+    }
+
+    func showPredictions(context: String) {
+        predictions = []
+        predictionPage = 0
+        predictionContext = context
+        defer {
+            if !isPredicting {
+                predictionContext = ""
+                delegate?.sessionHideCandidates()
+            }
+        }
+        guard !context.isEmpty else { return }
+
+        context.withCString { _ = gboard_set_context($0) }
+        let maxCount = Self.maxPredictions
+        var bufs = [UnsafeMutablePointer<CChar>?](repeating: nil, count: maxCount)
+        let count = Int(gboard_get_predictions(&bufs, Int32(maxCount)))
+        for i in 0..<count {
+            if let ptr = bufs[i] {
+                predictions.append(String(cString: ptr))
+                free(ptr)
+            }
+        }
+        if isPredicting { notifyPredictions() }
+    }
+
+    private func notifyPredictions() {
+        delegate?.sessionShowCandidates(
+            visiblePredictions,
+            pinyin: "",
+            selectedIndex: 0,
+            canGoPrevious: predictionPage > 0,
+            canGoNext: (predictionPage + 1) * Self.candidatePageSize
+                < predictions.count
+        )
     }
 
     func moveLeft() -> KeyResult {
@@ -261,18 +372,43 @@ class PinyinSession {
             return .handled
         }
         guard let punct = chinesePunctuation(for: ch) else { return .passThrough }
-        if isComposing {
-            _ = selectCurrent()
-        }
+        finishComposition()
+        dismissPredictions()
         delegate?.sessionInsertText(punct)
         return .handled
     }
 
     // MARK: - Non-letter while composing
 
+    /// Commits every remaining segment so a boundary key never leaves an
+    /// active composition behind after a partial candidate pick.
+    private func finishComposition() {
+        var rounds = 0
+        while isComposing && rounds < 32 {
+            let before = composition
+            _ = selectCurrent()
+            if composition == before { break }
+            rounds += 1
+        }
+        if isComposing {
+            _ = commitRawPinyin()
+        }
+    }
+
+    /// Drops all state owned by a client that IMKit no longer routes to,
+    /// clearing its marked text first. Call while the old client is current.
+    func handleClientSwitch() {
+        if isComposing {
+            cancel()
+        } else {
+            dismissPredictions()
+        }
+    }
+
     func commitAndPassThrough() -> KeyResult {
         guard !composition.isEmpty else { return .passThrough }
-        _ = selectCurrent()
+        finishComposition()
+        dismissPredictions()
         return .commitAndPass
     }
 
@@ -366,6 +502,10 @@ class PinyinSession {
         pendingLearningTokens = []
         pendingLearningTypes = []
         pendingLearningValid = true
+        committedInComposition = ""
+        predictions = []
+        predictionPage = 0
+        predictionContext = ""
         gboard_reset()
         delegate?.sessionHideCandidates()
     }
@@ -373,6 +513,8 @@ class PinyinSession {
     /// Separator vertex positions set by user apostrophes.
     private var separatorPositions: [Int32] = []
     private var contextBeforeInput = ""
+    /// Text committed from the current composition across segmented picks.
+    private var committedInComposition = ""
 
     private func fetchCandidates() {
         contextBeforeInput.withCString { context in

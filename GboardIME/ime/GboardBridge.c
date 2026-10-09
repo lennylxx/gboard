@@ -23,6 +23,7 @@ int  gboard_get_candidates(char **out, int max)     { return hmm_engine_get_cand
 int  gboard_get_candidates_page(char **out, int offset, int max) {
     return hmm_engine_get_candidates_page(out, offset, max);
 }
+int  gboard_get_predictions(char **out, int max)   { return hmm_engine_get_predictions(out, max); }
 bool gboard_select(int index)                       { return hmm_engine_select(index); }
 int  gboard_get_candidate_consumed(int index)       { return hmm_engine_get_candidate_consumed(index); }
 int  gboard_get_separator(int i)                    { return hmm_engine_get_separator(i); }

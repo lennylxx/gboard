@@ -43,6 +43,9 @@ void hmm_resolve_natives(void) {
     g_getSegmentToken    = (fn_GetSegmentToken)    jni_find_registered_native_exact("nativeGetSegmentToken");
     g_getTokenString     = (fn_GetTokenString)     jni_find_registered_native_by_sig("nativeGetTokenString", "(JJ)Ljava/lang/String;");
     g_refreshData        = (fn_RefreshData) jni_find_registered_native_by_sig("nativeRefreshData", "(J)V");
+    g_fillPredictionCandList  = (fn_FillPredictionCandList)  jni_find_registered_native_by_sig("nativeFillPredictionCandidateList", "(J)Z");
+    g_getPredictionCandCount  = (fn_GetPredictionCandCount)  jni_find_registered_native_by_sig("nativeGetPredictionCandidateCount", "(J)I");
+    g_getPredictionCandString = (fn_GetPredictionCandString) jni_find_registered_native_by_sig("nativeGetPredictionCandidateString", "(JI)Ljava/lang/String;");
 
     s_userDictNatives.createAccessor = (fn_CreateMutableDictionaryAccessor) jni_find_registered_native_by_sig("nativeCreateMutableDictionaryAccessor", "(JLjava/lang/String;Ljava/lang/String;Ljava/lang/String;)J");
     s_userDictNatives.addCount = (fn_AddDictionaryCount) jni_find_registered_native_by_sig("nativeAddCount", "(J[Ljava/lang/String;[ILjava/lang/String;IZ)Z");

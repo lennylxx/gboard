@@ -290,6 +290,9 @@ fn_GetSegmentTokenCount g_getSegmentTokenCount = NULL;
 fn_GetSegmentToken  g_getSegmentToken  = NULL;
 fn_GetTokenString   g_getTokenString   = NULL;
 fn_RefreshData      g_refreshData      = NULL;
+fn_FillPredictionCandList  g_fillPredictionCandList  = NULL;
+fn_GetPredictionCandCount  g_getPredictionCandCount  = NULL;
+fn_GetPredictionCandString g_getPredictionCandString = NULL;
 
 // ── Public API ──────────────────────────────────────────────────────────────
 

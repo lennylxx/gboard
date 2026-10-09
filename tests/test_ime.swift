@@ -25,6 +25,8 @@ class MockDelegate: PinyinSessionDelegate {
     var committedText = ""
     var markedText: String? = nil
     var candidatePinyin: String? = nil
+    var shownCandidates: [String] = []
+    var selectedIndex = -1
     var contextBeforeInput = ""
     var contextRequestCount = 0
 
@@ -47,9 +49,11 @@ class MockDelegate: PinyinSessionDelegate {
         canGoNext: Bool
     ) {
         candidatePinyin = pinyin
+        shownCandidates = candidates
+        self.selectedIndex = selectedIndex
     }
     func sessionHideCandidates() {
-        // no-op for testing
+        shownCandidates = []
     }
 
     func clear() {
@@ -723,6 +727,251 @@ func testContinuousPhraseLanguageScoring() {
     s.cancel()
 }
 
+func testNextWordPrediction() {
+    print("[test_next_word_prediction]")
+    let (s, d) = makeSession()
+
+    for ch in "nihao" { _ = s.appendLetter(String(ch)) }
+    _ = s.selectCurrent()
+    check("commit shows predictions", s.isPredicting)
+    check("predictions reach the window",
+          !d.shownCandidates.isEmpty && d.shownCandidates == s.visiblePredictions)
+    check("prediction window has no pinyin strip", d.candidatePinyin == "")
+    check("composition candidates stay empty", s.candidates.isEmpty)
+
+    let first = s.predictions.first ?? ""
+    let result = s.selectNumber(1)
+    check("number selects prediction", result == .handled)
+    check("prediction is committed", d.committedText == "你好" + first)
+    print("    你好 → \(first) → \(s.predictions.prefix(5))")
+
+    _ = s.appendLetter("w")
+    check("typing dismisses predictions", !s.isPredicting)
+    check("typing starts a composition", s.composition == "w")
+    s.cancel()
+
+    d.clear()
+    d.contextBeforeInput = ""
+    for ch in "kuai" { _ = s.appendLetter(String(ch)) }
+    _ = s.selectCurrent()
+    let bare = s.predictions
+    s.dismissPredictions()
+    d.clear()
+    d.contextBeforeInput = "生日"
+    for ch in "kuai" { _ = s.appendLetter(String(ch)) }
+    let picked = s.candidates.first ?? ""
+    _ = s.selectCurrent()
+    print("    \(picked) → \(bare.prefix(5)); 生日 + \(picked) → \(s.predictions.prefix(5))")
+    check("prediction commits 快", picked == "快")
+    check("prediction uses text before input",
+          s.predictions.first == "乐" && s.predictions != bare)
+
+    s.dismissPredictions()
+    check("dismiss clears predictions", !s.isPredicting)
+    check("dismiss hides window", d.shownCandidates.isEmpty)
+    check("number passes through without predictions",
+          s.selectNumber(1) == .passThrough)
+
+    d.contextBeforeInput = ""
+    for ch in "ni" { _ = s.appendLetter(String(ch)) }
+    _ = s.handlePunctuation(",")
+    check("punctuation leaves no predictions", !s.isPredicting)
+
+    d.contextBeforeInput = "生日"
+    for ch in "kuai" { _ = s.appendLetter(String(ch)) }
+    _ = s.selectCurrent()
+    check("fetches more than one page of predictions",
+          s.predictions.count > 9)
+    check("window shows one page", d.shownCandidates.count == 9)
+    let page2 = Array(s.predictions[9..<min(18, s.predictions.count)])
+    s.nextPredictionPage()
+    check("next prediction page", d.shownCandidates == page2)
+    let committedBefore = d.committedText
+    _ = s.selectNumber(1)
+    check("number selects on current page",
+          d.committedText == committedBefore + page2[0])
+    check("first prediction is highlighted", d.selectedIndex == 0)
+    let spaceBefore = d.committedText
+    let spaceExpected = s.visiblePredictions.first ?? ""
+    check("space selects first prediction",
+          s.selectCurrent() == .handled &&
+          d.committedText == spaceBefore + spaceExpected)
+    s.dismissPredictions()
+    check("space passes through without predictions",
+          s.selectCurrent() == .passThrough)
+
+    for ch in "kuai" { _ = s.appendLetter(String(ch)) }
+    _ = s.selectCurrent()
+    for _ in 0..<10 { s.nextPredictionPage() }
+    let shown = s.visiblePredictions.count
+    print("    last prediction page has \(shown) of \(s.predictions.count)")
+    check("last page is partial", shown > 0 && shown < 9)
+    check("unavailable number passes through",
+          s.selectNumber(shown + 1) == .passThrough)
+    check("unavailable number dismisses",
+          !s.isPredicting && d.shownCandidates.isEmpty)
+    s.dismissPredictions()
+
+    d.contextBeforeInput = ""
+    for ch in "github" { _ = s.appendLetter(String(ch)) }
+    _ = s.selectCurrent()
+    print("    GitHub → \(s.predictions.prefix(5))")
+    check("Latin commit has no predictions",
+          !s.isPredicting && d.shownCandidates.isEmpty)
+    s.dismissPredictions()
+}
+
+func testPredictionEdgeCases() {
+    print("[test_prediction_edge_cases]")
+    let (s, d) = makeSession()
+
+    // Chaining into a context with no predictions hides the stale window.
+    s.showPredictions(context: "生日快")
+    check("chain: predictions shown", s.isPredicting && !d.shownCandidates.isEmpty)
+    s.showPredictions(context: "生日快。")
+    check("chain: empty result clears predictions", !s.isPredicting)
+    check("chain: empty result hides window", d.shownCandidates.isEmpty)
+
+    // Client switch: the tracker flags a new client and reset drops state.
+    let first = NSObject(), second = NSObject()
+    var tracker = SessionClientTracker()
+    check("client: first client is not a switch", !tracker.update(to: first))
+    check("client: same client is not a switch", !tracker.update(to: first))
+    check("client: different client is a switch", tracker.update(to: second))
+    tracker.clear()
+    check("client: after clear is not a switch", !tracker.update(to: first))
+    s.showPredictions(context: "生日快")
+    if tracker.update(to: second) { s.handleClientSwitch() }
+    check("client: switch drops predictions",
+          !s.isPredicting && d.shownCandidates.isEmpty)
+    check("client: number no longer selects",
+          s.selectNumber(1) == .passThrough && d.committedText.isEmpty)
+    for ch in "ni" { _ = s.appendLetter(String(ch)) }
+    check("client: composing has marked text", d.markedText != nil)
+    if tracker.update(to: first) { s.handleClientSwitch() }
+    check("client: switch clears old marked text", d.markedText == nil)
+    check("client: switch drops composition",
+          !s.isComposing && d.committedText.isEmpty)
+
+    // Boundary keys finish a composition left active by a partial pick.
+    for ch in "nihao" { _ = s.appendLetter(String(ch)) }
+    check("partial: picks 你", selectCandidate("你", in: s))
+    check("partial: remainder composing", s.composition == "hao")
+    let rest = s.candidates.first ?? ""
+    _ = s.handlePunctuation(",")
+    check("partial: punctuation finishes composition",
+          !s.isComposing && d.committedText == "你" + rest + "，")
+    check("partial: punctuation leaves no predictions", !s.isPredicting)
+    d.clear()
+    for ch in "nihao" { _ = s.appendLetter(String(ch)) }
+    _ = selectCandidate("你", in: s)
+    let rest2 = s.candidates.first ?? ""
+    check("partial: pass-through key commits all",
+          s.commitAndPassThrough() == .commitAndPass &&
+          !s.isComposing && d.committedText == "你" + rest2)
+    check("partial: pass-through leaves no predictions", !s.isPredicting)
+    d.clear()
+
+    // A separator-only remainder is not committed as a stray apostrophe.
+    for ch in "woaini" { _ = s.appendLetter(String(ch)) }
+    _ = s.handlePunctuation("'")
+    let expected = s.candidates.first ?? ""
+    _ = s.selectCurrent()
+    check("remainder: commits candidate without apostrophe",
+          d.committedText == expected && !d.committedText.contains("'"))
+    check("remainder: composition finished", !s.isComposing)
+    check("remainder: predictions follow the commit", s.isPredicting)
+    s.dismissPredictions()
+
+    // Prediction windows anchor at the caret, compositions at marked text.
+    let caret = NSRect(x: 10, y: 20, width: 1, height: 16)
+    let marked = NSRect(x: 30, y: 40, width: 1, height: 16)
+    check("anchor: prediction uses caret",
+          CandidateWindowController.anchorRect(
+              isPrediction: true, caretRect: { caret },
+              markedTextRect: { marked }) == caret)
+    check("anchor: missing caret falls back",
+          CandidateWindowController.anchorRect(
+              isPrediction: true, caretRect: { nil },
+              markedTextRect: { marked }) == marked)
+    check("anchor: zero caret falls back",
+          CandidateWindowController.anchorRect(
+              isPrediction: true, caretRect: { .zero },
+              markedTextRect: { marked }) == marked)
+    check("anchor: composition uses marked text",
+          CandidateWindowController.anchorRect(
+              isPrediction: false, caretRect: { caret },
+              markedTextRect: { marked }) == marked)
+    let near = NSRect(x: 60, y: 40, width: 1, height: 16)
+    let far = NSRect(x: 0, y: 900, width: 1, height: 16)
+    check("anchor: caret near composition is used",
+          CandidateWindowController.anchorRect(
+              isPrediction: true, caretRect: { caret },
+              markedTextRect: { marked }, previousAnchor: near) == caret)
+    check("anchor: far caret falls back to composition",
+          CandidateWindowController.anchorRect(
+              isPrediction: true, caretRect: { far },
+              markedTextRect: { marked }, previousAnchor: near) == near)
+    check("anchor: missing caret prefers composition",
+          CandidateWindowController.anchorRect(
+              isPrediction: true, caretRect: { nil },
+              markedTextRect: { marked }, previousAnchor: near) == near)
+    let screens = [NSRect(x: 0, y: 0, width: 1440, height: 900),
+                   NSRect(x: 1440, y: 0, width: 2560, height: 1440)]
+    let other = NSRect(x: 2000, y: 900, width: 1, height: 16)
+    check("anchor: caret on another screen is trusted",
+          CandidateWindowController.anchorRect(
+              isPrediction: true, caretRect: { other },
+              markedTextRect: { marked }, previousAnchor: near,
+              screenFrames: screens) == other)
+    let wide = NSRect(x: 1400, y: 40, width: 1, height: 16)
+    check("anchor: far caret on the same line is trusted",
+          CandidateWindowController.anchorRect(
+              isPrediction: true, caretRect: { wide },
+              markedTextRect: { marked }, previousAnchor: near,
+              screenFrames: screens) == wide)
+    check("screen: point inside second screen",
+          CandidateWindowController.screenIndex(for: other, in: screens) == 1)
+    check("screen: offscreen point picks nearest",
+          CandidateWindowController.screenIndex(
+              for: NSRect(x: 5000, y: 100, width: 1, height: 1),
+              in: screens) == 1)
+    let size = NSSize(width: 300, height: 60)
+    let o = CandidateWindowController.windowOrigin(
+        size: size, below: NSRect(x: 3900, y: 300, width: 1, height: 16),
+        visible: screens[1])
+    check("origin: clamps to the anchor screen",
+          o.x == screens[1].maxX - size.width && o.y == 300 - 60 - 5)
+    let low = CandidateWindowController.windowOrigin(
+        size: size, below: NSRect(x: 100, y: 10, width: 1, height: 16),
+        visible: screens[0])
+    check("origin: flips above near the bottom", low.y == 10 + 16 + 4)
+    let below = CandidateWindowController.windowOrigin(
+        size: size, below: NSRect(x: 100, y: -200, width: 1, height: 16),
+        visible: screens[0])
+    check("origin: flipped window stays on screen", below.y == screens[0].minY)
+    let stacked = [NSRect(x: 0, y: 0, width: 1440, height: 900),
+                   NSRect(x: 0, y: 900, width: 1440, height: 900)]
+    check("screen: shared edge belongs to the upper screen",
+          CandidateWindowController.screenIndex(
+              for: NSRect(x: 100, y: 900, width: 1, height: 16),
+              in: stacked) == 1)
+    // A prediction chain advances the anchor, so a caret that drifts
+    // line by line is never treated as bogus.
+    var anchor = near
+    var drifted = true
+    for step in 1...6 {
+        let next = NSRect(x: 60, y: 40 - CGFloat(step) * 40, width: 1, height: 16)
+        let r = CandidateWindowController.anchorRect(
+            isPrediction: true, caretRect: { next },
+            markedTextRect: { marked }, previousAnchor: anchor,
+            screenFrames: [NSRect(x: 0, y: -1000, width: 1440, height: 2000)])
+        drifted = drifted && r == next
+        anchor = r
+    }
+    check("anchor: chain follows a drifting caret", drifted)
+}
+
 // ── Main ─────────────────────────────────────────────────────────────────────
 
 // ── Entry point ──────────────────────────────────────────────────────────────
@@ -765,6 +1014,8 @@ func testContinuousPhraseLanguageScoring() {
         testSessionContextFallback()
         testContextLanguageScoring()
         testContinuousPhraseLanguageScoring()
+        testNextWordPrediction()
+        testPredictionEdgeCases()
 
         print("\n══════════════════════════════════")
         print("Results: \(gPass) passed, \(gFail) failed")

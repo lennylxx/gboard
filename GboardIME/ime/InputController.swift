@@ -75,7 +75,7 @@ class GboardInputController: IMKInputController, PinyinSessionDelegate {
     // ── Key handling ───────────────────────────────────────────────────────
 
     override func handle(_ event: NSEvent!, client sender: Any!) -> Bool {
-        self.currentClient = sender
+        switchClient(to: sender)
 
         // ── Shift toggle detection ───────────────────────────────────────
         if event.type == .flagsChanged {
@@ -113,6 +113,35 @@ class GboardInputController: IMKInputController, PinyinSessionDelegate {
         let chars = event.characters ?? ""
 
         let result: KeyResult
+
+        // Predictions take Space, 1-9 and -/= paging; any other key
+        // dismisses them and is handled normally.
+        if session.isPredicting {
+            if keyCode == 53 {
+                session.dismissPredictions()
+                return true
+            }
+            if flags.isEmpty || flags == .capsLock {
+                switch keyCode {
+                case 49:
+                    return session.selectCurrent() == .handled
+                case 27:
+                    session.previousPredictionPage()
+                    return true
+                case 24:
+                    session.nextPredictionPage()
+                    return true
+                default:
+                    break
+                }
+                if let n = Int(chars), n >= 1 && n <= 9 {
+                    if session.selectNumber(n) == .handled { return true }
+                    contextTracker.invalidate()
+                    return false
+                }
+            }
+            session.dismissPredictions()
+        }
 
         switch keyCode {
         case 53: // Escape
@@ -171,7 +200,19 @@ class GboardInputController: IMKInputController, PinyinSessionDelegate {
         return result != .passThrough
     }
 
+    /// Drops composition and prediction state that belongs to another client
+    /// so it can never be committed into the wrong document.
+    private func switchClient(to sender: Any?) {
+        if clientTracker.update(to: sender as AnyObject?) {
+            session.handleClientSwitch()
+            contextTracker.invalidate()
+            windowAnchor = nil
+        }
+        currentClient = sender
+    }
+
     private func toggleChineseMode() {
+        session.dismissPredictions()
         if session.isComposing {
             _ = session.commitRawPinyin()
         }
@@ -182,7 +223,11 @@ class GboardInputController: IMKInputController, PinyinSessionDelegate {
     // ── PinyinSessionDelegate ────────────────────────────────────────────
 
     private var currentClient: Any?
+    /// Where the candidate window was last anchored in this client; a
+    /// trusted prediction caret advances it along a prediction chain.
+    private var windowAnchor: NSRect?
     private var contextTracker = SessionContextTracker()
+    private var clientTracker = SessionClientTracker()
 
     func sessionContextBeforeInput() -> String {
         let clientContext: String?
@@ -285,18 +330,48 @@ class GboardInputController: IMKInputController, PinyinSessionDelegate {
             canGoPrevious: canGoPrevious,
             canGoNext: canGoNext,
             onSelect: { [weak self] idx in
-                self?.session.selectCandidate(index: idx)
+                guard let session = self?.session else { return }
+                if session.isPredicting {
+                    session.selectPrediction(index: idx)
+                } else {
+                    session.selectCandidate(index: idx)
+                }
             },
             onPrevious: { [weak self] in
-                _ = self?.session.previousPage()
+                guard let session = self?.session else { return }
+                if session.isPredicting {
+                    session.previousPredictionPage()
+                } else {
+                    _ = session.previousPage()
+                }
             },
             onNext: { [weak self] in
-                _ = self?.session.nextPage()
+                guard let session = self?.session else { return }
+                if session.isPredicting {
+                    session.nextPredictionPage()
+                } else {
+                    _ = session.nextPage()
+                }
             }
         )
         if let client = currentClient as? IMKTextInput {
-            var rect = NSRect.zero
-            client.attributes(forCharacterIndex: 0, lineHeightRectangle: &rect)
+            let rect = CandidateWindowController.anchorRect(
+                isPrediction: pinyin.isEmpty,
+                caretRect: {
+                    let location = client.selectedRange().location
+                    guard location != NSNotFound else { return nil }
+                    return client.firstRect(
+                        forCharacterRange: NSRange(location: location, length: 0),
+                        actualRange: nil)
+                },
+                markedTextRect: {
+                    var rect = NSRect.zero
+                    client.attributes(forCharacterIndex: 0,
+                                      lineHeightRectangle: &rect)
+                    return rect
+                },
+                previousAnchor: windowAnchor)
+            if rect != .zero { windowAnchor = rect }
             candidateWindow?.show(near: rect)
         }
     }
@@ -309,15 +384,20 @@ class GboardInputController: IMKInputController, PinyinSessionDelegate {
     // ── IMKit required ─────────────────────────────────────────────────────
 
     override func commitComposition(_ sender: Any!) {
-        currentClient = sender
+        switchClient(to: sender)
+        session.dismissPredictions()
         _ = session.commitRawPinyin()
     }
 
     override func deactivateServer(_ sender: Any!) {
+        session.dismissPredictions()
         _ = session.commitRawPinyin()
         contextTracker.invalidate()
         candidateWindow?.close()
         candidateWindow = nil
+        currentClient = nil
+        windowAnchor = nil
+        clientTracker.clear()
         super.deactivateServer(sender)
     }
 

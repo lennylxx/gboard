@@ -30,6 +30,11 @@ A macOS input method that runs Gboard's native HMM Pinyin engine via a custom AR
 - **Chinese-English mixed input** — Offers English words inside Pinyin
   input using Gboard's English token and system dictionaries. For example,
   `woyaogithub` yields `我要GitHub` and `yongpythonxie` yields `用Python写`.
+- **Chinese next-word prediction** — After a candidate is committed, shows
+  the engine's next-word predictions for the last committed Chinese text.
+  Press `Space` for the first one, `1-9` or click to insert one and continue
+  the chain, and `-`/`=` to page; any other key dismisses them and is
+  handled normally. For example, committing `生日快` predicts `乐`.
 - **Automatic user-dictionary learning** — Stores selected Chinese and mixed
   phrases in `user_dict_3_3` and pure English words in
   `user_dict_3_3_english` under `~/Library/Application Support/GboardIME/`,
@@ -97,13 +102,13 @@ Switch to GboardIME from the menu bar input source picker, then type pinyin.
 | Key | Action |
 |-----|--------|
 | a-z | Append to pinyin composition |
-| 1-9 | Select nth candidate |
-| - | Show previous candidate page |
-| = | Show next candidate page |
-| Space | Commit highlighted candidate |
+| 1-9 | Select nth candidate or next-word prediction |
+| - | Show previous candidate or prediction page |
+| = | Show next candidate or prediction page |
+| Space | Commit highlighted candidate or first prediction |
 | ← → | Move candidate selection, crossing page boundaries |
 | Backspace | Delete last pinyin character |
-| Escape | Cancel composition |
+| Escape | Cancel composition or dismiss predictions |
 | Return | Commit raw pinyin |
 | Shift | Switch between Chinese and English; commit active composition as raw pinyin |
 | Caps Lock | Switch between GboardIME and ABC when enabled in macOS Text Input settings; commit active composition as raw pinyin |

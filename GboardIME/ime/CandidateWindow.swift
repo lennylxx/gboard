@@ -31,18 +31,20 @@ struct CandidateView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            // Pinyin preedit strip
-            HStack(spacing: 6) {
-                Text(pinyin)
-                    .font(.system(size: 13, weight: .medium))
-                    .foregroundColor(accentColor)
-                Spacer()
-            }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 6)
-            .background(bgColor)
+            // Pinyin preedit strip (absent for next-word predictions)
+            if !pinyin.isEmpty {
+                HStack(spacing: 6) {
+                    Text(pinyin)
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundColor(accentColor)
+                    Spacer()
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 6)
+                .background(bgColor)
 
-            Divider().background(divColor)
+                Divider().background(divColor)
+            }
 
             // Candidate row
             ScrollViewReader { proxy in
@@ -164,9 +166,10 @@ class CandidateWindowController: NSObject {
             onNext: onNext
         )
         let width = candidateWindowWidth(candidates: candidates, pinyin: pinyin)
+        let height: CGFloat = pinyin.isEmpty ? 40 : 68
         if window == nil {
             let w = NSWindow(
-                contentRect: NSRect(x: 0, y: 0, width: width, height: 68),
+                contentRect: NSRect(x: 0, y: 0, width: width, height: height),
                 styleMask: [.borderless],
                 backing: .buffered,
                 defer: false
@@ -176,7 +179,7 @@ class CandidateWindowController: NSObject {
             w.backgroundColor = .clear
             w.hasShadow = false
             let hv = NSHostingView(rootView: view)
-            hv.frame = NSRect(x: 0, y: 0, width: width, height: 68)
+            hv.frame = NSRect(x: 0, y: 0, width: width, height: height)
             hv.wantsLayer = true
             hv.layer?.backgroundColor = NSColor.clear.cgColor
             w.contentView = hv
@@ -184,7 +187,7 @@ class CandidateWindowController: NSObject {
             hostingView = hv
         } else {
             hostingView?.rootView = view
-            window?.setContentSize(NSSize(width: width, height: 68))
+            window?.setContentSize(NSSize(width: width, height: height))
         }
     }
 
@@ -212,18 +215,72 @@ class CandidateWindowController: NSObject {
         return min(contentWidth, screenWidth - 24)
     }
 
+    /// Predictions have no marked text, so they anchor at the caret; the
+    /// marked-text rect is the fallback when the caret rect is unavailable.
+    /// Some clients (e.g. iTerm2) report a caret far from the text; when the
+    /// caret is on the same screen but several lines away from the previous
+    /// window anchor, reuse that anchor. A caret on another screen is a real
+    /// move and is trusted.
+    static func anchorRect(isPrediction: Bool, caretRect: () -> NSRect?,
+                           markedTextRect: () -> NSRect,
+                           previousAnchor: NSRect? = nil,
+                           screenFrames: [NSRect] = NSScreen.screens.map(\.frame)
+    ) -> NSRect {
+        guard isPrediction else { return markedTextRect() }
+        if let caret = caretRect(), caret != .zero {
+            guard let anchor = previousAnchor else { return caret }
+            let caretScreen = screenIndex(for: caret, in: screenFrames)
+            let anchorScreen = screenIndex(for: anchor, in: screenFrames)
+            if caretScreen != anchorScreen { return caret }
+            let line = max(anchor.height, caret.height, 16)
+            return abs(caret.minY - anchor.minY) <= line * 3 ? caret : anchor
+        }
+        return previousAnchor ?? markedTextRect()
+    }
+
+    /// Index of the screen containing `rect`'s origin, else the nearest one.
+    static func screenIndex(for rect: NSRect, in frames: [NSRect]) -> Int? {
+        let p = NSPoint(x: rect.minX, y: rect.minY)
+        if let i = frames.firstIndex(where: {
+            p.x >= $0.minX && p.x < $0.maxX && p.y >= $0.minY && p.y < $0.maxY
+        }) {
+            return i
+        }
+        func distance(_ f: NSRect) -> CGFloat {
+            let dx = max(f.minX - p.x, 0, p.x - f.maxX)
+            let dy = max(f.minY - p.y, 0, p.y - f.maxY)
+            return dx * dx + dy * dy
+        }
+        return frames.indices.min { distance(frames[$0]) < distance(frames[$1]) }
+    }
+
+    /// Places a window of `size` below `rect`, or above it when there is no
+    /// room, clamped to `visible` (the anchor screen's visible frame).
+    static func windowOrigin(size: NSSize, below rect: NSRect,
+                             visible: NSRect?) -> NSPoint {
+        var origin = NSPoint(x: rect.minX, y: rect.minY - size.height - 5)
+        guard let sw = visible else { return origin }
+        if origin.x + size.width > sw.maxX { origin.x = sw.maxX - size.width }
+        if origin.x < sw.minX { origin.x = sw.minX }
+        if origin.y < sw.minY { origin.y = rect.maxY + 4 }
+        origin.y = max(sw.minY, min(origin.y, sw.maxY - size.height))
+        return origin
+    }
+
     func show(near rect: NSRect) {
         guard let w = window else { return }
-        // Position just below the cursor rect
-        var origin = NSPoint(x: rect.minX, y: rect.minY - 73)
-        // Keep on screen
-        if let screen = NSScreen.main {
-            let sw = screen.visibleFrame
-            if origin.x + w.frame.width > sw.maxX { origin.x = sw.maxX - w.frame.width }
-            if origin.x < sw.minX { origin.x = sw.minX }
-            if origin.y < sw.minY { origin.y = rect.maxY + 4 }
+        let screens = NSScreen.screens
+        let screen = Self.screenIndex(for: rect, in: screens.map(\.frame))
+            .map { screens[$0] } ?? NSScreen.main
+        if let visible = screen?.visibleFrame,
+           w.frame.width > visible.width - 24 {
+            let size = NSSize(width: visible.width - 24,
+                              height: w.frame.height)
+            w.setContentSize(size)
+            hostingView?.frame = NSRect(origin: .zero, size: size)
         }
-        w.setFrameOrigin(origin)
+        w.setFrameOrigin(Self.windowOrigin(size: w.frame.size, below: rect,
+                                           visible: screen?.visibleFrame))
         w.orderFront(nil)
     }
 
