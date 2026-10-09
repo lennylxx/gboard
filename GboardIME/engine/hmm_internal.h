@@ -6,6 +6,7 @@
 #include "hmm_engine.h"
 #include "elf_loader.h"
 #include "android_stubs.h"
+#include "linux_abi.h"
 #include "jni_env.h"
 
 #include <stdio.h>
@@ -68,7 +69,8 @@ void hmm_alrm_handler(int sig);
       } else { \
         const char *_kind = (_sig == SIGALRM) ? "hung" : "crashed"; \
         char _b[256]; int _n=snprintf(_b,sizeof(_b),"[hmm_engine] %s %s (sig=%d addr=%p)\n",label,_kind,_sig,(void*)s_crash_addr); \
-        write(STDERR_FILENO,_b,_n>0?(size_t)_n:0); } \
+        write(STDERR_FILENO,_b,_n>0?(size_t)_n:0); \
+        linux_abi_crash_recovered(); } \
       { struct itimerval _zero = {{0,0},{0,0}}; setitimer(ITIMER_REAL, &_zero, NULL); } \
       sigaction(SIGSEGV, &_old_segv, NULL); sigaction(SIGBUS, &_old_bus, NULL); \
       sigaction(SIGILL, &_old_ill, NULL); sigaction(SIGABRT, &_old_abrt, NULL); \

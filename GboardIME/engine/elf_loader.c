@@ -4,6 +4,7 @@
 
 #include "elf_loader.h"
 #include "android_stubs.h"
+#include "linux_abi.h"
 #include "config.h"
 
 #include <stdio.h>
@@ -192,24 +193,24 @@ static uint32_t stub_hash(const char *s) {
 
 static void stub_ht_init(void) {
     if (s_stub_ht_ready) return;
-    const SymEntry *stubs = android_stubs_table();
-    if (!stubs) { s_stub_ht_ready = 1; return; }
-
-    // Count entries
+    // Later tables are inserted at bucket heads, so linux_abi entries
+    // take precedence over android_stubs entries with the same name.
+    const SymEntry *tables[] = { android_stubs_table(), linux_abi_table() };
     size_t n = 0;
-    for (const SymEntry *e = stubs; e->name; e++) n++;
+    for (size_t t = 0; t < 2; t++) {
+        for (const SymEntry *e = tables[t]; e && e->name; e++) n++;
+    }
+    s_stub_pool = calloc(n ? n : 1, sizeof(StubHTEntry));
 
-    // Allocate pool
-    s_stub_pool = calloc(n, sizeof(StubHTEntry));
-
-    // Insert into hash table
     size_t idx = 0;
-    for (const SymEntry *e = stubs; e->name; e++, idx++) {
-        uint32_t bucket = stub_hash(e->name) & (STUB_HT_BUCKETS - 1);
-        s_stub_pool[idx].name = e->name;
-        s_stub_pool[idx].addr = e->addr;
-        s_stub_pool[idx].next = s_stub_ht[bucket];
-        s_stub_ht[bucket] = &s_stub_pool[idx];
+    for (size_t t = 0; t < 2; t++) {
+        for (const SymEntry *e = tables[t]; e && e->name; e++, idx++) {
+            uint32_t bucket = stub_hash(e->name) & (STUB_HT_BUCKETS - 1);
+            s_stub_pool[idx].name = e->name;
+            s_stub_pool[idx].addr = e->addr;
+            s_stub_pool[idx].next = s_stub_ht[bucket];
+            s_stub_ht[bucket] = &s_stub_pool[idx];
+        }
     }
     s_stub_ht_ready = 1;
 }
@@ -499,7 +500,7 @@ static void elf_patch_tpidr(uint8_t *bias, const Elf64_Phdr *phdrs, int phnum,
     if (n_ranges == 0) return;
 
     // Single pass: pre-allocate generous trampoline area.
-    // Worst case: every instruction is mrs → 12 bytes per trampoline.
+    // Each trampoline takes 12 bytes (16 for the literal-pool form).
     // Realistic: ~100 mrs in ~16MB code → need ~1200 bytes.
     // Pre-allocate 64KB which handles up to ~5400 trampolines.
     size_t tramp_size = 0x10000;  // 64KB
@@ -522,7 +523,7 @@ static void elf_patch_tpidr(uint8_t *bias, const Elf64_Phdr *phdrs, int phnum,
 
     // Single pass: scan and patch simultaneously
     uint32_t *tp = (uint32_t *)tramp_page;
-    uint32_t *tp_end = (uint32_t *)((uint8_t *)tramp_page + tramp_size - 12);
+    uint32_t *tp_end = (uint32_t *)((uint8_t *)tramp_page + tramp_size - 16);
     int patched = 0, unreachable = 0;
 
     for (int r = 0; r < n_ranges; r++) {
@@ -546,25 +547,35 @@ static void elf_patch_tpidr(uint8_t *bias, const Elf64_Phdr *phdrs, int phnum,
                 unreachable++;
                 continue;
             }
-            intptr_t ret_offset = (intptr_t)(return_pc - (uintptr_t)&tp[2]);
+            // adrp reaches ±4GB (signed 21-bit page offset); otherwise load
+            // the TLS address from a literal stored after the branch.
+            intptr_t page_diff = (intptr_t)((tls_addr & ~0xFFFULL) - (tramp_pc & ~0xFFFULL));
+            int64_t immval = page_diff >> 12;
+            int use_adrp = immval >= -(1LL << 20) && immval < (1LL << 20);
+            uint32_t *b_slot = use_adrp ? &tp[2] : &tp[1];
+            intptr_t ret_offset = (intptr_t)(return_pc - (uintptr_t)b_slot);
             if (ret_offset < -0x8000000 || ret_offset > 0x7FFFFFC) {
                 unreachable++;
                 continue;
             }
-
-            // Build trampoline: adrp + add + b_return
-            intptr_t page_diff = (intptr_t)((tls_addr & ~0xFFFULL) - (tramp_pc & ~0xFFFULL));
-            int64_t immval = page_diff >> 12;
-            uint32_t adrp = 0x90000000 | (((uint32_t)(immval & 3)) << 29) |
-                            (((uint32_t)((immval >> 2) & 0x7FFFF)) << 5) | (uint32_t)rd;
-            uint32_t add = 0x91000000 | (((uint32_t)(tls_addr & 0xFFF)) << 10) |
-                           ((uint32_t)rd << 5) | (uint32_t)rd;
             uint32_t b_ret = 0x14000000 | ((uint32_t)((ret_offset >> 2) & 0x3FFFFFF));
 
-            tp[0] = adrp;
-            tp[1] = add;
-            tp[2] = b_ret;
-            tp += 3;
+            if (use_adrp) {
+                // adrp + add + b_return
+                tp[0] = 0x90000000 | (((uint32_t)(immval & 3)) << 29) |
+                        (((uint32_t)((immval >> 2) & 0x7FFFF)) << 5) | (uint32_t)rd;
+                tp[1] = 0x91000000 | (((uint32_t)(tls_addr & 0xFFF)) << 10) |
+                        ((uint32_t)rd << 5) | (uint32_t)rd;
+                tp[2] = b_ret;
+                tp += 3;
+            } else {
+                // ldr xRd, #8 ; b return ; .quad tls_addr
+                tp[0] = 0x58000000 | (2u << 5) | (uint32_t)rd;
+                tp[1] = b_ret;
+                uint64_t lit = (uint64_t)tls_addr;
+                memcpy(&tp[2], &lit, sizeof(lit));
+                tp += 4;
+            }
 
             // Patch mrs → B trampoline
             code[i] = 0x14000000 | ((uint32_t)((fwd_offset >> 2) & 0x3FFFFFF));

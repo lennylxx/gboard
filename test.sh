@@ -18,8 +18,21 @@ ENGINE_SRCS=(
     "$ENGINE_DIR/elf_loader.c"
     "$ENGINE_DIR/jni_env.c"
     "$ENGINE_DIR/android_stubs.c"
+    "$ENGINE_DIR/linux_abi.c"
 )
 
+echo "═══ Building test_linux_abi (C) ═══"
+clang -g -O0 -DDEBUG=1 -o "$TEST_DIR/test_linux_abi" \
+    "$TEST_DIR/test_linux_abi.c" \
+    "$ENGINE_DIR/android_stubs.c" \
+    "$ENGINE_DIR/linux_abi.c" \
+    "$ENGINE_DIR/elf_loader.c" \
+    -IGboardIME -lpthread
+
+echo "Running test_linux_abi..."
+"$TEST_DIR/test_linux_abi"
+
+echo ""
 echo "═══ Building test_engine (C) ═══"
 clang -g -O0 -DDEBUG=1 -o "$TEST_DIR/test_engine" \
     "$TEST_DIR/test_engine.c" \

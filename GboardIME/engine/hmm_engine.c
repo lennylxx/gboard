@@ -144,15 +144,24 @@ static void finish_native_session(jlong engine) {
 }
 
 static jlong create_decoder(const char *const *etypes) {
-    jlong engine = 0;
+    volatile jlong engine = 0;
     for (int ei = 0; etypes[ei] && !engine; ei++) {
         jstring engine_type = jni_NewStringUTF(g_env, etypes[ei]);
         jstring user_id = jni_NewStringUTF(g_env, "");
+        volatile int finished = 0;
         CRASH_PROTECT_BEGIN()
         engine = g_createEngine(g_env, NULL, g_factory, engine_type, user_id);
+        finished = 1;
         LOGERR("nativeCreateEngine('%s') → %lld",
                etypes[ei], (long long)engine);
         CRASH_PROTECT_END("nativeCreateEngine")
+        if (!finished) {
+            // The crash may have left .so locks held; another attempt
+            // could deadlock instead of failing cleanly.
+            LOGERR("nativeCreateEngine('%s') crashed; not retrying",
+                   etypes[ei]);
+            return 0;
+        }
     }
     if (!engine) return 0;
 

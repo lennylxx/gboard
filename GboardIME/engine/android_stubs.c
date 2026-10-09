@@ -1,5 +1,5 @@
-// Stubs for Android-specific and Linux-specific APIs
-// that don't exist on macOS.
+// Symbols the Android .so imports that macOS lacks entirely.
+// See android_stubs.h for how this differs from linux_abi.c.
 
 #include "android_stubs.h"
 #include "config.h"
@@ -372,200 +372,7 @@ static FILE *fixup_file(FILE *f) {
     return f;
 }
 
-// ── stdio wrappers (intercept .so calls with fake Bionic FILE*) ───────────────
-static size_t stub_fwrite(const void *ptr, size_t size, size_t nmemb, FILE *stream) {
-    return fwrite(ptr, size, nmemb, fixup_file(stream));
-}
-static int stub_fflush(FILE *stream) {
-    return fflush(fixup_file(stream));
-}
-static int stub_fputs(const char *s, FILE *stream) {
-    return fputs(s, fixup_file(stream));
-}
-static int stub_fputc(int c, FILE *stream) {
-    return fputc(c, fixup_file(stream));
-}
-static size_t stub_fread(void *ptr, size_t size, size_t nmemb, FILE *stream) {
-    return fread(ptr, size, nmemb, fixup_file(stream));
-}
-static int stub_fprintf(FILE *stream, const char *fmt, ...) {
-    va_list ap;
-    va_start(ap, fmt);
-    int ret = vfprintf(fixup_file(stream), fmt, ap);
-    va_end(ap);
-    return ret;
-}
-static int stub_vfprintf(FILE *stream, const char *fmt, va_list ap) {
-    return vfprintf(fixup_file(stream), fmt, ap);
-}
-
-// ── pthread wrappers via side-table ───────────────────────────────────────────
-// CRITICAL: Bionic pthread_mutex_t = 40 bytes, macOS = 64 bytes.
-//           Bionic pthread_rwlock_t = 56 bytes, macOS = 200 bytes.
-//           Passing .so's bionic-sized structs to macOS pthread functions causes
-//           buffer overflow and memory corruption. We use a side-table to store
-//           macOS-sized objects separately from the .so's memory.
-#include <os/lock.h>
-
-#define SIDE_TABLE_SIZE 16384
-typedef struct {
-    void *addr;         // bionic struct address in .so memory
-    int type;           // 1=mutex, 2=cond, 3=rwlock
-    union {
-        pthread_mutex_t mutex;
-        pthread_cond_t cond;
-        pthread_rwlock_t rwlock;
-    };
-} SideEntry;
-
-static SideEntry s_side_table[SIDE_TABLE_SIZE];
-static os_unfair_lock s_side_lock = OS_UNFAIR_LOCK_INIT;
-
-static SideEntry *side_get(void *addr, int type) {
-    uint32_t hash = (uint32_t)(((uintptr_t)addr >> 3) % SIDE_TABLE_SIZE);
-    os_unfair_lock_lock(&s_side_lock);
-    for (uint32_t i = 0; i < SIDE_TABLE_SIZE; i++) {
-        uint32_t idx = (hash + i) % SIDE_TABLE_SIZE;
-        if (s_side_table[idx].addr == addr) {
-            os_unfair_lock_unlock(&s_side_lock);
-            return &s_side_table[idx];
-        }
-        if (s_side_table[idx].addr == NULL) {
-            s_side_table[idx].addr = addr;
-            s_side_table[idx].type = type;
-            if (type == 1) pthread_mutex_init(&s_side_table[idx].mutex, NULL);
-            else if (type == 2) pthread_cond_init(&s_side_table[idx].cond, NULL);
-            else if (type == 3) pthread_rwlock_init(&s_side_table[idx].rwlock, NULL);
-            os_unfair_lock_unlock(&s_side_lock);
-            return &s_side_table[idx];
-        }
-    }
-    os_unfair_lock_unlock(&s_side_lock);
-    return NULL; // table full — should never happen
-}
-
-static void side_remove(void *addr) {
-    uint32_t hash = (uint32_t)(((uintptr_t)addr >> 3) % SIDE_TABLE_SIZE);
-    os_unfair_lock_lock(&s_side_lock);
-    for (uint32_t i = 0; i < SIDE_TABLE_SIZE; i++) {
-        uint32_t idx = (hash + i) % SIDE_TABLE_SIZE;
-        if (s_side_table[idx].addr == addr) {
-            if (s_side_table[idx].type == 1) pthread_mutex_destroy(&s_side_table[idx].mutex);
-            else if (s_side_table[idx].type == 2) pthread_cond_destroy(&s_side_table[idx].cond);
-            else if (s_side_table[idx].type == 3) pthread_rwlock_destroy(&s_side_table[idx].rwlock);
-            s_side_table[idx].addr = NULL;
-            s_side_table[idx].type = 0;
-            os_unfair_lock_unlock(&s_side_lock);
-            return;
-        }
-        if (s_side_table[idx].addr == NULL) break;
-    }
-    os_unfair_lock_unlock(&s_side_lock);
-}
-
-// Mutex wrappers — .so passes bionic-sized (40-byte) mutex pointers.
-// We look up/create a macOS mutex in the side table.
-static int stub_pthread_mutex_lock(void *m) {
-    SideEntry *e = side_get(m, 1);
-    return e ? pthread_mutex_lock(&e->mutex) : EINVAL;
-}
-static int stub_pthread_mutex_unlock(void *m) {
-    SideEntry *e = side_get(m, 1);
-    return e ? pthread_mutex_unlock(&e->mutex) : EINVAL;
-}
-static int stub_pthread_mutex_trylock(void *m) {
-    SideEntry *e = side_get(m, 1);
-    return e ? pthread_mutex_trylock(&e->mutex) : EINVAL;
-}
-static int stub_pthread_mutex_init(void *m, const void *attr) {
-    (void)attr;
-    SideEntry *e = side_get(m, 1);
-    return e ? 0 : EINVAL; // side_get already initializes
-}
-static int stub_pthread_mutex_destroy(void *m) {
-    side_remove(m);
-    return 0;
-}
-
-// Condition variable wrappers (bionic cond = 48 bytes, macOS = 48 — same size
-// but different internal layout, so still use side table for correctness)
-static int stub_pthread_cond_wait(void *c, void *m) {
-    SideEntry *ce = side_get(c, 2);
-    SideEntry *me = side_get(m, 1);
-    if (!ce || !me) return EINVAL;
-    char buf[128];
-    int n = snprintf(buf, sizeof(buf), "[stubs] cond_wait: cond=%p mutex=%p\n", c, m);
-    write(STDERR_FILENO, buf, n > 0 ? (size_t)n : 0);
-    int r = pthread_cond_wait(&ce->cond, &me->mutex);
-    n = snprintf(buf, sizeof(buf), "[stubs] cond_wait done: cond=%p ret=%d\n", c, r);
-    write(STDERR_FILENO, buf, n > 0 ? (size_t)n : 0);
-    return r;
-}
-static int stub_pthread_cond_signal(void *c) {
-    SideEntry *e = side_get(c, 2);
-    return e ? pthread_cond_signal(&e->cond) : EINVAL;
-}
-static int stub_pthread_cond_broadcast(void *c) {
-    SideEntry *e = side_get(c, 2);
-    return e ? pthread_cond_broadcast(&e->cond) : EINVAL;
-}
-static int stub_pthread_cond_timedwait(void *c, void *m, const struct timespec *t) {
-    SideEntry *ce = side_get(c, 2);
-    SideEntry *me = side_get(m, 1);
-    if (!ce || !me) return EINVAL;
-    return pthread_cond_timedwait(&ce->cond, &me->mutex, t);
-}
-
-// pthread_once — Bionic: 4 bytes (int), macOS: 16 bytes. Use atomic on first 4 bytes.
-static volatile int s_once_spin_count __attribute__((unused)) = 0;
-static int stub_pthread_once(void *once, void (*init_routine)(void)) {
-    int *flag = (int *)once;
-    if (__sync_val_compare_and_swap(flag, 0, 2) == 0) {
-        init_routine();
-        __sync_synchronize();
-        *flag = 1;
-    } else {
-        int spins = 0;
-        while (__sync_add_and_fetch(flag, 0) != 1) {
-            if (++spins > 100) {
-                char buf[128];
-                int n = snprintf(buf, sizeof(buf),
-                    "[stubs] pthread_once spinning: flag=%p val=%d spins=%d\n",
-                    (void*)flag, *flag, spins);
-                write(STDERR_FILENO, buf, n > 0 ? (size_t)n : 0);
-                if (spins > 200) {
-                    // Give up — force completion to avoid deadlock
-                    *flag = 1;
-                    break;
-                }
-            }
-            usleep(1000);
-        }
-    }
-    return 0;
-}
-
-// Rwlock wrappers — Bionic rwlock = 56 bytes, macOS = 200 bytes!
-static int stub_pthread_rwlock_rdlock(void *rw) {
-    SideEntry *e = side_get(rw, 3);
-    return e ? pthread_rwlock_rdlock(&e->rwlock) : EINVAL;
-}
-static int stub_pthread_rwlock_wrlock(void *rw) {
-    SideEntry *e = side_get(rw, 3);
-    return e ? pthread_rwlock_wrlock(&e->rwlock) : EINVAL;
-}
-static int stub_pthread_rwlock_unlock(void *rw) {
-    SideEntry *e = side_get(rw, 3);
-    return e ? pthread_rwlock_unlock(&e->rwlock) : EINVAL;
-}
-static int stub_pthread_rwlock_tryrdlock(void *rw) {
-    SideEntry *e = side_get(rw, 3);
-    return e ? pthread_rwlock_tryrdlock(&e->rwlock) : EINVAL;
-}
-static int stub_pthread_rwlock_trywrlock(void *rw) {
-    SideEntry *e = side_get(rw, 3);
-    return e ? pthread_rwlock_trywrlock(&e->rwlock) : EINVAL;
-}
+FILE *android_stubs_fixup_file(FILE *f) { return fixup_file(f); }
 
 // ── __errno (Bionic's errno accessor) ─────────────────────────────────────────
 static int *stub_errno(void) { return &errno; }
@@ -626,38 +433,32 @@ static int stub_cxa_thread_atexit_impl(void (*dtor)(void*), void *obj, void *dso
 }
 
 // ── Linux-specific stubs (sched, prctl, sysinfo, etc.) ───────────────────────
-static int stub_clock_gettime(int android_clock_id, struct timespec *time) {
-    clockid_t native_clock_id;
-    switch (android_clock_id) {
-        case 0:  // CLOCK_REALTIME
-            native_clock_id = CLOCK_REALTIME;
-            break;
-        case 1:  // CLOCK_MONOTONIC
-        case 6:  // CLOCK_MONOTONIC_COARSE
-        case 7:  // CLOCK_BOOTTIME
-            native_clock_id = CLOCK_MONOTONIC;
-            break;
-        case 2:  // CLOCK_PROCESS_CPUTIME_ID
-            native_clock_id = CLOCK_PROCESS_CPUTIME_ID;
-            break;
-        case 3:  // CLOCK_THREAD_CPUTIME_ID
-            native_clock_id = CLOCK_THREAD_CPUTIME_ID;
-            break;
-        case 4:  // CLOCK_MONOTONIC_RAW
-            native_clock_id = CLOCK_MONOTONIC_RAW;
-            break;
-        case 5:  // CLOCK_REALTIME_COARSE
-            native_clock_id = CLOCK_REALTIME;
-            break;
-        default:
-            errno = EINVAL;
-            return -1;
-    }
-    return clock_gettime(native_clock_id, time);
+// Bionic's pthread_cleanup_push/pop macros call these with a caller-owned
+// frame; the frames form a per-thread stack.
+typedef struct LinuxCleanup {
+    struct LinuxCleanup *prev;
+    void (*routine)(void *);
+    void *arg;
+} LinuxCleanup;
+
+static __thread LinuxCleanup *t_cleanup_top;
+
+static void stub_pthread_cleanup_push(LinuxCleanup *c,
+                                      void (*routine)(void *), void *arg) {
+    c->prev = t_cleanup_top;
+    c->routine = routine;
+    c->arg = arg;
+    t_cleanup_top = c;
 }
+
+static void stub_pthread_cleanup_pop(LinuxCleanup *c, int execute) {
+    t_cleanup_top = c->prev;
+    if (execute) c->routine(c->arg);
+}
+
 static int stub_sched_setaffinity(int pid, size_t sz, void *m) { (void)pid;(void)sz;(void)m; return 0; }
 static int stub_sched_getaffinity(int pid, size_t sz, void *m) { (void)pid;(void)sz; if(m) memset(m,0xff,sz); return 0; }
-static pid_t stub_gettid(void) {
+pid_t android_stubs_gettid(void) {
     uint64_t thread_id = 0;
     if (pthread_threadid_np(NULL, &thread_id) != 0) return (pid_t)getpid();
     return (pid_t)thread_id;
@@ -695,35 +496,6 @@ static int stub_inotify_add_watch(int fd, const char *path, uint32_t mask) {
     return -1;
 }
 static int stub_posix_fadvise(int fd, off_t o, off_t l, int a) { (void)fd;(void)o;(void)l;(void)a; return 0; }
-static int stub_sem_timedwait(void *sem, const void *ts) { (void)sem;(void)ts; errno=ETIMEDOUT; return -1; }
-static void *stub_mmap64(void *addr, size_t length, int prot, int flags,
-                         int fd, off_t offset) {
-    enum {
-        ANDROID_MAP_SHARED = 0x01,
-        ANDROID_MAP_PRIVATE = 0x02,
-        ANDROID_MAP_FIXED = 0x10,
-        ANDROID_MAP_ANONYMOUS = 0x20
-    };
-    int native_flags = flags & ~(ANDROID_MAP_SHARED | ANDROID_MAP_PRIVATE |
-                                 ANDROID_MAP_FIXED | ANDROID_MAP_ANONYMOUS);
-    if (flags & ANDROID_MAP_SHARED) native_flags |= MAP_SHARED;
-    if (flags & ANDROID_MAP_PRIVATE) native_flags |= MAP_PRIVATE;
-    if (flags & ANDROID_MAP_FIXED) native_flags |= MAP_FIXED;
-    if (flags & ANDROID_MAP_ANONYMOUS) native_flags |= MAP_ANON;
-    void *result = mmap(addr, length, prot, native_flags, fd, offset);
-#if DEBUG
-    if (result == MAP_FAILED) {
-        char buf[256];
-        int n = snprintf(buf, sizeof(buf),
-                         "[mmap64] failed len=%zu prot=0x%x flags=0x%x "
-                         "native=0x%x fd=%d offset=%lld errno=%d\n",
-                         length, prot, flags, native_flags, fd,
-                         (long long)offset, errno);
-        write(STDERR_FILENO, buf, n > 0 ? (size_t)n : 0);
-    }
-#endif
-    return result;
-}
 static void *stub_mremap(void *old, size_t oldsz, size_t newsz, int flags, ...) {
     (void)old;(void)oldsz;(void)newsz;(void)flags; errno=ENOMEM; return (void*)-1;
 }
@@ -927,20 +699,19 @@ static const SymEntry s_table[] = {
     E("__cxa_thread_atexit_impl",        stub_cxa_thread_atexit_impl),
 
     // Linux scheduling / process
-    E("clock_gettime",                   stub_clock_gettime),
     E("sched_setaffinity",               stub_sched_setaffinity),
     E("sched_getaffinity",               stub_sched_getaffinity),
-    E("gettid",                          stub_gettid),
+    E("gettid",                          android_stubs_gettid),
     E("prctl",                           stub_prctl),
     E("sysinfo",                         stub_sysinfo),
     E("getauxval",                       stub_getauxval),
     E("tgkill",                          stub_tgkill),
+    E("__pthread_cleanup_push",          stub_pthread_cleanup_push),
+    E("__pthread_cleanup_pop",           stub_pthread_cleanup_pop),
     E("__cmsg_nxthdr",                   stub_cmsg_nxthdr),
     E("inotify_init1",                   stub_inotify_init1),
     E("inotify_add_watch",               stub_inotify_add_watch),
     E("posix_fadvise",                   stub_posix_fadvise),
-    E("sem_timedwait",                   stub_sem_timedwait),
-    E("mmap64",                          stub_mmap64),
     E("mremap",                          stub_mremap),
 
     // Timers
@@ -960,32 +731,6 @@ static const SymEntry s_table[] = {
     E("stdin",                           &__sF[0 * BIONIC_FILE_SIZE]),
     E("stdout",                          &__sF[1 * BIONIC_FILE_SIZE]),
     E("stderr",                          &__sF[2 * BIONIC_FILE_SIZE]),
-
-    // stdio function wrappers — intercept before dlsym finds macOS versions
-    E("fwrite",                          stub_fwrite),
-    E("fread",                           stub_fread),
-    E("fflush",                          stub_fflush),
-    E("fputs",                           stub_fputs),
-    E("fputc",                           stub_fputc),
-    E("fprintf",                         stub_fprintf),
-    E("vfprintf",                        stub_vfprintf),
-
-    // pthread wrappers — auto-init zero-filled mutexes/condvars for Linux compat
-    E("pthread_mutex_lock",              stub_pthread_mutex_lock),
-    E("pthread_mutex_unlock",            stub_pthread_mutex_unlock),
-    E("pthread_mutex_trylock",           stub_pthread_mutex_trylock),
-    E("pthread_mutex_init",              stub_pthread_mutex_init),
-    E("pthread_mutex_destroy",           stub_pthread_mutex_destroy),
-    E("pthread_cond_wait",               stub_pthread_cond_wait),
-    E("pthread_cond_signal",             stub_pthread_cond_signal),
-    E("pthread_cond_broadcast",          stub_pthread_cond_broadcast),
-    E("pthread_cond_timedwait",          stub_pthread_cond_timedwait),
-    E("pthread_once",                    stub_pthread_once),
-    E("pthread_rwlock_rdlock",           stub_pthread_rwlock_rdlock),
-    E("pthread_rwlock_wrlock",           stub_pthread_rwlock_wrlock),
-    E("pthread_rwlock_unlock",           stub_pthread_rwlock_unlock),
-    E("pthread_rwlock_tryrdlock",        stub_pthread_rwlock_tryrdlock),
-    E("pthread_rwlock_trywrlock",        stub_pthread_rwlock_trywrlock),
 
     // ICU data
     E("uprv_getICUData_brkitr_char",     stub_uprv_getICUData),

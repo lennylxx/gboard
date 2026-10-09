@@ -11,6 +11,7 @@ GboardIME/build/
 *.dSYM/
 tests/test_engine
 tests/test_ime
+tests/test_linux_abi
 
 # Xcode
 DerivedData/

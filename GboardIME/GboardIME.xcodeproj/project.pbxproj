@@ -16,6 +16,7 @@
 		AA000001000000000000004A /* GboardBridge.c in Sources */ = {isa = PBXBuildFile; fileRef = AA000001000000000000004F /* GboardBridge.c */; };
 		AA000001000000000000005A /* elf_loader.c in Sources */ = {isa = PBXBuildFile; fileRef = AA000001000000000000005F /* elf_loader.c */; };
 		AA000001000000000000006A /* android_stubs.c in Sources */ = {isa = PBXBuildFile; fileRef = AA000001000000000000006F /* android_stubs.c */; };
+		AA00000100000000000001F0 /* linux_abi.c in Sources */ = {isa = PBXBuildFile; fileRef = AA00000100000000000001F1 /* linux_abi.c */; };
 		AA000001000000000000007A /* jni_env.c in Sources */ = {isa = PBXBuildFile; fileRef = AA000001000000000000007F /* jni_env.c */; };
 		AA000001000000000000008A /* hmm_engine.c in Sources */ = {isa = PBXBuildFile; fileRef = AA000001000000000000008F /* hmm_engine.c */; };
 		CC00000100000000000000A1 /* hmm_native.c in Sources */ = {isa = PBXBuildFile; fileRef = CC00000100000000000000B1 /* hmm_native.c */; };
@@ -33,6 +34,7 @@
 		AA000001000000000000004F /* GboardBridge.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = GboardBridge.c; sourceTree = "<group>"; };
 		AA000001000000000000005F /* elf_loader.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = elf_loader.c; sourceTree = "<group>"; };
 		AA000001000000000000006F /* android_stubs.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = android_stubs.c; sourceTree = "<group>"; };
+		AA00000100000000000001F1 /* linux_abi.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = linux_abi.c; sourceTree = "<group>"; };
 		AA000001000000000000007F /* jni_env.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = jni_env.c; sourceTree = "<group>"; };
 		AA000001000000000000008F /* hmm_engine.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = hmm_engine.c; sourceTree = "<group>"; };
 		CC00000100000000000000B1 /* hmm_native.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = hmm_native.c; sourceTree = "<group>"; };
@@ -45,6 +47,7 @@
 		DD00000100000000000000H3 /* elf_loader.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = elf_loader.h; sourceTree = "<group>"; };
 		DD00000100000000000000H4 /* jni_env.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = jni_env.h; sourceTree = "<group>"; };
 		DD00000100000000000000H5 /* android_stubs.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = android_stubs.h; sourceTree = "<group>"; };
+		DD00000100000000000000HZ /* linux_abi.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = linux_abi.h; sourceTree = "<group>"; };
 		DD00000100000000000000H6 /* GboardBridge.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = GboardBridge.h; sourceTree = "<group>"; };
 		EE00000100000000000000PF /* PinyinSession.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PinyinSession.swift; sourceTree = "<group>"; };
 		FF00000100000000000000SF /* ShiftToggleTracker.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ShiftToggleTracker.swift; sourceTree = "<group>"; };
@@ -113,6 +116,7 @@
 				DD00000100000000000000H3 /* elf_loader.h */,
 				DD00000100000000000000H4 /* jni_env.h */,
 				DD00000100000000000000H5 /* android_stubs.h */,
+				DD00000100000000000000HZ /* linux_abi.h */,
 				AA000001000000000000008F /* hmm_engine.c */,
 				CC00000100000000000000B1 /* hmm_native.c */,
 				CC00000100000000000000B2 /* hmm_enroll.c */,
@@ -121,6 +125,7 @@
 				CC00000100000000000000B5 /* hmm_user_dict.h */,
 				AA000001000000000000005F /* elf_loader.c */,
 				AA000001000000000000006F /* android_stubs.c */,
+				AA00000100000000000001F1 /* linux_abi.c */,
 				AA000001000000000000007F /* jni_env.c */,
 			);
 			path = engine;
@@ -250,6 +255,7 @@
 				AA000001000000000000004A /* GboardBridge.c in Sources */,
 				AA000001000000000000005A /* elf_loader.c in Sources */,
 				AA000001000000000000006A /* android_stubs.c in Sources */,
+				AA00000100000000000001F0 /* linux_abi.c in Sources */,
 				AA000001000000000000007A /* jni_env.c in Sources */,
 				AA000001000000000000008A /* hmm_engine.c in Sources */,
 				CC00000100000000000000A1 /* hmm_native.c in Sources */,
