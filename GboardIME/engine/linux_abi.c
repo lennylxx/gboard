@@ -11,12 +11,14 @@
 #include <fcntl.h>
 #include <limits.h>
 #include <locale.h>
+#include <math.h>
 #include <os/lock.h>
 #include <pthread.h>
 #include <sched.h>
 #include <signal.h>
 #include <stdarg.h>
 #include <stdatomic.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/ioctl.h>
@@ -27,6 +29,7 @@
 #include <sys/sysctl.h>
 #include <sys/time.h>
 #include <sys/utsname.h>
+#include <syslog.h>
 #include <time.h>
 #include <unistd.h>
 #include <xlocale.h>
@@ -639,19 +642,27 @@ static long stub_sysconf(int name) {
 
 #define SCANF_MAX_ARGS 32
 
+// Returns the number of argument slots the format reads: the count of
+// sequential conversions or the highest %n$ position, whichever is larger.
 static int scanf_arg_count(const char *fmt) {
-    int n = 0;
+    int n = 0, max_pos = 0;
     for (const char *p = fmt; *p; p++) {
         if (*p != '%') continue;
         p++;
         if (*p == '%') continue;
-        int suppress = 0;
+        int suppress = 0, pos = 0;
         if (*p == '*') { suppress = 1; p++; }
-        while (*p >= '0' && *p <= '9') p++;
-        if (*p == '$') {
+        const char *digits = p;
+        while (*p >= '0' && *p <= '9') {
+            if (pos <= SCANF_MAX_ARGS) pos = pos * 10 + (*p - '0');
             p++;
+        }
+        if (*p == '$' && p > digits) {
+            p++;
+            if (pos > max_pos) max_pos = pos;
             if (*p == '*') { suppress = 1; p++; }
             while (*p >= '0' && *p <= '9') p++;
+            suppress = 1;  // counted via max_pos
         }
         while (*p && strchr("hlLqjzt", *p)) p++;
         if (*p == '[') {
@@ -663,7 +674,7 @@ static int scanf_arg_count(const char *fmt) {
         if (!*p) break;
         if (!suppress) n++;
     }
-    return n;
+    return n > max_pos ? n : max_pos;
 }
 
 #define SCANF_STACK_PARAMS \
@@ -698,15 +709,6 @@ static int stub_fscanf(FILE *stream, const char *fmt, void *r0, void *r1,
     return vfscanf(android_stubs_fixup_file(stream), fmt,
                    (va_list)(void *)slots);
 }
-
-// AAPCS64 va_list; as a 32-byte composite it is passed by reference.
-typedef struct {
-    void *stack;
-    void *gr_top;
-    void *vr_top;
-    int32_t gr_offs;
-    int32_t vr_offs;
-} LinuxVaList;
 
 static int stub_vsscanf(const char *str, const char *fmt,
                         const LinuxVaList *ap) {
@@ -1266,16 +1268,317 @@ static int stub_fputc(int c, FILE *stream) {
 static size_t stub_fread(void *ptr, size_t size, size_t nmemb, FILE *stream) {
     return fread(ptr, size, nmemb, android_stubs_fixup_file(stream));
 }
-static int stub_fprintf(FILE *stream, const char *fmt, ...) {
-    va_list ap;
-    va_start(ap, fmt);
-    int ret = vfprintf(android_stubs_fixup_file(stream), fmt, ap);
-    va_end(ap);
+
+// ── printf family ────────────────────────────────────────────────────────────
+// Bound directly to libSystem, these read AAPCS64 register varargs from
+// the stack and crash or print garbage. Walk the format to learn each
+// argument's class, pull it from the LinuxVaList, and rebuild a Darwin
+// va_list (8-byte slots; Darwin long double is double).
+
+#define PRINTF_MAX_ARGS 64
+enum { PA_INT = 1, PA_DBL, PA_LDBL };
+
+static int printf_pos(const char **pp) {
+    const char *q = *pp;
+    int n = 0;
+    if (*q < '1' || *q > '9') return -1;
+    while (*q >= '0' && *q <= '9') n = n * 10 + (*q++ - '0');
+    if (*q != '$') return -1;
+    *pp = q + 1;
+    return n - 1;
+}
+
+static int printf_set(uint8_t *types, int *count, int idx, uint8_t t) {
+    if (idx < 0 || idx >= PRINTF_MAX_ARGS) return 0;
+    types[idx] = t;
+    if (idx + 1 > *count) *count = idx + 1;
+    return 1;
+}
+
+// Returns the number of argument slots the format consumes, or -1 for
+// %n or more than PRINTF_MAX_ARGS arguments.
+static int printf_arg_types(const char *fmt, uint8_t *types) {
+    int count = 0, next = 0;
+    for (const char *p = fmt; *p; p++) {
+        if (*p != '%') continue;
+        p++;
+        if (*p == '%') continue;
+        int pos = printf_pos(&p);
+        while (*p && strchr("-+ #0'", *p)) p++;
+        if (*p == '*') {
+            p++;
+            int wp = printf_pos(&p);
+            if (!printf_set(types, &count, wp >= 0 ? wp : next++, PA_INT))
+                return -1;
+        } else {
+            while (*p >= '0' && *p <= '9') p++;
+        }
+        if (*p == '.') {
+            p++;
+            if (*p == '*') {
+                p++;
+                int pp = printf_pos(&p);
+                if (!printf_set(types, &count, pp >= 0 ? pp : next++, PA_INT))
+                    return -1;
+            } else {
+                while (*p >= '0' && *p <= '9') p++;
+            }
+        }
+        int is_long_double = 0;
+        while (*p && strchr("hlLqjzt", *p)) {
+            if (*p == 'L') is_long_double = 1;
+            p++;
+        }
+        if (!*p) break;
+        // Darwin aborts on %n in a writable format; Bionic rejects %n too.
+        if (*p == 'n') return -1;
+        uint8_t t;
+        if (strchr("diouxXcCpsSDOU", *p)) t = PA_INT;
+        else if (strchr("eEfFgGaA", *p)) t = is_long_double ? PA_LDBL : PA_DBL;
+        else continue;
+        if (!printf_set(types, &count, pos >= 0 ? pos : next++, t)) return -1;
+    }
+    return count;
+}
+
+static uint64_t va_take_gp(LinuxVaList *va) {
+    uint64_t v;
+    if (va->gr_offs < 0) {
+        memcpy(&v, (char *)va->gr_top + va->gr_offs, 8);
+        va->gr_offs += 8;
+    } else {
+        memcpy(&v, va->stack, 8);
+        va->stack = (char *)va->stack + 8;
+    }
+    return v;
+}
+
+static double va_take_double(LinuxVaList *va) {
+    double d;
+    if (va->vr_offs < 0) {
+        memcpy(&d, (char *)va->vr_top + va->vr_offs, 8);
+        va->vr_offs += 16;
+    } else {
+        memcpy(&d, va->stack, 8);
+        va->stack = (char *)va->stack + 8;
+    }
+    return d;
+}
+
+// Linux arm64 long double is IEEE binary128; narrow it to double
+// (truncating the low mantissa bits). Values below double's normal
+// range become double subnormals instead of zero.
+static double quad_to_double(const uint8_t q[16]) {
+    uint64_t lo, hi;
+    memcpy(&lo, q, 8);
+    memcpy(&hi, q + 8, 8);
+    int exp = (int)((hi >> 48) & 0x7fff);
+    double frac = (double)(((hi & 0xffffffffffffULL) << 4) | (lo >> 60)) / 0x1p52;
+    int nan = (hi & 0xffffffffffffULL) != 0 || lo != 0;
+    double v = exp == 0x7fff ? (nan ? NAN : INFINITY)
+             : exp == 0      ? ldexp(frac, -16382)
+                             : ldexp(1.0 + frac, exp - 16383);
+    return (hi >> 63) ? -v : v;
+}
+
+static double va_take_long_double(LinuxVaList *va) {
+    uint8_t q[16];
+    if (va->vr_offs < 0) {
+        memcpy(q, (char *)va->vr_top + va->vr_offs, 16);
+        va->vr_offs += 16;
+    } else {
+        uintptr_t s = ((uintptr_t)va->stack + 15) & ~(uintptr_t)15;
+        memcpy(q, (void *)s, 16);
+        va->stack = (void *)(s + 16);
+    }
+    return quad_to_double(q);
+}
+
+static int darwin_errno_from_linux(int err) {
+    for (int d = 1; d <= ELAST; d++)
+        if (linux_errno_from_darwin(d) == err) return d;
+    return err;
+}
+
+// Appends strerror text for a %m spec (flags/width/precision only),
+// escaping '%' so the result is a literal in the rewritten format.
+// Returns 0, or -1 with a Linux errno.
+static int printf_put_m(FILE *out, const char *spec, size_t len, int err) {
+    if (strspn(spec + 1, "0123456789-+ #'.") != len - 1) {
+        errno = L_EINVAL;
+        return -1;
+    }
+    char *sfmt = malloc(len + 2);
+    if (!sfmt) { fix_errno(); return -1; }
+    memcpy(sfmt, spec, len);
+    memcpy(sfmt + len, "s", 2);
+    const char *msg = strerror(darwin_errno_from_linux(err));
+    int n = snprintf(NULL, 0, sfmt, msg);
+    char *text = n < 0 ? NULL : malloc((size_t)n + 1);
+    if (!text) {
+        int e = linux_errno_from_darwin(n < 0 ? errno : ENOMEM);
+        free(sfmt);
+        errno = e;
+        return -1;
+    }
+    snprintf(text, (size_t)n + 1, sfmt, msg);
+    free(sfmt);
+    for (const char *t = text; *t; t++) {
+        if (*t == '%') fputc('%', out);
+        fputc(*t, out);
+    }
+    free(text);
+    return 0;
+}
+
+// Darwin has no %m (Bionic: strerror(errno)). Sets *out to fmt if it has
+// none, or to a malloc'd rewrite (*heap) with the message inlined.
+// Returns 0, or -1 with a Linux errno: EINVAL if a %m spec has '*', '$'
+// or a length modifier, otherwise the allocation/stream error.
+static int printf_expand_m(const char *fmt, int err, const char **out,
+                           char **heap) {
+    *heap = NULL;
+    *out = fmt;
+    const char *p = fmt, *m = NULL;
+    for (; *p; p++) {
+        if (*p != '%') continue;
+        const char *q = p + 1;
+        if (*q == '%') { p = q; continue; }
+        q += strspn(q, "0123456789$-+ #'.*hlLqjzt");
+        if (*q == 'm') { m = p; break; }
+        if (!*q) break;
+        p = q;
+    }
+    if (!m) return 0;
+
+    size_t size = 0;
+    FILE *ms = open_memstream(heap, &size);
+    if (!ms) { fix_errno(); return -1; }
+    fwrite(fmt, 1, (size_t)(m - fmt), ms);
+    int rc = 0;
+    for (p = m; *p; p++) {
+        if (*p != '%') { fputc(*p, ms); continue; }
+        const char *q = p + 1;
+        if (*q == '%') { fputs("%%", ms); p = q; continue; }
+        q += strspn(q, "0123456789$-+ #'.*hlLqjzt");
+        if (*q == 'm') {
+            if ((rc = printf_put_m(ms, p, (size_t)(q - p), err)) < 0) break;
+        } else {
+            fwrite(p, 1, (size_t)(q - p) + (*q != 0), ms);
+            if (!*q) break;
+        }
+        p = q;
+    }
+    int saved = errno;
+    if (rc == 0 && ferror(ms)) { rc = -1; saved = L_ENOMEM; }
+    if (fclose(ms) != 0 && rc == 0) { fix_errno(); rc = -1; saved = errno; }
+    if (rc < 0) {
+        free(*heap);
+        *heap = NULL;
+        errno = saved;
+        return -1;
+    }
+    *out = *heap;
+    return 0;
+}
+
+// Translated arguments for one printf-family call.
+typedef struct {
+    const char *fmt;
+    char *heap;
+    uint64_t slots[PRINTF_MAX_ARGS];
+} PrintfCall;
+
+// Prepares fmt and Darwin va_list slots; returns 0, or -1 with a Linux
+// errno (EINVAL for an unsupported format). Pair with printf_end() on 0.
+static int printf_begin(PrintfCall *c, const char *fmt, const LinuxVaList *ap) {
+    int err = errno;
+    if (printf_expand_m(fmt ? fmt : "", err, &c->fmt, &c->heap) < 0)
+        return -1;
+    uint8_t types[PRINTF_MAX_ARGS] = {0};
+    int n = printf_arg_types(c->fmt, types);
+    if (n < 0) {
+        free(c->heap);
+        c->heap = NULL;
+        errno = L_EINVAL;
+        return -1;
+    }
+    LinuxVaList va = *ap;
+    for (int i = 0; i < n; i++) {
+        double d;
+        switch (types[i]) {
+        case PA_DBL:
+            d = va_take_double(&va);
+            memcpy(&c->slots[i], &d, 8);
+            break;
+        case PA_LDBL:
+            d = va_take_long_double(&va);
+            memcpy(&c->slots[i], &d, 8);
+            break;
+        default:
+            c->slots[i] = va_take_gp(&va);
+            break;
+        }
+    }
+    errno = err;
+    return 0;
+}
+
+static int printf_end(PrintfCall *c, int ret) {
+    if (ret < 0) fix_errno();
+    int err = errno;
+    free(c->heap);
+    errno = err;
     return ret;
 }
-static int stub_vfprintf(FILE *stream, const char *fmt, va_list ap) {
-    return vfprintf(android_stubs_fixup_file(stream), fmt, ap);
+
+#define DARWIN_VA(c) ((va_list)(void *)(c).slots)
+
+int linux_abi_vsnprintf(char *buf, size_t size, const char *fmt,
+                        const LinuxVaList *ap) {
+    PrintfCall c;
+    if (printf_begin(&c, fmt, ap) < 0) {
+        if (size) buf[0] = '\0';
+        return -1;
+    }
+    return printf_end(&c, vsnprintf(buf, size, c.fmt, DARWIN_VA(c)));
 }
+
+__attribute__((used)) static int abi_vasprintf(char **out, const char *fmt, const LinuxVaList *ap) {
+    PrintfCall c;
+    if (printf_begin(&c, fmt, ap) < 0) { *out = NULL; return -1; }
+    int ret = vasprintf(out, c.fmt, DARWIN_VA(c));
+    if (ret < 0) *out = NULL;
+    return printf_end(&c, ret);
+}
+
+__attribute__((used)) static int abi_vfprintf(FILE *stream, const char *fmt, const LinuxVaList *ap) {
+    PrintfCall c;
+    if (printf_begin(&c, fmt, ap) < 0) return -1;
+    return printf_end(&c, vfprintf(android_stubs_fixup_file(stream), c.fmt,
+                                   DARWIN_VA(c)));
+}
+
+__attribute__((used)) static int abi_vprintf(const char *fmt, const LinuxVaList *ap) {
+    PrintfCall c;
+    if (printf_begin(&c, fmt, ap) < 0) return -1;
+    return printf_end(&c, vprintf(c.fmt, DARWIN_VA(c)));
+}
+
+__attribute__((used)) static int abi_vsyslog(int prio, const char *fmt, const LinuxVaList *ap) {
+    PrintfCall c;
+    if (printf_begin(&c, fmt, ap) == 0) {
+        vsyslog(prio, c.fmt, DARWIN_VA(c));
+        printf_end(&c, 0);
+    }
+    return 0;
+}
+
+LINUX_ABI_VARIADIC(abi_snprintf, linux_abi_vsnprintf, 3)
+LINUX_ABI_VARIADIC(abi_asprintf, abi_vasprintf, 2)
+LINUX_ABI_VARIADIC(abi_fprintf, abi_vfprintf, 2)
+LINUX_ABI_VARIADIC(abi_printf, abi_vprintf, 1)
+LINUX_ABI_VARIADIC(abi_syslog, abi_vsyslog, 2)
 
 // ── pthread mutex/cond/rwlock/once via side table ────────────────────────────
 // CRITICAL: Bionic pthread_mutex_t = 40 bytes, macOS = 64 bytes.
@@ -1555,8 +1858,14 @@ static const SymEntry s_abi_table[] = {
     E("fflush",                          stub_fflush),
     E("fputs",                           stub_fputs),
     E("fputc",                           stub_fputc),
-    E("fprintf",                         stub_fprintf),
-    E("vfprintf",                        stub_vfprintf),
+    E("fprintf",                         abi_fprintf),
+    E("vfprintf",                        abi_vfprintf),
+    E("printf",                          abi_printf),
+    E("snprintf",                        abi_snprintf),
+    E("vsnprintf",                       linux_abi_vsnprintf),
+    E("asprintf",                        abi_asprintf),
+    E("vasprintf",                       abi_vasprintf),
+    E("syslog",                          abi_syslog),
 
 
     E("pthread_mutex_lock",              stub_pthread_mutex_lock),

@@ -18,6 +18,7 @@
 #include <sys/mman.h>
 #include <time.h>
 #include <unistd.h>
+#include <wchar.h>
 
 static int s_pass, s_fail;
 
@@ -514,6 +515,17 @@ static void test_scanf(void) {
                 0, 0, 0, 0, 0, 0);
     CHECK(n == 8 && v[6] == 7 && strcmp(word, "abc") == 0);
 
+    // Positional conversions; positions past the slot limit are rejected.
+    v[0] = v[1] = 0;
+    n = sscanf_("5 9", "%2$d %1$d", &v[0], &v[1], 0, 0, 0, 0, 0, 0,
+                0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                0, 0, 0, 0, 0, 0);
+    CHECK(n == 2 && v[0] == 9 && v[1] == 5);
+    errno = 0;
+    n = sscanf_("1", "%40$d", 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
+    CHECK(n == -1 && errno == 22);
+
     // vsscanf with a hand-built AAPCS64 va_list: two register slots
     // remaining, the third argument on the stack.
     int a = 0, b = 0, c = 0;
@@ -524,6 +536,232 @@ static void test_scanf(void) {
     CHECK(vsscanf_("10 20 30", "%d %d %d", &va) == 3);
     CHECK(a == 10 && b == 20 && c == 30);
     CHECK(va.gr_offs == -16);  // caller's va_list untouched
+}
+
+// Calls through non-variadic prototypes place arguments exactly where an
+// AAPCS64 variadic caller would: integers in x-registers, doubles in
+// v-registers, the overflow in 8-byte stack slots.
+typedef uint8_t Quad __attribute__((vector_size(16)));
+
+static void test_printf(void) {
+    char buf[128];
+    typedef int (*Sn1)(char *, size_t, const char *, int64_t, const char *,
+                       int64_t, int64_t, int64_t, double, double, int64_t);
+    Sn1 sn1 = STUB(Sn1, "snprintf");
+    int n = sn1(buf, sizeof(buf), "%d %s %lld %x %c|%.2f %g|%d",
+                1, "ab", 1LL << 40, 255, 'z', 3.14159, 2.5, 42);
+    CHECK(strcmp(buf, "1 ab 1099511627776 ff z|3.14 2.5|42") == 0);
+    CHECK(n == (int)strlen(buf));
+
+    // Nine doubles: eight in v-registers, the ninth on the stack.
+    typedef int (*Sn2)(char *, size_t, const char *, double, double, double,
+                       double, double, double, double, double, double);
+    Sn2 sn2 = STUB(Sn2, "snprintf");
+    sn2(buf, sizeof(buf), "%g %g %g %g %g %g %g %g %g",
+        1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.5);
+    CHECK(strcmp(buf, "1 2 3 4 5 6 7 8 9.5") == 0);
+
+    // Positional and '*' arguments.
+    typedef int (*Sn3)(char *, size_t, const char *, int64_t, int64_t);
+    Sn3 sn3 = STUB(Sn3, "snprintf");
+    sn3(buf, sizeof(buf), "%2$s-%1$d", 7, (int64_t)(intptr_t)"q");
+    CHECK(strcmp(buf, "q-7") == 0);
+    sn3(buf, sizeof(buf), "[%*d]", 5, 42);
+    CHECK(strcmp(buf, "[   42]") == 0);
+
+    // long double is binary128 in q0 on Linux: 1.5 = 0x3fff8000...0.
+    typedef int (*Sn4)(char *, size_t, const char *, Quad);
+    Sn4 sn4 = STUB(Sn4, "snprintf");
+    Quad q = {0};
+    q[15] = 0x3f; q[14] = 0xff; q[13] = 0x80;
+    sn4(buf, sizeof(buf), "%.2Lf", q);
+    CHECK(strcmp(buf, "1.50") == 0);
+
+    typedef int (*Asp)(char **, const char *, const char *, int64_t);
+    Asp asp = STUB(Asp, "asprintf");
+    char *out = NULL;
+    CHECK(asp(&out, "%s=%d", "k", 9) == 3 && out && strcmp(out, "k=9") == 0);
+    free(out);
+
+    // vsnprintf with a hand-built va_list: one int left in registers,
+    // one double in v-registers, then one int and one double on the stack.
+    uint64_t gr_save[8] = { 0, 0, 0, 0, 0, 0, 0, 11 };
+    uint8_t vr_save[128] = {0};
+    double d = 0.25;
+    memcpy(vr_save + 112, &d, 8);
+    uint64_t stack[2] = { 33, 0 };
+    double d2 = 4.5;
+    memcpy(&stack[1], &d2, 8);
+    LVaList va = { stack, gr_save + 8, vr_save + 128, -8, -16 };
+    int (*vsn)(char *, size_t, const char *, LVaList *) = sym("vsnprintf");
+    vsn(buf, sizeof(buf), "%d %g %d %g", &va);
+    CHECK(strcmp(buf, "11 0.25 33 4.5") == 0);
+    CHECK(va.gr_offs == -8);  // caller's va_list untouched
+
+    // %n in a writable format would make Darwin abort; it is rejected.
+    char fmt_n[] = "ab%n";
+    int written = -1;
+    errno = 0;
+    CHECK(sn3(buf, sizeof(buf), fmt_n, (int64_t)(intptr_t)&written, 0) == -1);
+    CHECK(errno == 22 && written == -1 && buf[0] == '\0');
+
+    // Positional width argument.
+    sn3(buf, sizeof(buf), "%1$*2$d|", 42, 5);
+    CHECK(strcmp(buf, "   42|") == 0);
+
+    // Positions beyond the slot limit are rejected.
+    errno = 0;
+    CHECK(sn3(buf, sizeof(buf), "%65$d", 1, 2) == -1 && errno == 22);
+
+    // long double after v-registers run out: the ninth double takes stack
+    // slot 0, the long double is 16-byte aligned at stack offset 16.
+    typedef int (*Sn5)(char *, size_t, const char *, double, double, double,
+                       double, double, double, double, double, double, Quad);
+    Sn5 sn5 = STUB(Sn5, "snprintf");
+    sn5(buf, sizeof(buf), "%g %g %g %g %g %g %g %g %g %.1Lf",
+        1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, q);
+    CHECK(strcmp(buf, "1 2 3 4 5 6 7 8 9 1.5") == 0);
+
+    // Host errors are reported with Linux errno values (EILSEQ = 84).
+    wchar_t wide[] = { 0x4e2d, 0 };
+    errno = 0;
+    int r = sn3(buf, sizeof(buf), "%ls", (int64_t)(intptr_t)wide, 0);
+    CHECK(r == -1 && errno == 84);
+}
+
+static char *read_all(FILE *fp) {
+    fflush(fp);
+    long size = ftell(fp);
+    char *buf = calloc(1, (size_t)size + 1);
+    rewind(fp);
+    fread(buf, 1, (size_t)size, fp);
+    return buf;
+}
+
+static char *capture_stderr(void (*fn)(void)) {
+    FILE *tmp = tmpfile();
+    int saved = dup(STDERR_FILENO);
+    fflush(stderr);
+    dup2(fileno(tmp), STDERR_FILENO);
+    fn();
+    dup2(saved, STDERR_FILENO);
+    close(saved);
+    fseek(tmp, 0, SEEK_END);
+    char *out = read_all(tmp);
+    fclose(tmp);
+    return out;
+}
+
+static void log_star_width(void) {
+    typedef int (*Fn)(int64_t, const char *, const char *, int64_t, int64_t,
+                      double, const char *);
+    STUB(Fn, "__android_log_print")(4, "Tag", "%*.*f|%-5s|", 9, 3, 3.14159265, "ab");
+}
+
+static void log_many_args(void) {
+    typedef int (*Fn)(int64_t, const char *, const char *,
+                      int64_t, int64_t, int64_t, int64_t, int64_t, int64_t,
+                      int64_t, double, double, double, double, double, double,
+                      double, double, double);
+    STUB(Fn, "__android_log_print")(4, "T",
+        "%ld%ld%ld%ld%ld%ld%ld %g %g %g %g %g %g %g %g %g",
+        1, 2, 3, 4, 5, 6, 7, 0.5, 1.5, 2.5, 3.5, 4.5, 5.5, 6.5, 7.5, 8.5);
+}
+
+// Cases adapted from PR #1's AAPCS64 bridge tests.
+static void test_printf_more(void) {
+    // Both register classes overflow; stack order is L7, L8, L9, D9, D10.
+    typedef int (*Fp1)(FILE *, const char *,
+                       int64_t, double, int64_t, double, int64_t, double,
+                       int64_t, double, int64_t, double, int64_t, double,
+                       int64_t, double, int64_t, double, int64_t, double,
+                       double);
+    FILE *fp = tmpfile();
+    STUB(Fp1, "fprintf")(fp,
+        "%ld %.1f %ld %.1f %ld %.1f %ld %.1f %ld %.1f %ld %.1f %ld %.1f "
+        "%ld %.1f %ld %.1f %.1f",
+        1, 1.5, 2, 2.5, 3, 3.5, 4, 4.5, 5, 5.5, 6, 6.5, 7, 7.5,
+        8, 8.5, 9, 9.5, 10.5);
+    char *out = read_all(fp);
+    CHECK(strcmp(out, "1 1.5 2 2.5 3 3.5 4 4.5 5 5.5 6 6.5 7 7.5 "
+                      "8 8.5 9 9.5 10.5") == 0);
+    free(out); fclose(fp);
+
+    // Length modifiers truncate and sign-extend register values.
+    typedef int (*Fp2)(FILE *, const char *, int64_t, int64_t, int64_t,
+                       int64_t, int64_t, int64_t);
+    Fp2 fp2 = STUB(Fp2, "fprintf");
+    fp = tmpfile();
+    fp2(fp, "%hhd|%hu|%d|%u|%llx|%zu", 300, 70000, 0xFFFFFFFF, -1,
+        0x1234567890abcdefLL, 12345);
+    out = read_all(fp);
+    CHECK(strcmp(out, "44|4464|-1|4294967295|1234567890abcdef|12345") == 0);
+    free(out); fclose(fp);
+
+    fp = tmpfile();
+    fp2(fp, "[%-6s][%6.2s][%c][%%][%s][%05d]", (int64_t)(intptr_t)"abc",
+        (int64_t)(intptr_t)"xyz", 'Q', 0, 42, 0);
+    out = read_all(fp);
+    CHECK(strcmp(out, "[abc   ][    xy][Q][%][(null)][00042]") == 0);
+    free(out); fclose(fp);
+
+    // Output longer than the Android log buffer.
+    typedef int (*Fp3)(FILE *, const char *, const char *, double);
+    char big[3001];
+    memset(big, 'z', 3000); big[3000] = '\0';
+    fp = tmpfile();
+    int ret = STUB(Fp3, "fprintf")(fp, "<%s>%.3f", big, 2.0);
+    out = read_all(fp);
+    CHECK(ret == 3007 && strlen(out) == 3007);
+    CHECK(out[0] == '<' && out[3001] == '>' && strcmp(out + 3002, "2.000") == 0);
+    free(out); fclose(fp);
+
+    out = capture_stderr(log_star_width);
+    CHECK(strcmp(out, "[Tag]     3.142|ab   |\n") == 0);
+    free(out);
+    out = capture_stderr(log_many_args);
+    CHECK(strcmp(out, "[T] 1234567 0.5 1.5 2.5 3.5 4.5 5.5 6.5 7.5 8.5\n") == 0);
+    free(out);
+
+    // %m prints strerror for the Linux errno; it consumes no argument.
+    char buf[128];
+    typedef int (*Sn)(char *, size_t, const char *, int64_t, int64_t);
+    Sn sn = STUB(Sn, "snprintf");
+    errno = 11;  // Linux EAGAIN
+    sn(buf, sizeof(buf), "%d %m %d", 1, 2);
+    CHECK(strcmp(buf, "1 Resource temporarily unavailable 2") == 0);
+    CHECK(errno == 11);
+    errno = 2;
+    sn(buf, sizeof(buf), "[%.6m]%%m", 0, 0);
+    CHECK(strcmp(buf, "[No suc]%m") == 0);
+    errno = 0;
+    CHECK(sn(buf, sizeof(buf), "%*m", 3, 0) == -1 && errno == 22);
+    errno = 2;
+    CHECK(sn(buf, sizeof(buf), "%lm", 0, 0) == -1 && errno == 22);
+    errno = 2;
+    CHECK(sn(buf, sizeof(buf), "%300m|", 0, 0) == 301);
+    CHECK(strlen(buf) == sizeof(buf) - 1 && buf[0] == ' ');
+    errno = 2;
+    sn(buf, sizeof(buf), "[%-----------------------------------4.2m]", 0, 0);
+    CHECK(strcmp(buf, "[No  ]") == 0);
+
+    // NULL format prints nothing.
+    CHECK(sn(buf, sizeof(buf), NULL, 0, 0) == 0 && buf[0] == '\0');
+
+    // binary128 2^-1030 is below double's normal range: keep it subnormal.
+    typedef int (*Sq)(char *, size_t, const char *, Quad);
+    Quad q = {0};
+    q[15] = 0x3b; q[14] = 0xf9;  // exponent 16383 - 1030
+    STUB(Sq, "snprintf")(buf, sizeof(buf), "%La", q);
+    char want[64];
+    snprintf(want, sizeof(want), "%a", 0x1p-1030);
+    CHECK(strcmp(buf, want) == 0);
+
+    // NaN whose payload is only in the low 60 fraction bits.
+    Quad nan = {0};
+    nan[15] = 0x7f; nan[14] = 0xff; nan[0] = 1;
+    STUB(Sq, "snprintf")(buf, sizeof(buf), "%Lf", nan);
+    CHECK(strcmp(buf, "nan") == 0);
 }
 
 static void test_misc(void) {
@@ -571,6 +809,8 @@ int main(void) {
     test_mutexes();
     test_once();
     test_scanf();
+    test_printf();
+    test_printf_more();
     test_misc();
 
     rmdir(dir);

@@ -2,6 +2,7 @@
 // See android_stubs.h for how this differs from linux_abi.c.
 
 #include "android_stubs.h"
+#include "linux_abi.h"
 #include "config.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -118,17 +119,6 @@ void android_stubs_init(const char *asset_base_dir) {
 #define ANDROID_LOG_WARN    5
 #define ANDROID_LOG_ERROR   6
 
-static int stub_android_log_print(int prio, const char *tag, const char *fmt, ...) {
-    (void)prio;
-    char buf[1024];
-    int off = snprintf(buf, sizeof(buf), "[%s] ", tag ? tag : "?");
-    va_list ap; va_start(ap, fmt);
-    off += vsnprintf(buf + off, sizeof(buf) - off, fmt, ap);
-    va_end(ap);
-    if (off < (int)sizeof(buf) - 1) buf[off++] = '\n';
-    write(STDERR_FILENO, buf, off);
-    return 0;
-}
 static int stub_android_log_write(int prio, const char *tag, const char *text) {
     (void)prio;
     char buf[1024];
@@ -136,15 +126,22 @@ static int stub_android_log_write(int prio, const char *tag, const char *text) {
     write(STDERR_FILENO, buf, n > 0 ? (size_t)n : 0);
     return 0;
 }
-static int stub_android_log_vprint(int prio, const char *tag, const char *fmt, va_list ap) {
+// fmt/ap come from .so code, so format with the AAPCS64-aware formatter.
+__attribute__((used))
+static int stub_android_log_vprint(int prio, const char *tag, const char *fmt,
+                                   const LinuxVaList *ap) {
     (void)prio;
     char buf[1024];
     int off = snprintf(buf, sizeof(buf), "[%s] ", tag ? tag : "?");
-    off += vsnprintf(buf + off, sizeof(buf) - off, fmt, ap);
-    if (off < (int)sizeof(buf) - 1) buf[off++] = '\n';
+    if (off < 0 || off > (int)sizeof(buf) - 2) off = (int)sizeof(buf) - 2;
+    int n = linux_abi_vsnprintf(buf + off, sizeof(buf) - off, fmt, ap);
+    if (n > 0) off += n;
+    if (off > (int)sizeof(buf) - 2) off = (int)sizeof(buf) - 2;
+    buf[off++] = '\n';
     write(STDERR_FILENO, buf, off);
     return 0;
 }
+LINUX_ABI_VARIADIC(stub_android_log_print, stub_android_log_vprint, 3)
 
 // ── Android system properties ─────────────────────────────────────────────────
 static int stub_system_property_get(const char *name, char *value) {
