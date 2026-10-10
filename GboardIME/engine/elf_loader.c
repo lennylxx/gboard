@@ -215,6 +215,24 @@ static void stub_ht_init(void) {
     s_stub_ht_ready = 1;
 }
 
+#if DEBUG
+// Logs each libSystem fallback symbol once.
+static void log_fallback(const char *name) {
+    static const char *seen[1024];
+    static size_t nseen;
+    for (size_t i = 0; i < nseen; i++) {
+        if (strcmp(seen[i], name) == 0) return;
+    }
+    if (nseen < sizeof(seen) / sizeof(seen[0])) {
+        const char *copy = strdup(name);
+        if (copy) seen[nseen++] = copy;
+    }
+    elf_log("libSystem fallback: %s\n", name);
+}
+#else
+#define log_fallback(name) ((void)0)
+#endif
+
 static void *resolve_symbol(const char *name) {
     // 1. Check Android stubs via hash table
     uint32_t bucket = stub_hash(name) & (STUB_HT_BUCKETS - 1);
@@ -222,9 +240,14 @@ static void *resolve_symbol(const char *name) {
         if (strcmp(e->name, name) == 0) return e->addr;
     }
 
-    // 2. Fall back to macOS dyld (handles all standard libc/pthread/math)
+    // 2. Fall back to macOS dyld (handles all standard libc/pthread/math).
+    // These bind with Darwin's ABI; log each one so new imports that need
+    // a linux_abi shim show up.
     void *sym = dlsym(RTLD_DEFAULT, name);
-    if (sym) return sym;
+    if (sym) {
+        log_fallback(name);
+        return sym;
+    }
 
     // 3. Some Bionic names differ slightly from macOS
     // pthread cleanup push/pop are macros in Bionic that expand to these

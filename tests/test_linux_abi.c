@@ -1,6 +1,6 @@
-// Unit tests for the Linux/Bionic ABI shims in linux_abi.c and the
-// pthread side table in android_stubs.c. Stubs are looked up by name the
-// same way elf_loader resolves .so imports (linux_abi table first).
+// Unit tests for the Linux/Bionic ABI shims in linux_abi.c. Stubs are
+// looked up by name the same way elf_loader resolves .so imports
+// (linux_abi table first).
 
 #include "engine/android_stubs.h"
 #include "engine/linux_abi.h"
@@ -390,8 +390,19 @@ static void test_mutexes(void) {
     CHECK(unlock(nm) == 1);  // EPERM: not owner
     destroy(nm);
 
-    // Churn: create/destroy many more objects than the table holds, so
-    // tombstones must be reused rather than filling the table.
+    // A destroyed, re-zeroed mutex works again (lazily recreated).
+    CHECK(lock(nm) == 0 && unlock(nm) == 0);
+
+    // The host pointer lives in the next 8-aligned slot after the first
+    // 4 bytes, also for 4-byte aligned objects.
+    uint64_t raw[8] = {0};
+    uint8_t *m4 = (uint8_t *)raw + 4;
+    CHECK(lock(m4) == 0 && unlock(m4) == 0);
+    CHECK(raw[0] == 0 && raw[1] != 0);
+    destroy(m4);
+    CHECK(raw[1] == 0);
+
+    // Churn: many create/destroy cycles must not leak or fail.
     uint8_t *pool = calloc(64, 40);
     for (int round = 0; round < 600; round++) {
         for (int i = 0; i < 64; i++) {
@@ -410,6 +421,30 @@ static void test_mutexes(void) {
     CHECK(ok);
     free(big);
     free(pool);
+}
+
+static uint8_t s_race_mutex[40];
+static int s_race_count;
+
+static void *race_worker(void *arg) {
+    int (*lock)(void *) = sym("pthread_mutex_lock");
+    int (*unlock)(void *) = sym("pthread_mutex_unlock");
+    (void)arg;
+    for (int i = 0; i < 10000; i++) {
+        lock(s_race_mutex);
+        s_race_count++;
+        unlock(s_race_mutex);
+    }
+    return NULL;
+}
+
+// Threads racing to create the host object of a static mutex must all
+// end up on the same one.
+static void test_mutex_race(void) {
+    pthread_t t[8];
+    for (int i = 0; i < 8; i++) pthread_create(&t[i], NULL, race_worker, NULL);
+    for (int i = 0; i < 8; i++) pthread_join(t[i], NULL);
+    CHECK(s_race_count == 80000);
 }
 
 static _Atomic int s_once_calls;
@@ -668,6 +703,41 @@ static void log_many_args(void) {
         1, 2, 3, 4, 5, 6, 7, 0.5, 1.5, 2.5, 3.5, 4.5, 5.5, 6.5, 7.5, 8.5);
 }
 
+// Plain libSystem imports get their errno translated after the call.
+static void test_errno_wrappers(void) {
+    int fds[2];
+    CHECK(pipe(fds) == 0);
+    fcntl(fds[0], F_SETFL, O_NONBLOCK);
+    char c;
+    errno = 0;
+    CHECK(STUB(ssize_t (*)(int, void *, size_t), "read")(fds[0], &c, 1) == -1);
+    CHECK(errno == 11);  // Linux EAGAIN (Darwin 35)
+
+    // A prior Linux errno equal to the new Darwin value is still translated.
+    errno = 35;          // Linux EDEADLK, numerically Darwin EAGAIN
+    CHECK(STUB(ssize_t (*)(int, void *, size_t), "read")(fds[0], &c, 1) == -1);
+    CHECK(errno == 11);
+
+    // Unchanged errno is left alone, even values Darwin would remap.
+    errno = 35;          // Linux EDEADLK
+    CHECK(STUB(ssize_t (*)(int, const void *, size_t), "write")(fds[1], "x", 1) == 1);
+    CHECK(errno == 35);
+    close(fds[0]);
+    close(fds[1]);
+
+    // Return values in x0 and d0 survive the wrapper.
+    char *end = NULL;
+    double d = STUB(double (*)(const char *, char **), "strtod")("2.5x", &end);
+    CHECK(d == 2.5 && end && *end == 'x');
+    CHECK(STUB(long (*)(const char *, char **, int), "strtol")("-42", NULL, 10) == -42);
+
+    char *(*strerror_)(int) = sym("strerror");
+    CHECK(strcmp(strerror_(11), "Resource temporarily unavailable") == 0);
+    char buf[64];
+    CHECK(STUB(int (*)(int, char *, size_t), "strerror_r")(110, buf, sizeof(buf)) == 0);
+    CHECK(strcmp(buf, "Operation timed out") == 0);
+}
+
 // Cases adapted from PR #1's AAPCS64 bridge tests.
 static void test_printf_more(void) {
     // Both register classes overflow; stack order is L7, L8, L9, D9, D10.
@@ -807,10 +877,12 @@ int main(void) {
     test_signals();
     test_keys_attrs();
     test_mutexes();
+    test_mutex_race();
     test_once();
     test_scanf();
     test_printf();
     test_printf_more();
+    test_errno_wrappers();
     test_misc();
 
     rmdir(dir);

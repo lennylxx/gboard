@@ -11,7 +11,8 @@
 // - struct layouts: stat, statvfs, dirent, flock, sigaction,
 //   pthread_attr_t, rusage/timeval, Bionic FILE* (via __sF)
 // - object sizes: Bionic pthread mutex/cond/rwlock/once/key/sem_t are
-//   smaller than macOS's, so real objects live in a side table
+//   smaller than macOS's, so each holds a pointer to a heap-allocated
+//   macOS object
 // - calling convention: scanf/printf varargs (AAPCS64 vs Darwin
 //   variadics), via LINUX_ABI_VARIADIC trampolines
 // - kernel interfaces: syscall(2), including futex via __ulock

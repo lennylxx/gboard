@@ -33,6 +33,9 @@
 #include <time.h>
 #include <unistd.h>
 #include <xlocale.h>
+#include <wchar.h>
+#include <sys/socket.h>
+#include <poll.h>
 
 // ── errno ────────────────────────────────────────────────────────────────────
 
@@ -105,6 +108,13 @@ int linux_errno_from_darwin(int err) {
 
 // Sets errno to the Linux translation of the current macOS errno.
 static void fix_errno(void) { errno = linux_errno_from_darwin(errno); }
+
+// Inverse of linux_errno_from_darwin, for host calls given a Linux errno.
+static int darwin_errno_from_linux(int err) {
+    for (int d = 1; d <= ELAST; d++)
+        if (linux_errno_from_darwin(d) == err) return d;
+    return err;
+}
 
 // ── Futex-style wait/wake (libSystem __ulock, available since 10.12) ─────────
 
@@ -1394,12 +1404,6 @@ static double va_take_long_double(LinuxVaList *va) {
     return quad_to_double(q);
 }
 
-static int darwin_errno_from_linux(int err) {
-    for (int d = 1; d <= ELAST; d++)
-        if (linux_errno_from_darwin(d) == err) return d;
-    return err;
-}
-
 // Appends strerror text for a %m spec (flags/width/precision only),
 // escaping '%' so the result is a literal in the rewritten format.
 // Returns 0, or -1 with a Linux errno.
@@ -1580,111 +1584,50 @@ LINUX_ABI_VARIADIC(abi_fprintf, abi_vfprintf, 2)
 LINUX_ABI_VARIADIC(abi_printf, abi_vprintf, 1)
 LINUX_ABI_VARIADIC(abi_syslog, abi_vsyslog, 2)
 
-// ── pthread mutex/cond/rwlock/once via side table ────────────────────────────
+// ── pthread mutex/cond/rwlock/once ───────────────────────────────────────────
 // CRITICAL: Bionic pthread_mutex_t = 40 bytes, macOS = 64 bytes.
 //           Bionic pthread_rwlock_t = 56 bytes, macOS = 200 bytes.
 //           Passing .so's bionic-sized structs to macOS pthread functions causes
-//           buffer overflow and memory corruption. We use a side-table to store
-//           macOS-sized objects separately from the .so's memory.
-
-#define SIDE_TABLE_SIZE 16384
-#define SIDE_TOMB ((void *)1)  // deleted slot; keeps probe chains intact
-
-enum { SIDE_MUTEX = 1, SIDE_COND = 2, SIDE_RWLOCK = 3 };
+//           buffer overflow and memory corruption. Each bionic object instead
+//           holds a pointer to a heap-allocated macOS object, created lazily
+//           (so static initializers work) and installed with a CAS.
+//
+// Bionic objects are only 4-byte aligned. The first 4 bytes are left
+// alone (a static mutex initializer stores its kind there) and the
+// pointer goes in the next 8-byte aligned slot, which fits in all of them.
 
 // Bionic mutex kinds, stored in bits 14-15 of the first 16-bit word.
 enum { BIONIC_MUTEX_NORMAL = 0, BIONIC_MUTEX_RECURSIVE = 1,
        BIONIC_MUTEX_ERRORCHECK = 2 };
 
-typedef struct {
-    void *addr;         // bionic struct address in .so memory
-    int type;           // SIDE_MUTEX, SIDE_COND or SIDE_RWLOCK
-    int kind;           // bionic mutex kind
-    union {
-        pthread_mutex_t mutex;
-        pthread_cond_t cond;
-        pthread_rwlock_t rwlock;
-    };
-} SideEntry;
-
-static SideEntry s_side_table[SIDE_TABLE_SIZE];
-static os_unfair_lock s_side_lock = OS_UNFAIR_LOCK_INIT;
-
-static void side_init_entry(SideEntry *e, void *addr, int type, int kind) {
-    e->addr = addr;
-    e->type = type;
-    e->kind = kind;
-    if (type == SIDE_MUTEX) {
-        pthread_mutexattr_t attr;
-        pthread_mutexattr_init(&attr);
-        pthread_mutexattr_settype(&attr,
-            kind == BIONIC_MUTEX_RECURSIVE ? PTHREAD_MUTEX_RECURSIVE :
-            kind == BIONIC_MUTEX_ERRORCHECK ? PTHREAD_MUTEX_ERRORCHECK :
-            PTHREAD_MUTEX_NORMAL);
-        pthread_mutex_init(&e->mutex, &attr);
-        pthread_mutexattr_destroy(&attr);
-    } else if (type == SIDE_COND) {
-        pthread_cond_init(&e->cond, NULL);
-    } else {
-        pthread_rwlock_init(&e->rwlock, NULL);
-    }
+static _Atomic(void *) *host_slot(void *obj) {
+    uintptr_t p = ((uintptr_t)obj + 4 + 7) & ~(uintptr_t)7;
+    return (_Atomic(void *) *)p;
 }
 
-static void side_destroy_entry(SideEntry *e) {
-    if (e->type == SIDE_MUTEX) pthread_mutex_destroy(&e->mutex);
-    else if (e->type == SIDE_COND) pthread_cond_destroy(&e->cond);
-    else if (e->type == SIDE_RWLOCK) pthread_rwlock_destroy(&e->rwlock);
-    e->addr = SIDE_TOMB;
-    e->type = 0;
+// Returns the installed object, or installs `fresh`. On a lost race
+// `fresh` is handed back through *loser for the caller to destroy.
+static void *host_install(void *obj, void *fresh, void **loser) {
+    void *expected = NULL;
+    *loser = NULL;
+    if (atomic_compare_exchange_strong(host_slot(obj), &expected, fresh))
+        return fresh;
+    *loser = fresh;
+    return expected;
 }
 
-// Finds or creates the macOS object shadowing a bionic one. `replace`
-// discards any existing entry (re-init after reuse of the memory); a
-// type mismatch means the address was recycled for another primitive.
-static SideEntry *side_lookup(void *addr, int type, int kind, int replace) {
-    uint32_t hash = (uint32_t)(((uintptr_t)addr >> 3) % SIDE_TABLE_SIZE);
-    SideEntry *free_slot = NULL;
-    os_unfair_lock_lock(&s_side_lock);
-    for (uint32_t i = 0; i < SIDE_TABLE_SIZE; i++) {
-        SideEntry *e = &s_side_table[(hash + i) % SIDE_TABLE_SIZE];
-        if (e->addr == addr) {
-            if (replace || e->type != type) {
-                side_destroy_entry(e);
-                side_init_entry(e, addr, type, kind);
-            }
-            os_unfair_lock_unlock(&s_side_lock);
-            return e;
-        }
-        if (e->addr == SIDE_TOMB) {
-            if (!free_slot) free_slot = e;
-            continue;
-        }
-        if (e->addr == NULL) {
-            if (!free_slot) free_slot = e;
-            break;
-        }
-    }
-    if (free_slot) side_init_entry(free_slot, addr, type, kind);
-    os_unfair_lock_unlock(&s_side_lock);
-    return free_slot;  // NULL only if the table is full
-}
-
-static SideEntry *side_get(void *addr, int type) {
-    return side_lookup(addr, type, 0, 0);
-}
-
-static void side_remove(void *addr) {
-    uint32_t hash = (uint32_t)(((uintptr_t)addr >> 3) % SIDE_TABLE_SIZE);
-    os_unfair_lock_lock(&s_side_lock);
-    for (uint32_t i = 0; i < SIDE_TABLE_SIZE; i++) {
-        SideEntry *e = &s_side_table[(hash + i) % SIDE_TABLE_SIZE];
-        if (e->addr == addr) {
-            side_destroy_entry(e);
-            break;
-        }
-        if (e->addr == NULL) break;
-    }
-    os_unfair_lock_unlock(&s_side_lock);
+static pthread_mutex_t *host_mutex_new(int kind) {
+    pthread_mutex_t *m = malloc(sizeof(*m));
+    if (!m) return NULL;
+    pthread_mutexattr_t attr;
+    pthread_mutexattr_init(&attr);
+    pthread_mutexattr_settype(&attr,
+        kind == BIONIC_MUTEX_RECURSIVE ? PTHREAD_MUTEX_RECURSIVE :
+        kind == BIONIC_MUTEX_ERRORCHECK ? PTHREAD_MUTEX_ERRORCHECK :
+        PTHREAD_MUTEX_NORMAL);
+    pthread_mutex_init(m, &attr);
+    pthread_mutexattr_destroy(&attr);
+    return m;
 }
 
 // Statically initialized bionic mutexes encode their kind in the state word
@@ -1694,8 +1637,35 @@ static int mutex_static_kind(void *m) {
     return kind <= BIONIC_MUTEX_ERRORCHECK ? kind : BIONIC_MUTEX_NORMAL;
 }
 
-static SideEntry *mutex_entry(void *m) {
-    return side_lookup(m, SIDE_MUTEX, mutex_static_kind(m), 0);
+static pthread_mutex_t *mutex_get(void *m) {
+    pthread_mutex_t *h = atomic_load(host_slot(m));
+    if (h) return h;
+    void *loser;
+    h = host_install(m, host_mutex_new(mutex_static_kind(m)), &loser);
+    if (loser) { pthread_mutex_destroy(loser); free(loser); }
+    return h;
+}
+
+static pthread_cond_t *cond_get(void *c) {
+    pthread_cond_t *h = atomic_load(host_slot(c));
+    if (h) return h;
+    pthread_cond_t *fresh = malloc(sizeof(*fresh));
+    if (fresh) pthread_cond_init(fresh, NULL);
+    void *loser;
+    h = host_install(c, fresh, &loser);
+    if (loser) { pthread_cond_destroy(loser); free(loser); }
+    return h;
+}
+
+static pthread_rwlock_t *rwlock_get(void *rw) {
+    pthread_rwlock_t *h = atomic_load(host_slot(rw));
+    if (h) return h;
+    pthread_rwlock_t *fresh = malloc(sizeof(*fresh));
+    if (fresh) pthread_rwlock_init(fresh, NULL);
+    void *loser;
+    h = host_install(rw, fresh, &loser);
+    if (loser) { pthread_rwlock_destroy(loser); free(loser); }
+    return h;
 }
 
 // Bionic pthread_mutexattr_t is a long holding the kind in its low bits.
@@ -1716,61 +1686,71 @@ static int stub_pthread_mutexattr_destroy(long *attr) {
 }
 
 // Mutex wrappers — .so passes bionic-sized (40-byte) mutex pointers.
-// We look up/create a macOS mutex in the side table.
 static int stub_pthread_mutex_lock(void *m) {
-    SideEntry *e = mutex_entry(m);
-    return e ? linux_errno_from_darwin(pthread_mutex_lock(&e->mutex)) : 22;
+    pthread_mutex_t *h = mutex_get(m);
+    return h ? linux_errno_from_darwin(pthread_mutex_lock(h)) : 22;
 }
 static int stub_pthread_mutex_unlock(void *m) {
-    SideEntry *e = mutex_entry(m);
-    return e ? linux_errno_from_darwin(pthread_mutex_unlock(&e->mutex)) : 22;
+    pthread_mutex_t *h = mutex_get(m);
+    return h ? linux_errno_from_darwin(pthread_mutex_unlock(h)) : 22;
 }
 static int stub_pthread_mutex_trylock(void *m) {
-    SideEntry *e = mutex_entry(m);
-    return e ? linux_errno_from_darwin(pthread_mutex_trylock(&e->mutex)) : 22;
+    pthread_mutex_t *h = mutex_get(m);
+    return h ? linux_errno_from_darwin(pthread_mutex_trylock(h)) : 22;
 }
+// init/destroy overwrite whatever the memory held: it may be recycled
+// from an object that was freed without pthread_*_destroy.
 static int stub_pthread_mutex_init(void *m, const long *attr) {
     int kind = attr ? (int)(*attr & 0xf) : BIONIC_MUTEX_NORMAL;
     if (kind > BIONIC_MUTEX_ERRORCHECK) return 22;
+    pthread_mutex_t *h = host_mutex_new(kind);
+    if (!h) return 11;  // EAGAIN
     memset(m, 0, 40);
     *(uint16_t *)m = (uint16_t)(kind << 14);
-    return side_lookup(m, SIDE_MUTEX, kind, 1) ? 0 : 11;  // EAGAIN
+    atomic_store(host_slot(m), h);
+    return 0;
 }
 static int stub_pthread_mutex_destroy(void *m) {
-    side_remove(m);
+    pthread_mutex_t *h = atomic_exchange(host_slot(m), NULL);
+    if (h) { pthread_mutex_destroy(h); free(h); }
     return 0;
 }
 
 // Condition variable wrappers (bionic cond = 48 bytes, macOS = 48 — same size
-// but different internal layout, so still use side table for correctness)
+// but different internal layout, so still use a host object)
 static int stub_pthread_cond_init(void *c, const void *attr) {
     (void)attr;
-    return side_lookup(c, SIDE_COND, 0, 1) ? 0 : 11;  // EAGAIN
+    pthread_cond_t *h = malloc(sizeof(*h));
+    if (!h) return 11;  // EAGAIN
+    pthread_cond_init(h, NULL);
+    memset(c, 0, 48);
+    atomic_store(host_slot(c), h);
+    return 0;
 }
 static int stub_pthread_cond_destroy(void *c) {
-    side_remove(c);
+    pthread_cond_t *h = atomic_exchange(host_slot(c), NULL);
+    if (h) { pthread_cond_destroy(h); free(h); }
     return 0;
 }
 static int stub_pthread_cond_wait(void *c, void *m) {
-    SideEntry *ce = side_get(c, SIDE_COND);
-    SideEntry *me = mutex_entry(m);
-    if (!ce || !me) return 22;
-    return linux_errno_from_darwin(pthread_cond_wait(&ce->cond, &me->mutex));
+    pthread_cond_t *hc = cond_get(c);
+    pthread_mutex_t *hm = mutex_get(m);
+    if (!hc || !hm) return 22;
+    return linux_errno_from_darwin(pthread_cond_wait(hc, hm));
 }
 static int stub_pthread_cond_signal(void *c) {
-    SideEntry *e = side_get(c, SIDE_COND);
-    return e ? linux_errno_from_darwin(pthread_cond_signal(&e->cond)) : 22;
+    pthread_cond_t *h = cond_get(c);
+    return h ? linux_errno_from_darwin(pthread_cond_signal(h)) : 22;
 }
 static int stub_pthread_cond_broadcast(void *c) {
-    SideEntry *e = side_get(c, SIDE_COND);
-    return e ? linux_errno_from_darwin(pthread_cond_broadcast(&e->cond)) : 22;
+    pthread_cond_t *h = cond_get(c);
+    return h ? linux_errno_from_darwin(pthread_cond_broadcast(h)) : 22;
 }
 static int stub_pthread_cond_timedwait(void *c, void *m, const struct timespec *t) {
-    SideEntry *ce = side_get(c, SIDE_COND);
-    SideEntry *me = mutex_entry(m);
-    if (!ce || !me) return 22;
-    return linux_errno_from_darwin(
-        pthread_cond_timedwait(&ce->cond, &me->mutex, t));
+    pthread_cond_t *hc = cond_get(c);
+    pthread_mutex_t *hm = mutex_get(m);
+    if (!hc || !hm) return 22;
+    return linux_errno_from_darwin(pthread_cond_timedwait(hc, hm, t));
 }
 
 // pthread_once — Bionic: 4 bytes (int), macOS: 16 bytes.
@@ -1828,24 +1808,131 @@ void linux_abi_crash_recovered(void) {
 
 // Rwlock wrappers — Bionic rwlock = 56 bytes, macOS = 200 bytes!
 static int stub_pthread_rwlock_rdlock(void *rw) {
-    SideEntry *e = side_get(rw, SIDE_RWLOCK);
-    return e ? linux_errno_from_darwin(pthread_rwlock_rdlock(&e->rwlock)) : 22;
+    pthread_rwlock_t *h = rwlock_get(rw);
+    return h ? linux_errno_from_darwin(pthread_rwlock_rdlock(h)) : 22;
 }
 static int stub_pthread_rwlock_wrlock(void *rw) {
-    SideEntry *e = side_get(rw, SIDE_RWLOCK);
-    return e ? linux_errno_from_darwin(pthread_rwlock_wrlock(&e->rwlock)) : 22;
+    pthread_rwlock_t *h = rwlock_get(rw);
+    return h ? linux_errno_from_darwin(pthread_rwlock_wrlock(h)) : 22;
 }
 static int stub_pthread_rwlock_unlock(void *rw) {
-    SideEntry *e = side_get(rw, SIDE_RWLOCK);
-    return e ? linux_errno_from_darwin(pthread_rwlock_unlock(&e->rwlock)) : 22;
+    pthread_rwlock_t *h = rwlock_get(rw);
+    return h ? linux_errno_from_darwin(pthread_rwlock_unlock(h)) : 22;
 }
 static int stub_pthread_rwlock_tryrdlock(void *rw) {
-    SideEntry *e = side_get(rw, SIDE_RWLOCK);
-    return e ? linux_errno_from_darwin(pthread_rwlock_tryrdlock(&e->rwlock)) : 22;
+    pthread_rwlock_t *h = rwlock_get(rw);
+    return h ? linux_errno_from_darwin(pthread_rwlock_tryrdlock(h)) : 22;
 }
 static int stub_pthread_rwlock_trywrlock(void *rw) {
-    SideEntry *e = side_get(rw, SIDE_RWLOCK);
-    return e ? linux_errno_from_darwin(pthread_rwlock_trywrlock(&e->rwlock)) : 22;
+    pthread_rwlock_t *h = rwlock_get(rw);
+    return h ? linux_errno_from_darwin(pthread_rwlock_trywrlock(h)) : 22;
+}
+
+// ── errno for plain libSystem imports ────────────────────────────────────────
+// __errno() hands the .so the host's own errno, so the .so's errno = 0
+// resets already reach libSystem. But imports with no shim set Darwin
+// errno values (EAGAIN = 35, EILSEQ = 92, ...). These wrappers call the
+// libSystem function and translate any errno it sets.
+//
+// ERRNO_WRAP(fn) defines errno_fn: a 3-instruction stub that loads fn's
+// address and jumps to errno_call, which preserves x0-x8 and q0-q7
+// around the bookkeeping. fn must not take stack arguments.
+
+// errno_before clears errno so any value left by the call is new and in
+// Darwin numbering; errno_after translates it, or restores the caller's
+// Linux errno if the call left errno untouched.
+__attribute__((used)) static int errno_before(void) {
+    int saved = errno;
+    errno = 0;
+    return saved;
+}
+
+__attribute__((used)) static void errno_after(int saved) {
+    if (errno != 0) fix_errno();
+    else errno = saved;
+}
+
+// Standard frame-pointer prologue plus CFI so unwinders can walk through.
+__attribute__((naked, used)) static void errno_call(void) {
+    __asm__(
+        "stp x29, x30, [sp, #-16]!\n"
+        "mov x29, sp\n"
+        ".cfi_def_cfa w29, 16\n"
+        ".cfi_offset w30, -8\n"
+        ".cfi_offset w29, -16\n"
+        "sub sp, sp, #224\n"
+        "stp x0, x1, [sp, #0]\n"
+        "stp x2, x3, [sp, #16]\n"
+        "stp x4, x5, [sp, #32]\n"
+        "stp x6, x7, [sp, #48]\n"
+        "stp x8, x16, [sp, #64]\n"
+        "stp q0, q1, [sp, #80]\n"
+        "stp q2, q3, [sp, #112]\n"
+        "stp q4, q5, [sp, #144]\n"
+        "stp q6, q7, [sp, #176]\n"
+        "bl _errno_before\n"
+        "str w0, [sp, #208]\n"
+        "ldp x0, x1, [sp, #0]\n"
+        "ldp x2, x3, [sp, #16]\n"
+        "ldp x4, x5, [sp, #32]\n"
+        "ldp x6, x7, [sp, #48]\n"
+        "ldp x8, x16, [sp, #64]\n"
+        "ldp q0, q1, [sp, #80]\n"
+        "ldp q2, q3, [sp, #112]\n"
+        "ldp q4, q5, [sp, #144]\n"
+        "ldp q6, q7, [sp, #176]\n"
+        "blr x16\n"
+        "stp x0, x1, [sp, #0]\n"
+        "stp q0, q1, [sp, #80]\n"
+        "stp q2, q3, [sp, #112]\n"
+        "ldr w0, [sp, #208]\n"
+        "bl _errno_after\n"
+        "ldp x0, x1, [sp, #0]\n"
+        "ldp q0, q1, [sp, #80]\n"
+        "ldp q2, q3, [sp, #112]\n"
+        "mov sp, x29\n"
+        "ldp x29, x30, [sp], #16\n"
+        "ret\n");
+}
+
+#define ERRNO_WRAP(fn)                                                      \
+    __attribute__((used)) static void *const errno_target_##fn = (void *)fn; \
+    __attribute__((naked)) static void errno_##fn(void) {                   \
+        __asm__("adrp x16, _errno_target_" #fn "@PAGE\n"                    \
+                "ldr x16, [x16, _errno_target_" #fn "@PAGEOFF]\n"           \
+                "b _errno_call\n");                                         \
+    }
+
+#define ERRNO_WRAPPED(X)                                                    \
+    X(accept) X(access) X(chmod) X(close) X(connect) X(creat) X(dup)        \
+    X(fclose) X(fdatasync) X(fdopen) X(fgetc) X(fgets) X(flock) X(fopen)    \
+    X(fputwc) X(fseek) X(fseeko) X(fsync) X(ftell) X(ftello) X(ftruncate)   \
+    X(getc) X(gethostname) X(getpriority) X(getsockopt) X(getwc) X(listen)  \
+    X(lseek) X(mbrlen) X(mbrtowc) X(mbsnrtowcs) X(mbsrtowcs) X(mbtowc)      \
+    X(mkdir) X(mkstemp) X(mktime) X(mlock) X(mprotect) X(munlock)           \
+    X(munmap) X(nanosleep) X(nice) X(poll) X(pread) X(read) X(readlink)     \
+    X(recvmsg) X(remove) X(rename) X(rmdir) X(sendmsg) X(setpriority)       \
+    X(setsockopt) X(shutdown) X(socket) X(strtod) X(strtod_l) X(strtof)     \
+    X(strtol) X(strtoll) X(strtoll_l) X(strtoul) X(strtoull)                \
+    X(strtoull_l) X(ungetc) X(ungetwc) X(unlink) X(usleep) X(wcrtomb)       \
+    X(wcsnrtombs) X(write)
+
+int fdatasync(int fd);  // in libSystem, missing from the macOS headers
+
+ERRNO_WRAPPED(ERRNO_WRAP)
+
+// These take a Linux errno value as input.
+static char *stub_strerror(int err) {
+    return strerror(darwin_errno_from_linux(err));
+}
+static int stub_strerror_r(int err, char *buf, size_t len) {
+    return linux_errno_from_darwin(strerror_r(darwin_errno_from_linux(err), buf, len));
+}
+static void stub_perror(const char *s) {
+    int err = errno;
+    errno = darwin_errno_from_linux(err);
+    perror(s);
+    errno = err;
 }
 
 // ── Symbol table ─────────────────────────────────────────────────────────────
@@ -1866,6 +1953,12 @@ static const SymEntry s_abi_table[] = {
     E("asprintf",                        abi_asprintf),
     E("vasprintf",                       abi_vasprintf),
     E("syslog",                          abi_syslog),
+    E("strerror",                        stub_strerror),
+    E("strerror_r",                      stub_strerror_r),
+    E("perror",                          stub_perror),
+#define ERRNO_ENTRY(fn) E(#fn, errno_##fn),
+    ERRNO_WRAPPED(ERRNO_ENTRY)
+#undef ERRNO_ENTRY
 
 
     E("pthread_mutex_lock",              stub_pthread_mutex_lock),
