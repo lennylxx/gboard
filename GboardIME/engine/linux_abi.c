@@ -703,6 +703,9 @@ static int scanf_check(const char *fmt) {
     return 1;
 }
 
+static int errno_before(void);
+static void errno_after(int saved);
+
 static int stub_sscanf(const char *str, const char *fmt, void *r0, void *r1,
                        void *r2, void *r3, void *r4, void *r5,
                        SCANF_STACK_PARAMS) {
@@ -716,8 +719,11 @@ static int stub_fscanf(FILE *stream, const char *fmt, void *r0, void *r1,
                        SCANF_STACK_PARAMS) {
     if (!scanf_check(fmt)) return -1;
     void *slots[SCANF_MAX_ARGS] = SCANF_SLOTS(r0, r1, r2, r3, r4, r5);
-    return vfscanf(android_stubs_fixup_file(stream), fmt,
-                   (va_list)(void *)slots);
+    stream = android_stubs_fixup_file(stream);
+    int saved = errno_before();
+    int r = vfscanf(stream, fmt, (va_list)(void *)slots);
+    errno_after(saved);
+    return r;
 }
 
 static int stub_vsscanf(const char *str, const char *fmt,
@@ -1264,19 +1270,39 @@ static locale_t stub_newlocale(int mask, const char *locale, locale_t base) {
 
 // ── stdio (Bionic FILE* from __sF → macOS FILE*) ───────────────────────────
 static size_t stub_fwrite(const void *ptr, size_t size, size_t nmemb, FILE *stream) {
-    return fwrite(ptr, size, nmemb, android_stubs_fixup_file(stream));
+    stream = android_stubs_fixup_file(stream);
+    int saved = errno_before();
+    size_t r = fwrite(ptr, size, nmemb, stream);
+    errno_after(saved);
+    return r;
 }
 static int stub_fflush(FILE *stream) {
-    return fflush(android_stubs_fixup_file(stream));
+    stream = android_stubs_fixup_file(stream);
+    int saved = errno_before();
+    int r = fflush(stream);
+    errno_after(saved);
+    return r;
 }
 static int stub_fputs(const char *s, FILE *stream) {
-    return fputs(s, android_stubs_fixup_file(stream));
+    stream = android_stubs_fixup_file(stream);
+    int saved = errno_before();
+    int r = fputs(s, stream);
+    errno_after(saved);
+    return r;
 }
 static int stub_fputc(int c, FILE *stream) {
-    return fputc(c, android_stubs_fixup_file(stream));
+    stream = android_stubs_fixup_file(stream);
+    int saved = errno_before();
+    int r = fputc(c, stream);
+    errno_after(saved);
+    return r;
 }
 static size_t stub_fread(void *ptr, size_t size, size_t nmemb, FILE *stream) {
-    return fread(ptr, size, nmemb, android_stubs_fixup_file(stream));
+    stream = android_stubs_fixup_file(stream);
+    int saved = errno_before();
+    size_t r = fread(ptr, size, nmemb, stream);
+    errno_after(saved);
+    return r;
 }
 
 // ── printf family ────────────────────────────────────────────────────────────
@@ -1905,21 +1931,63 @@ __attribute__((naked, used)) static void errno_call(void) {
 
 #define ERRNO_WRAPPED(X)                                                    \
     X(accept) X(access) X(chmod) X(close) X(connect) X(creat) X(dup)        \
-    X(fclose) X(fdatasync) X(fdopen) X(fgetc) X(fgets) X(flock) X(fopen)    \
-    X(fputwc) X(fseek) X(fseeko) X(fsync) X(ftell) X(ftello) X(ftruncate)   \
-    X(getc) X(gethostname) X(getpriority) X(getsockopt) X(getwc) X(listen)  \
+    X(fdatasync) X(fdopen) X(flock) X(fopen)    \
+    X(fsync) X(ftruncate)   \
+    X(gethostname) X(getpriority) X(getsockopt) X(listen)  \
     X(lseek) X(mbrlen) X(mbrtowc) X(mbsnrtowcs) X(mbsrtowcs) X(mbtowc)      \
     X(mkdir) X(mkstemp) X(mktime) X(mlock) X(mprotect) X(munlock)           \
     X(munmap) X(nanosleep) X(nice) X(poll) X(pread) X(read) X(readlink)     \
     X(recvmsg) X(remove) X(rename) X(rmdir) X(sendmsg) X(setpriority)       \
     X(setsockopt) X(shutdown) X(socket) X(strtod) X(strtod_l) X(strtof)     \
     X(strtol) X(strtoll) X(strtoll_l) X(strtoul) X(strtoull)                \
-    X(strtoull_l) X(ungetc) X(ungetwc) X(unlink) X(usleep) X(wcrtomb)       \
+    X(strtoull_l) X(unlink) X(usleep) X(wcrtomb)       \
     X(wcsnrtombs) X(write)
 
 int fdatasync(int fd);  // in libSystem, missing from the macOS headers
 
 ERRNO_WRAPPED(ERRNO_WRAP)
+
+// FILE functions not shimmed elsewhere: map the fake Bionic stdin/stdout/
+// stderr to host streams, then translate errno like the wrappers above.
+#define FILE_SHIM(ret, name, params, args)                                  \
+    static ret stub_##name params {                                         \
+        stream = android_stubs_fixup_file(stream);                          \
+        int saved = errno_before();                                         \
+        ret r = name args;                                                  \
+        errno_after(saved);                                                 \
+        return r;                                                           \
+    }
+#define FILE_SHIM_VOID(name, params, args)                                  \
+    static void stub_##name params {                                        \
+        stream = android_stubs_fixup_file(stream);                          \
+        int saved = errno_before();                                         \
+        name args;                                                          \
+        errno_after(saved);                                                 \
+    }
+
+FILE_SHIM(int, fclose, (FILE *stream), (stream))
+FILE_SHIM(int, feof, (FILE *stream), (stream))
+FILE_SHIM(int, ferror, (FILE *stream), (stream))
+FILE_SHIM(int, fgetc, (FILE *stream), (stream))
+FILE_SHIM(char *, fgets, (char *s, int n, FILE *stream), (s, n, stream))
+FILE_SHIM(int, fileno, (FILE *stream), (stream))
+FILE_SHIM(wint_t, fputwc, (wchar_t c, FILE *stream), (c, stream))
+FILE_SHIM(int, fseek, (FILE *stream, long off, int whence), (stream, off, whence))
+FILE_SHIM(int, fseeko, (FILE *stream, off_t off, int whence), (stream, off, whence))
+FILE_SHIM(long, ftell, (FILE *stream), (stream))
+FILE_SHIM(off_t, ftello, (FILE *stream), (stream))
+FILE_SHIM(int, getc, (FILE *stream), (stream))
+FILE_SHIM(wint_t, getwc, (FILE *stream), (stream))
+FILE_SHIM(int, ungetc, (int c, FILE *stream), (c, stream))
+FILE_SHIM(wint_t, ungetwc, (wint_t c, FILE *stream), (c, stream))
+FILE_SHIM_VOID(clearerr, (FILE *stream), (stream))
+FILE_SHIM_VOID(rewind, (FILE *stream), (stream))
+FILE_SHIM_VOID(setbuf, (FILE *stream, char *buf), (stream, buf))
+
+#define FILE_SHIMMED(X)                                                     \
+    X(clearerr) X(fclose) X(feof) X(ferror) X(fgetc) X(fgets) X(fileno)     \
+    X(fputwc) X(fseek) X(fseeko) X(ftell) X(ftello) X(getc) X(getwc)        \
+    X(rewind) X(setbuf) X(ungetc) X(ungetwc)
 
 // These take a Linux errno value as input.
 static char *stub_strerror(int err) {
@@ -1933,6 +2001,40 @@ static void stub_perror(const char *s) {
     errno = darwin_errno_from_linux(err);
     perror(s);
     errno = err;
+}
+
+// ── strtold_l ────────────────────────────────────────────────────────────────
+// Linux arm64 long double is IEEE binary128 returned in q0; Darwin's is
+// double. Parse with strtod_l and widen. A 16-byte vector also returns in
+// q0. Values beyond double's range overflow to infinity (ERANGE).
+typedef uint64_t Quad __attribute__((vector_size(16)));
+
+static Quad double_to_quad(double d) {
+    uint64_t bits;
+    memcpy(&bits, &d, 8);
+    uint64_t sign = bits & 0x8000000000000000ULL;
+    uint64_t hi, lo = 0;
+    if (isnan(d)) {
+        hi = 0x7fff800000000000ULL;
+    } else if (isinf(d)) {
+        hi = 0x7fff000000000000ULL;
+    } else if (d == 0) {
+        hi = 0;
+    } else {
+        int e;
+        double m = frexp(fabs(d), &e);  // |d| = m * 2^e, m in [0.5, 1)
+        uint64_t frac = (uint64_t)ldexp(m, 53) & ((1ULL << 52) - 1);
+        hi = ((uint64_t)(e - 1 + 16383) << 48) | (frac >> 4);
+        lo = frac << 60;
+    }
+    return (Quad){lo, hi | sign};
+}
+
+static Quad stub_strtold_l(const char *s, char **end, locale_t loc) {
+    int saved = errno_before();
+    double d = strtod_l(s, end, loc);
+    errno_after(saved);
+    return double_to_quad(d);
 }
 
 // ── Symbol table ─────────────────────────────────────────────────────────────
@@ -1956,9 +2058,13 @@ static const SymEntry s_abi_table[] = {
     E("strerror",                        stub_strerror),
     E("strerror_r",                      stub_strerror_r),
     E("perror",                          stub_perror),
+    E("strtold_l",                       stub_strtold_l),
 #define ERRNO_ENTRY(fn) E(#fn, errno_##fn),
     ERRNO_WRAPPED(ERRNO_ENTRY)
 #undef ERRNO_ENTRY
+#define FILE_ENTRY(fn) E(#fn, stub_##fn),
+    FILE_SHIMMED(FILE_ENTRY)
+#undef FILE_ENTRY
 
 
     E("pthread_mutex_lock",              stub_pthread_mutex_lock),

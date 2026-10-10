@@ -351,6 +351,11 @@ static char *stub_gnu_strerror_r(int errnum, char *buf, size_t buflen) {
 uint8_t __sF[3 * BIONIC_FILE_SIZE];
 static FILE *sF_map[3];  // macOS FILE* for stdin/stdout/stderr
 
+// Bionic's stdin/stdout/stderr are FILE* variables pointing into __sF.
+static FILE *bionic_stdin  = (FILE *)&__sF[0 * BIONIC_FILE_SIZE];
+static FILE *bionic_stdout = (FILE *)&__sF[1 * BIONIC_FILE_SIZE];
+static FILE *bionic_stderr = (FILE *)&__sF[2 * BIONIC_FILE_SIZE];
+
 static void __attribute__((constructor)) init_sF(void) {
     memset(__sF, 0, sizeof(__sF));
     sF_map[0] = stdin; sF_map[1] = stdout; sF_map[2] = stderr;
@@ -358,7 +363,7 @@ static void __attribute__((constructor)) init_sF(void) {
 
 // Detect if a FILE* is a fake Bionic __sF entry and return the real macOS FILE*.
 static FILE *fixup_file(FILE *f) {
-    if (!f) return stderr;
+    if (!f) return NULL;
     uintptr_t fp = (uintptr_t)f;
     uintptr_t base = (uintptr_t)__sF;
     if (fp >= base && fp < base + sizeof(__sF)) {
@@ -724,10 +729,10 @@ static const SymEntry s_table[] = {
     E("AStatus_getDescription",          stub_AStatus_getDescription),
     E("AStatus_deleteDescription",       stub_AStatus_deleteDescription),
 
-    // stdio symbols — point into our fake Bionic __sF buffer
-    E("stdin",                           &__sF[0 * BIONIC_FILE_SIZE]),
-    E("stdout",                          &__sF[1 * BIONIC_FILE_SIZE]),
-    E("stderr",                          &__sF[2 * BIONIC_FILE_SIZE]),
+    // stdio variables — each holds a fake Bionic __sF entry
+    E("stdin",                           &bionic_stdin),
+    E("stdout",                          &bionic_stdout),
+    E("stderr",                          &bionic_stderr),
 
     // ICU data
     E("uprv_getICUData_brkitr_char",     stub_uprv_getICUData),

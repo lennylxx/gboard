@@ -19,6 +19,7 @@
 #include <time.h>
 #include <unistd.h>
 #include <wchar.h>
+#include <xlocale.h>
 
 static int s_pass, s_fail;
 
@@ -738,6 +739,76 @@ static void test_errno_wrappers(void) {
     CHECK(strcmp(buf, "Operation timed out") == 0);
 }
 
+// strtold_l returns Linux binary128 in q0.
+typedef uint64_t QuadBits __attribute__((vector_size(16)));
+static void test_strtold(void) {
+    QuadBits (*strtold_l_)(const char *, char **, locale_t) = sym("strtold_l");
+    locale_t loc = newlocale(LC_ALL_MASK, "C", NULL);
+    char *end = NULL;
+    QuadBits q = strtold_l_("2.5x", &end, loc);
+    CHECK(q[1] == 0x4000400000000000ULL && q[0] == 0 && *end == 'x');
+    q = strtold_l_("-1", NULL, loc);
+    CHECK(q[1] == 0xbfff000000000000ULL && q[0] == 0);
+    q = strtold_l_("0.1", NULL, loc);  // double 0.1 widened exactly
+    CHECK(q[1] == 0x3ffb999999999999ULL && q[0] == 0xa000000000000000ULL);
+    q = strtold_l_("-0", NULL, loc);
+    CHECK(q[1] == 0x8000000000000000ULL && q[0] == 0);
+    q = strtold_l_("0x1p-1074", NULL, loc);  // double subnormal
+    CHECK(q[1] == ((uint64_t)(16383 - 1074) << 48) && q[0] == 0);
+    q = strtold_l_("inf", NULL, loc);
+    CHECK(q[1] == 0x7fff000000000000ULL && q[0] == 0);
+    q = strtold_l_("nan", NULL, loc);
+    CHECK((q[1] >> 48) == 0x7fff && (q[1] & 0xffffffffffffULL) != 0);
+    errno = 0;
+    strtold_l_("1e999", NULL, loc);
+    CHECK(errno == 34);  // ERANGE
+    freelocale(loc);
+}
+
+// Bionic stdin/stdout/stderr are FILE* variables, not FILE objects.
+static void test_stdio_vars(void) {
+    FILE **in = sym("stdin"), **out = sym("stdout"), **err = sym("stderr");
+    CHECK(*in && *out && *err);
+    CHECK(android_stubs_fixup_file(*in) == stdin);
+    CHECK(android_stubs_fixup_file(*out) == stdout);
+    CHECK(android_stubs_fixup_file(*err) == stderr);
+    CHECK(android_stubs_fixup_file(NULL) == NULL);  // fflush(NULL) flushes all
+    CHECK(STUB(int (*)(FILE *), "fflush")(NULL) == 0);
+
+    // Unshimmed-by-libc FILE functions accept the fake streams.
+    CHECK(STUB(int (*)(FILE *), "fileno")(*in) == 0);
+    CHECK(STUB(int (*)(FILE *), "fileno")(*err) == 2);
+    CHECK(STUB(int (*)(FILE *), "ferror")(*out) == 0);
+    STUB(void (*)(FILE *), "clearerr")(*out);
+
+    // Regular streams still work through the shims.
+    FILE *fp = tmpfile();
+    fputs("ab", fp);
+    STUB(void (*)(FILE *), "rewind")(fp);
+    CHECK(STUB(int (*)(FILE *), "getc")(fp) == 'a');
+    CHECK(STUB(int (*)(int, FILE *), "ungetc")('z', fp) == 'z');
+    char buf[8];
+    CHECK(STUB(char *(*)(char *, int, FILE *), "fgets")(buf, sizeof(buf), fp) == buf);
+    CHECK(strcmp(buf, "zb") == 0);
+    CHECK(STUB(int (*)(FILE *), "feof")(fp) != 0);
+    CHECK(STUB(long (*)(FILE *), "ftell")(fp) == 2);
+    errno = 0;
+    CHECK(STUB(int (*)(FILE *, long, int), "fseek")(fp, -1, SEEK_SET) == -1);
+    CHECK(errno == 22);
+    CHECK(STUB(int (*)(FILE *), "fclose")(fp) == 0);
+
+    // stdio shims translate errno: empty non-blocking pipe gives EAGAIN.
+    int fds[2];
+    CHECK(pipe(fds) == 0);
+    fcntl(fds[0], F_SETFL, O_NONBLOCK);
+    FILE *rp = fdopen(fds[0], "r");
+    errno = 0;
+    CHECK(STUB(size_t (*)(void *, size_t, size_t, FILE *), "fread")(buf, 1, 1, rp) == 0);
+    CHECK(errno == 11);
+    fclose(rp);
+    close(fds[1]);
+}
+
 // Cases adapted from PR #1's AAPCS64 bridge tests.
 static void test_printf_more(void) {
     // Both register classes overflow; stack order is L7, L8, L9, D9, D10.
@@ -883,6 +954,8 @@ int main(void) {
     test_printf();
     test_printf_more();
     test_errno_wrappers();
+    test_strtold();
+    test_stdio_vars();
     test_misc();
 
     rmdir(dir);
