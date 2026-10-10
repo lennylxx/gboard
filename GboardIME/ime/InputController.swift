@@ -315,7 +315,7 @@ class GboardInputController: IMKInputController, PinyinSessionDelegate {
 
     func sessionShowCandidates(
         _ candidates: [String],
-        pinyin: String,
+        pinyin: PinyinReading,
         selectedIndex: Int,
         canGoPrevious: Bool,
         canGoNext: Bool

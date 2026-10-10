@@ -116,6 +116,10 @@ const char *jni_get_string(jstring s) {
     if (o->kind != KIND_STRING) return "";
     return o->data;
 }
+void jni_release_string(jstring s) {
+    FakeObj *o = (FakeObj *)s;
+    if (o && o->kind == KIND_STRING) free(o);
+}
 jstring jni_new_string(JNIEnv *e, const char *s) {
     (void)e; if (!s) s = "";
     size_t n = strlen(s)+1;

@@ -428,7 +428,10 @@ int hmm_engine_get_segmented_pinyin(char *text, int max_bytes) {
             js = g_getTokenString(g_env, NULL, g_engine, token);
             CRASH_PROTECT_END("nativeGetTokenString")
             const char *token_text = js ? jni_get_string(js) : NULL;
-            if (!token_text || !token_text[0]) continue;
+            if (!token_text || !token_text[0]) {
+                jni_release_string(js);
+                continue;
+            }
 
             /* English tokens are single letters; keep a word contiguous. */
             int language = -1;
@@ -448,12 +451,71 @@ int hmm_engine_get_segmented_pinyin(char *text, int max_bytes) {
             int length = (int)strlen(token_text);
             if (length > available) length = available;
             memcpy(text + written, token_text, (size_t)length);
+            jni_release_string(js);
             written += length;
             text[written] = '\0';
             has_token = true;
         }
     }
     return written;
+}
+
+static void copy_token_text(char *dst, size_t max, jstring js) {
+    const char *src = js ? jni_get_string(js) : "";
+    size_t length = strlen(src);
+    if (length >= max) length = max - 1;
+    memcpy(dst, src, length);
+    dst[length] = '\0';
+    jni_release_string(js);
+}
+
+int hmm_engine_get_corrected_candidate_reading(int index,
+                                               HmmTokenReading *tokens,
+                                               int max_tokens) {
+    const HmmUserDictNatives *natives = hmm_get_user_dict_natives();
+    if (!tokens || max_tokens < 1 || !g_engine || !g_isCandidateCorrected ||
+        !g_getTokenString || !natives || !natives->getCandidateTokenCount ||
+        !natives->getCandidateToken) {
+        return 0;
+    }
+
+    volatile int filled = 0;
+    CRASH_PROTECT_BEGIN()
+    jint count = 0;
+    if (g_isCandidateCorrected(g_env, NULL, g_engine, (jint)index)) {
+        count = natives->getCandidateTokenCount(g_env, NULL, g_engine,
+                                                (jint)index);
+    }
+    if (count > 0 && count <= max_tokens) {
+        int i = 0;
+        for (; i < count; i++) {
+            jlong token = natives->getCandidateToken(g_env, NULL, g_engine,
+                                                     (jint)index, (jint)i);
+            if (!token) break;
+            HmmTokenReading *reading = &tokens[i];
+            copy_token_text(reading->raw, sizeof(reading->raw),
+                            g_getTokenString(g_env, NULL, g_engine, token));
+            if (!reading->raw[0]) break;
+            if (g_getTokenNormalizedString) {
+                copy_token_text(reading->normalized,
+                                sizeof(reading->normalized),
+                                g_getTokenNormalizedString(g_env, NULL,
+                                                           g_engine, token));
+            } else {
+                reading->normalized[0] = '\0';
+            }
+            if (!reading->normalized[0]) {
+                memcpy(reading->normalized, reading->raw,
+                       sizeof(reading->normalized));
+            }
+            reading->language = natives->getTokenLanguage
+                ? natives->getTokenLanguage(g_env, NULL, g_engine, token)
+                : -1;
+        }
+        if (i == count) filled = (int)count;
+    }
+    CRASH_PROTECT_END("corrected candidate reading")
+    return filled;
 }
 
 bool hmm_engine_select(int index) {

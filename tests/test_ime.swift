@@ -25,6 +25,7 @@ class MockDelegate: PinyinSessionDelegate {
     var committedText = ""
     var markedText: String? = nil
     var candidatePinyin: String? = nil
+    var candidateReading = PinyinReading.empty
     var shownCandidates: [String] = []
     var selectedIndex = -1
     var contextBeforeInput = ""
@@ -43,12 +44,13 @@ class MockDelegate: PinyinSessionDelegate {
     }
     func sessionShowCandidates(
         _ candidates: [String],
-        pinyin: String,
+        pinyin: PinyinReading,
         selectedIndex: Int,
         canGoPrevious: Bool,
         canGoNext: Bool
     ) {
-        candidatePinyin = pinyin
+        candidatePinyin = pinyin.text
+        candidateReading = pinyin
         shownCandidates = candidates
         self.selectedIndex = selectedIndex
     }
@@ -687,6 +689,112 @@ func testVisualPinyinSegmentation() {
           d.candidatePinyin == "xi'an")
 }
 
+func testCorrectionSpans() {
+    print("[test_correction_spans]")
+    func render(_ typed: String, _ corrected: String) -> String {
+        PinyinSession.correctionSpans(typed: typed, corrected: corrected).map {
+            $0.isTypo ? "[-\($0.text)]" : $0.isCorrected ? "[+\($0.text)]" : $0.text
+        }.joined()
+    }
+    check("extra letter is struck like Sogou cuu̸o", render("cuuo", "cuo") == "cu[-u]o")
+    check("missing letter is inserted", render("uo", "guo") == "[+g]uo")
+    check("transposition is one strike and one insert", render("hoa", "hao") == "h[-o]a[+o]")
+    check("substitution strikes then inserts", render("xain", "xian") == "x[-a]i[+a]n")
+}
+
+func testCorrectedPinyinReading() {
+    print("[test_corrected_pinyin_reading]")
+    let (s, d) = makeSession()
+
+    for ch in "nihoa" { _ = s.appendLetter(String(ch)) }
+    check("nihoa corrects to 你好", s.candidates.first == "你好")
+    check("corrected reading shows ni'hao", d.candidatePinyin == "ni'hao")
+    check("only hao is highlighted",
+          d.candidateReading.hasCorrection)
+    check("nihoa strikes the extra o and inserts o: ni'ho̶ao",
+          d.candidateReading.displayText == "ni'hoao" &&
+          d.candidateReading.spans.filter(\.isTypo).map(\.text) == ["o"] &&
+          d.candidateReading.spans.filter(\.isCorrected).map(\.text) == ["o"])
+
+    s.cancel()
+    for ch in "zhonguo" { _ = s.appendLetter(String(ch)) }
+    check("zhonguo reading shows zhong'guo", d.candidatePinyin == "zhong'guo")
+    check("omitted g is highlighted with its syllable",
+          d.candidateReading.spans.filter(\.isCorrected).map(\.text) == ["g"])
+
+    s.cancel()
+    for ch in "nihoashijie" { _ = s.appendLetter(String(ch)) }
+    let partialIndex = s.candidates.firstIndex(of: "你好")
+    check("nihoashijie offers partial 你好", partialIndex != nil)
+    if let index = partialIndex {
+        while s.selectedIndex < index { _ = s.moveRight() }
+        check("partial corrected pick keeps remaining segmentation",
+              d.candidatePinyin == "ni'hao'shi'jie")
+    }
+
+    s.cancel()
+    for ch in "nihao" { _ = s.appendLetter(String(ch)) }
+    check("correct spelling has no highlight", !d.candidateReading.hasCorrection)
+    check("correct spelling keeps segmentation", d.candidatePinyin == "ni'hao")
+
+    s.cancel()
+    for ch in "nih" { _ = s.appendLetter(String(ch)) }
+    check("incomplete syllable is not a correction",
+          !d.candidateReading.hasCorrection && d.candidatePinyin == "ni'h")
+    s.cancel()
+
+    for ch in "nihoagithub" { _ = s.appendLetter(String(ch)) }
+    let mixedIndex = s.candidates.firstIndex { $0.hasPrefix("你好") && $0.count > 2 }
+    check("nihoagithub offers a mixed 你好 candidate", mixedIndex != nil)
+    if let index = mixedIndex {
+        while s.selectedIndex < index { _ = s.moveRight() }
+        check("corrected mixed reading joins English letters",
+              d.candidatePinyin == "ni'hao'github")
+        check("only the pinyin syllable is highlighted in mixed input",
+              d.candidateReading.hasCorrection)
+    }
+    s.cancel()
+
+    for ch in "ni" { _ = s.appendLetter(String(ch)) }
+    _ = s.handlePunctuation("'")
+    for ch in "hoa" { _ = s.appendLetter(String(ch)) }
+    check("user separator keeps corrected reading", d.candidatePinyin == "ni'hao")
+    _ = s.handlePunctuation("'")
+    check("trailing separator stays visible", d.candidatePinyin == "ni'hao'")
+    s.cancel()
+
+    d.contextBeforeInput = "我对这里很"
+    for ch in "nihoashijie" { _ = s.appendLetter(String(ch)) }
+    if let index = s.candidates.firstIndex(of: "你好") {
+        while s.selectedIndex < index { _ = s.moveRight() }
+        check("partial corrected pick with context keeps remainder",
+              d.candidatePinyin == "ni'hao'shi'jie")
+    } else {
+        check("nihoashijie with context offers partial 你好", false)
+    }
+    d.contextBeforeInput = ""
+    s.cancel()
+
+    // The engine caps corrected candidates (3 by default), and for nihoa they all
+    // rank on page 1, so page 2 must not reuse page 1's corrected readings
+    // (engine index = page * 9 + selection).
+    for ch in "nihoa" { _ = s.appendLetter(String(ch)) }
+    _ = s.nextPage()
+    check("nihoa has a second candidate page", s.candidatePage == 1)
+    for i in 0..<s.candidates.count {
+        while s.selectedIndex < i { _ = s.moveRight() }
+        let reading = d.candidateReading
+        if reading.hasCorrection {
+            check("page 2 corrected reading for \(s.candidates[i]) is ni'hao…",
+                  reading.text.hasPrefix("ni'hao"))
+        } else {
+            check("page 2 uncorrected reading for \(s.candidates[i]) is raw",
+                  reading.text == s.segmentedPinyin)
+        }
+    }
+    s.cancel()
+}
+
 func testContextLanguageScoring() {
     print("[test_context_language_scoring]")
     let (s, d) = makeSession()
@@ -1010,6 +1118,8 @@ func testPredictionEdgeCases() {
         testChinesePunctuation()
         testPunctuationWhileComposing()
         testVisualPinyinSegmentation()
+        testCorrectionSpans()
+testCorrectedPinyinReading()
         testSessionContextRetriever()
         testSessionContextFallback()
         testContextLanguageScoring()

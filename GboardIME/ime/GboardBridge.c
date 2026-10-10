@@ -29,6 +29,10 @@ int  gboard_get_candidate_consumed(int index)       { return hmm_engine_get_cand
 int  gboard_get_separator(int i)                    { return hmm_engine_get_separator(i); }
 bool gboard_set_separator(int i, int t)             { return hmm_engine_set_separator(i, t); }
 int  gboard_get_segmented_pinyin(char *text, int max) { return hmm_engine_get_segmented_pinyin(text, max); }
+int  gboard_get_corrected_candidate_reading(int index, HmmTokenReading *tokens,
+                                            int max_tokens) {
+    return hmm_engine_get_corrected_candidate_reading(index, tokens, max_tokens);
+}
 void gboard_reset(void)                             { hmm_engine_reset(); }
 void gboard_destroy(void)                           { hmm_engine_destroy(); }
 

@@ -12,7 +12,7 @@ private func bundledImage(_ name: String) -> NSImage? {
 
 struct CandidateView: View {
     let candidates: [String]
-    let pinyin: String
+    let pinyin: PinyinReading
     let selectedIndex: Int
     let canGoPrevious: Bool
     let canGoNext: Bool
@@ -21,12 +21,14 @@ struct CandidateView: View {
     let onNext: () -> Void
 
     // Gboard light theme colors
-    private let bgColor     = Color(red: 0.945, green: 0.953, blue: 0.961) // #F1F3F4
+    private let bgColor     = Color(red: 0.945, green: 0.953, blue: 0.957) // #F1F3F4
     private let keyColor    = Color.white
     private let labelColor  = Color(red: 0.259, green: 0.259, blue: 0.259) // #424242
-    private let accentColor = Color(red: 0.098, green: 0.451, blue: 0.910) // #1873E8
+    private let accentColor = Color(red: 0.102, green: 0.451, blue: 0.910) // #1A73E8
     private let divColor    = Color(red: 0.878, green: 0.878, blue: 0.878) // #E0E0E0
-    private let hintColor   = Color(red: 0.098, green: 0.451, blue: 0.910).opacity(0.7) // accent blue
+    private let hintColor   = Color(red: 0.102, green: 0.451, blue: 0.910).opacity(0.7) // accent blue
+    private let correctionColor = Color(red: 0.910, green: 0.443, blue: 0.039) // #E8710A
+    private let typoColor = Color(red: 0.604, green: 0.627, blue: 0.651) // #9AA0A6
     private let cornerRadius: CGFloat = 8
 
     var body: some View {
@@ -34,9 +36,8 @@ struct CandidateView: View {
             // Pinyin preedit strip (absent for next-word predictions)
             if !pinyin.isEmpty {
                 HStack(spacing: 6) {
-                    Text(pinyin)
+                    pinyinText
                         .font(.system(size: 13, weight: .medium))
-                        .foregroundColor(accentColor)
                     Spacer()
                 }
                 .padding(.horizontal, 12)
@@ -118,6 +119,20 @@ struct CandidateView: View {
         )
     }
 
+    /// Extra typed letters are struck out; inserted letters are highlighted.
+    private var pinyinText: Text {
+        pinyin.spans.reduce(Text("")) { text, span in
+            let piece = Text(span.text)
+            if span.isTypo {
+                return text + piece
+                    .strikethrough(true, color: correctionColor)
+                    .foregroundColor(typoColor)
+            }
+            return text + piece
+                .foregroundColor(span.isCorrected ? correctionColor : accentColor)
+        }
+    }
+
     private func pageButton(
         systemName: String,
         enabled: Bool,
@@ -146,7 +161,7 @@ class CandidateWindowController: NSObject {
 
     func update(
         candidates: [String],
-        pinyin: String,
+        pinyin: PinyinReading,
         selectedIndex: Int = 0,
         canGoPrevious: Bool,
         canGoNext: Bool,
@@ -165,7 +180,7 @@ class CandidateWindowController: NSObject {
             onPrevious: onPrevious,
             onNext: onNext
         )
-        let width = candidateWindowWidth(candidates: candidates, pinyin: pinyin)
+        let width = candidateWindowWidth(candidates: candidates, pinyin: pinyin.displayText)
         let height: CGFloat = pinyin.isEmpty ? 40 : 68
         if window == nil {
             let w = NSWindow(

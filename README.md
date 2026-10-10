@@ -27,6 +27,10 @@ A macOS input method that runs Gboard's native HMM Pinyin engine via a custom AR
   composition.
 - **Pinyin segmentation display** — Shows the engine's segment/token split,
   such as `fang'an`, and explicit apostrophe separators such as `xi'an`.
+- **Pinyin typo correction** — Uses Gboard's built-in corrector for swapped,
+  missing, or extra letters. For example, `nihoa` yields `你好` and
+  `zhonguo` yields `中国`. The Pinyin strip marks the fix: extra letters are
+  struck out and inserted letters are shown in orange.
 - **Chinese-English mixed input** — Offers English words inside Pinyin
   input using Gboard's English token and system dictionaries. For example,
   `woyaogithub` yields `我要GitHub` and `yongpythonxie` yields `用Python写`.

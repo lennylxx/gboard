@@ -1,5 +1,6 @@
 #pragma once
 #include <stdbool.h>
+#include "../engine/hmm_engine.h"
 
 bool  gboard_init(const char *so_path, const char *pack_dir);
 bool  gboard_init_with_user_data(const char *so_path, const char *pack_dir,
@@ -18,6 +19,9 @@ int   gboard_get_candidate_consumed(int index);
 int   gboard_get_separator(int vertex_index);
 bool  gboard_set_separator(int vertex_index, int type);
 int   gboard_get_segmented_pinyin(char *text, int max_bytes);
+int   gboard_get_corrected_candidate_reading(int index,
+                                             HmmTokenReading *tokens,
+                                             int max_tokens);
 void  gboard_reset(void);
 void  gboard_destroy(void);
 

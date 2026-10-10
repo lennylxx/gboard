@@ -74,6 +74,22 @@ bool hmm_engine_set_separator(int vertex_index, int separator_type);
 // Returns the number of UTF-8 bytes written, excluding the trailing NUL.
 int hmm_engine_get_segmented_pinyin(char *text, int max_bytes);
 
+enum { HMM_TOKEN_TEXT_MAX = 16, HMM_TOKEN_LANGUAGE_LATIN = 0 };
+
+typedef struct {
+    char raw[HMM_TOKEN_TEXT_MAX];         // typed spelling, e.g. "hoa"
+    char normalized[HMM_TOKEN_TEXT_MAX];  // corrected spelling, e.g. "hao"
+    int language;                         // HMM_TOKEN_LANGUAGE_LATIN for English
+} HmmTokenReading;
+
+// Fills the token readings of the candidate at index when the engine's pinyin
+// corrector produced it (e.g. "nihoa" -> 你好). Returns the token count, or 0
+// when the candidate is not corrected, has more than max_tokens tokens, or the
+// engine fails. Must be called after hmm_engine_get_candidates().
+int hmm_engine_get_corrected_candidate_reading(int index,
+                                               HmmTokenReading *tokens,
+                                               int max_tokens);
+
 // Reset / clear current composition without committing.
 void hmm_engine_reset(void);
 

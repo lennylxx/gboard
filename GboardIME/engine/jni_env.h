@@ -49,6 +49,9 @@ void     jni_env_destroy(JNIEnv *env);
 // Helper: unwrap a jstring back to C string (works with our fake strings)
 const char *jni_get_string(jstring s);
 jstring     jni_new_string(JNIEnv *env, const char *s);
+// Frees a fresh string a native returned to the host. The shim's
+// DeleteLocalRef is a no-op, so host-owned results must be released here.
+void        jni_release_string(jstring s);
 
 // JNI call helpers (avoid needing struct definition)
 jstring     jni_NewStringUTF(JNIEnv *e, const char *s);

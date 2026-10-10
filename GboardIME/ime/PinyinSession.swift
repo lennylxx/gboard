@@ -10,7 +10,7 @@ protocol PinyinSessionDelegate: AnyObject {
     func sessionSetMarkedText(_ text: String)
     func sessionShowCandidates(
         _ candidates: [String],
-        pinyin: String,
+        pinyin: PinyinReading,
         selectedIndex: Int,
         canGoPrevious: Bool,
         canGoNext: Bool
@@ -27,6 +27,32 @@ enum KeyResult {
     case handled        // IME consumed the key
     case passThrough    // let the system handle it
     case commitAndPass  // committed text, then pass key through
+}
+
+/// Pinyin shown above the candidates. Spans the engine's pinyin corrector
+/// rewrote (e.g. typed "hoa" shown as "hao") are flagged for highlighting.
+struct PinyinReading: Equatable {
+    struct Span: Equatable {
+        let text: String
+        let isCorrected: Bool
+        /// A typed letter the correction drops; shown struck out, not read.
+        var isTypo: Bool = false
+    }
+
+    var spans: [Span]
+
+    static let empty = PinyinReading(spans: [])
+
+    static func plain(_ text: String) -> PinyinReading {
+        PinyinReading(spans: text.isEmpty ? [] : [Span(text: text, isCorrected: false)])
+    }
+
+    /// The corrected reading, without struck-out letters.
+    var text: String { spans.filter { !$0.isTypo }.map(\.text).joined() }
+    /// Text as rendered, including struck-out letters.
+    var displayText: String { spans.map(\.text).joined() }
+    var isEmpty: Bool { spans.allSatisfy { $0.text.isEmpty } }
+    var hasCorrection: Bool { spans.contains { $0.isCorrected || $0.isTypo } }
 }
 
 class PinyinSession {
@@ -276,7 +302,7 @@ class PinyinSession {
     private func notifyPredictions() {
         delegate?.sessionShowCandidates(
             visiblePredictions,
-            pinyin: "",
+            pinyin: .empty,
             selectedIndex: 0,
             canGoPrevious: predictionPage > 0,
             canGoNext: (predictionPage + 1) * Self.candidatePageSize
@@ -565,15 +591,115 @@ class PinyinSession {
 
     private func notifyCandidates() {
         if candidates.isEmpty {
+            pinyinReading = .empty
             delegate?.sessionHideCandidates()
         } else {
+            pinyinReading = readingForSelectedCandidate()
             delegate?.sessionShowCandidates(
                 candidates,
-                pinyin: segmentedPinyin,
+                pinyin: pinyinReading,
                 selectedIndex: selectedIndex,
                 canGoPrevious: candidatePage > 0,
                 canGoNext: hasNextPage
             )
+        }
+    }
+
+    /// Reading shown in the candidate window for the selected candidate.
+    private(set) var pinyinReading = PinyinReading.empty
+
+    /// Uses the corrected token spellings when the engine's pinyin corrector
+    /// produced the selected candidate; otherwise the plain segmentation.
+    private func readingForSelectedCandidate() -> PinyinReading {
+        let fallback = PinyinReading.plain(segmentedPinyin)
+        guard selectedIndex < candidates.count else { return fallback }
+        let engineIndex = Int32(candidatePage * Self.candidatePageSize + selectedIndex)
+        let maxTokens = 64
+        var tokens = [HmmTokenReading](repeating: HmmTokenReading(), count: maxTokens)
+        let tokenCount = Int(gboard_get_corrected_candidate_reading(
+            engineIndex, &tokens, Int32(maxTokens)))
+        guard tokenCount > 0 else { return fallback }
+
+        var spans: [PinyinReading.Span] = []
+        var consumedLetters = 0
+        var previousLatin = false
+        for token in tokens.prefix(tokenCount) {
+            let typed = Self.tokenText(token.raw)
+            let corrected = Self.tokenText(token.normalized)
+            let isLatin = token.language == Int32(HMM_TOKEN_LANGUAGE_LATIN)
+            // English words arrive as single-letter tokens; keep them joined,
+            // matching hmm_engine_get_segmented_pinyin().
+            if !spans.isEmpty && !(isLatin && previousLatin) {
+                spans.append(.init(text: "'", isCorrected: false))
+            }
+            if isLatin || corrected.lowercased() == typed.lowercased() {
+                spans.append(.init(text: isLatin ? typed : corrected, isCorrected: false))
+            } else {
+                spans += Self.correctionSpans(typed: typed, corrected: corrected)
+            }
+            consumedLetters += typed.count
+            previousLatin = isLatin
+        }
+
+        // Keep the engine's segmentation for letters after this candidate.
+        var letters = 0
+        var rest = Substring(segmentedPinyin)
+        while letters < consumedLetters, let first = rest.first {
+            if first != "'" { letters += 1 }
+            rest = rest.dropFirst()
+        }
+        let remainder = rest.drop { $0 == "'" }
+        if !remainder.isEmpty {
+            spans.append(.init(text: "'" + remainder, isCorrected: false))
+        } else if rest.hasSuffix("'") {
+            spans.append(.init(text: "'", isCorrected: false))
+        }
+        return PinyinReading(spans: spans)
+    }
+
+    /// Marks the fewest letter edits from typed to corrected, like Sogou's
+    /// "cuu̸o": extra typed letters are struck out in place and missing
+    /// letters are inserted as corrections, e.g. "hoa" -> h o̶ a o.
+    static func correctionSpans(typed: String, corrected: String) -> [PinyinReading.Span] {
+        let a = Array(typed), b = Array(corrected)
+        let lower = { (c: Character) in c.lowercased() }
+        var lcs = [[Int]](repeating: [Int](repeating: 0, count: b.count + 1),
+                          count: a.count + 1)
+        for i in stride(from: a.count - 1, through: 0, by: -1) {
+            for j in stride(from: b.count - 1, through: 0, by: -1) {
+                lcs[i][j] = lower(a[i]) == lower(b[j])
+                    ? lcs[i + 1][j + 1] + 1
+                    : max(lcs[i + 1][j], lcs[i][j + 1])
+            }
+        }
+
+        var spans: [PinyinReading.Span] = []
+        func append(_ c: Character, corrected: Bool, typo: Bool) {
+            if let last = spans.last, last.isCorrected == corrected, last.isTypo == typo {
+                spans[spans.count - 1] = .init(text: last.text + String(c),
+                                               isCorrected: corrected, isTypo: typo)
+            } else {
+                spans.append(.init(text: String(c), isCorrected: corrected, isTypo: typo))
+            }
+        }
+        var i = 0, j = 0
+        while i < a.count || j < b.count {
+            if i < a.count, j < b.count, lower(a[i]) == lower(b[j]) {
+                append(b[j], corrected: false, typo: false); i += 1; j += 1
+            } else if i < a.count, j == b.count || lcs[i + 1][j] >= lcs[i][j + 1] {
+                append(a[i], corrected: false, typo: true); i += 1
+            } else {
+                append(b[j], corrected: true, typo: false); j += 1
+            }
+        }
+        return spans
+    }
+
+    private static func tokenText<T>(_ tuple: T) -> String {
+        withUnsafeBytes(of: tuple) { bytes in
+            let chars = bytes.bindMemory(to: CChar.self)
+            let length = chars.firstIndex(of: 0) ?? chars.count
+            return String(decoding: bytes.prefix(length), as: UTF8.self)
         }
     }
 }
