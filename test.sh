@@ -47,7 +47,11 @@ echo ""
 echo "═══ Building test_ime (Swift) ═══"
 swiftc -g -parse-as-library -o "$TEST_DIR/test_ime" \
     "$TEST_DIR/test_ime.swift" \
+    "$TEST_DIR/test_preferences.swift" \
     "GboardIME/ime/PinyinSession.swift" \
+    "GboardIME/ime/PinyinReading.swift" \
+    "GboardIME/ime/Preferences.swift" \
+    "GboardIME/ime/ShiftToggleTracker.swift" \
     "GboardIME/ime/SessionContextRetriever.swift" \
     "GboardIME/ime/CandidateWindow.swift" \
     "GboardIME/ime/GboardBridge.c" \

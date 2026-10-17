@@ -3,6 +3,14 @@ import Cocoa
 /// Tracks bare-Shift key presses to determine when to toggle Chinese/English mode.
 /// A "bare Shift" is when Shift is pressed and released without any other key in between.
 class ShiftToggleTracker {
+    var isEnabled = true {
+        didSet {
+            if !isEnabled {
+                trackedShiftKeyCode = nil
+                shiftKeyUsedWithOtherKey = false
+            }
+        }
+    }
 
     enum Result {
         case none
@@ -13,6 +21,7 @@ class ShiftToggleTracker {
     private var shiftKeyUsedWithOtherKey = false
 
     func handleFlagsChanged(keyCode: UInt16, modifierFlags: NSEvent.ModifierFlags) -> Result {
+        guard isEnabled else { return .none }
         guard isShiftKey(keyCode) else { return .none }
 
         if modifierFlags.contains(.shift) {
@@ -24,6 +33,7 @@ class ShiftToggleTracker {
     }
 
     func handleKeyDown(keyCode: UInt16, modifierFlags: NSEvent.ModifierFlags) {
+        guard isEnabled else { return }
         if isShiftKey(keyCode) {
             startTrackingShift(keyCode)
             return
@@ -35,6 +45,7 @@ class ShiftToggleTracker {
     }
 
     func handleKeyUp(keyCode: UInt16) -> Result {
+        guard isEnabled else { return .none }
         guard isShiftKey(keyCode) else { return .none }
         return finishTrackingShift()
     }

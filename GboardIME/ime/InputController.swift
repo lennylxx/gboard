@@ -15,6 +15,7 @@ class GboardInputController: IMKInputController, PinyinSessionDelegate {
     /// true = Chinese input, false = English passthrough
     private var chineseMode = true
     private var shiftTracker = ShiftToggleTracker()
+    private var preferencesObserver: NSObjectProtocol?
 
     /// Periodic user dictionary persistence (every 4 hours)
     private static var persistTimer: Timer?
@@ -26,7 +27,27 @@ class GboardInputController: IMKInputController, PinyinSessionDelegate {
         super.init(server: server, delegate: delegate, client: client)
         session.delegate = self
         Self.initEngineOnce()
+        shiftTracker.isEnabled = Preferences.shared.shiftToggleEnabled
+        preferencesObserver = NotificationCenter.default.addObserver(
+            forName: Preferences.didChangeNotification,
+            object: Preferences.shared, queue: nil
+        ) { [weak self] _ in
+            guard let self = self else { return }
+            self.shiftTracker.isEnabled = Preferences.shared.shiftToggleEnabled
+            if !Preferences.shared.shiftToggleEnabled {
+                self.chineseMode = true
+            }
+            if !Preferences.shared.contextEnabled {
+                self.contextTracker.invalidate()
+            }
+        }
         imeLog("InputController init — server=\(String(describing: server))")
+    }
+
+    deinit {
+        if let observer = preferencesObserver {
+            NotificationCenter.default.removeObserver(observer)
+        }
     }
 
     private static func initEngineOnce() {
@@ -230,6 +251,7 @@ class GboardInputController: IMKInputController, PinyinSessionDelegate {
     private var clientTracker = SessionClientTracker()
 
     func sessionContextBeforeInput() -> String {
+        guard Preferences.shared.contextEnabled else { return "" }
         let clientContext: String?
         var inputContext: SessionInputContext?
         var selection = NSRange(location: NSNotFound, length: 0)
@@ -270,12 +292,15 @@ class GboardInputController: IMKInputController, PinyinSessionDelegate {
         if let client = currentClient as? IMKTextInput {
             client.insertText(text,
                               replacementRange: NSRange(location: NSNotFound, length: 0))
-            contextTracker.recordInsertedText(text)
-            updateNativeInputContext(from: client)
+            if Preferences.shared.contextEnabled {
+                contextTracker.recordInsertedText(text)
+                updateNativeInputContext(from: client)
+            }
         }
     }
 
     private func updateNativeInputContext(from client: IMKTextInput) {
+        guard Preferences.shared.contextEnabled else { return }
         let selection = client.selectedRange()
         guard let context = SessionContextRetriever.retrieveInputContext(
             selection: selection,
@@ -382,6 +407,24 @@ class GboardInputController: IMKInputController, PinyinSessionDelegate {
     }
 
     // ── IMKit required ─────────────────────────────────────────────────────
+
+    override func menu() -> NSMenu! {
+        let menu = NSMenu(title: "GboardIME")
+        menu.autoenablesItems = false
+        let settingsItem = NSMenuItem(
+            title: "设置…",
+            action: #selector(showPreferences(_:)),
+            keyEquivalent: ""
+        )
+        settingsItem.target = self
+        menu.addItem(settingsItem)
+        imeLog("Settings menu requested: \(menu.numberOfItems) item(s)")
+        return menu
+    }
+
+    override func showPreferences(_ sender: Any!) {
+        SettingsWindowController.shared.show()
+    }
 
     override func commitComposition(_ sender: Any!) {
         switchClient(to: sender)

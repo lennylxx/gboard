@@ -67,8 +67,12 @@ class MockDelegate: PinyinSessionDelegate {
 
 // ── Helper: create a fresh session with mock delegate ────────────────────────
 
-func makeSession() -> (PinyinSession, MockDelegate) {
-    let session = PinyinSession()
+private let baselinePreferences = Preferences(defaults: UserDefaults(
+    suiteName: "com.lennylxx.GboardIME.tests.baseline.\(UUID().uuidString)"
+)!)
+
+func makeSession(preferences: Preferences? = nil) -> (PinyinSession, MockDelegate) {
+    let session = PinyinSession(preferences: preferences ?? baselinePreferences)
     let mock = MockDelegate()
     session.delegate = mock
     return (session, mock)
@@ -1126,6 +1130,13 @@ testCorrectedPinyinReading()
         testContinuousPhraseLanguageScoring()
         testNextWordPrediction()
         testPredictionEdgeCases()
+        testPreferencesStorage()
+        testPreferenceSessionUpdates()
+        testContextPreference()
+        testCandidatePageSizePreference()
+        testCorrectionStylePreference()
+        testShiftTogglePreference()
+        testPinyinTextAttributes()
 
         print("\n══════════════════════════════════")
         print("Results: \(gPass) passed, \(gFail) failed")

@@ -27,8 +27,6 @@ struct CandidateView: View {
     private let accentColor = Color(red: 0.102, green: 0.451, blue: 0.910) // #1A73E8
     private let divColor    = Color(red: 0.878, green: 0.878, blue: 0.878) // #E0E0E0
     private let hintColor   = Color(red: 0.102, green: 0.451, blue: 0.910).opacity(0.7) // accent blue
-    private let correctionColor = Color(red: 0.910, green: 0.443, blue: 0.039) // #E8710A
-    private let typoColor = Color(red: 0.604, green: 0.627, blue: 0.651) // #9AA0A6
     private let cornerRadius: CGFloat = 8
 
     var body: some View {
@@ -36,8 +34,7 @@ struct CandidateView: View {
             // Pinyin preedit strip (absent for next-word predictions)
             if !pinyin.isEmpty {
                 HStack(spacing: 6) {
-                    pinyinText
-                        .font(.system(size: 13, weight: .medium))
+                    Text(pinyin.attributedText)
                     Spacer()
                 }
                 .padding(.horizontal, 12)
@@ -117,20 +114,6 @@ struct CandidateView: View {
             RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
                 .strokeBorder(divColor, lineWidth: 1)
         )
-    }
-
-    /// Extra typed letters are struck out; inserted letters are highlighted.
-    private var pinyinText: Text {
-        pinyin.spans.reduce(Text("")) { text, span in
-            let piece = Text(span.text)
-            if span.isTypo {
-                return text + piece
-                    .strikethrough(true, color: correctionColor)
-                    .foregroundColor(typoColor)
-            }
-            return text + piece
-                .foregroundColor(span.isCorrected ? correctionColor : accentColor)
-        }
     }
 
     private func pageButton(
@@ -223,7 +206,7 @@ class CandidateWindowController: NSObject {
             + CGFloat(candidates.count)
             + 38
         let pinyinWidth = (pinyin as NSString).size(withAttributes: [
-            .font: NSFont.systemFont(ofSize: 13, weight: .medium)
+            .font: PinyinReading.displayNSFont
         ]).width + 24
         let contentWidth = ceil(max(120, max(rowWidth, pinyinWidth)))
         let screenWidth = NSScreen.main?.visibleFrame.width ?? contentWidth

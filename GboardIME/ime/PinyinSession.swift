@@ -29,34 +29,60 @@ enum KeyResult {
     case commitAndPass  // committed text, then pass key through
 }
 
-/// Pinyin shown above the candidates. Spans the engine's pinyin corrector
-/// rewrote (e.g. typed "hoa" shown as "hao") are flagged for highlighting.
-struct PinyinReading: Equatable {
-    struct Span: Equatable {
-        let text: String
-        let isCorrected: Bool
-        /// A typed letter the correction drops; shown struck out, not read.
-        var isTypo: Bool = false
-    }
-
-    var spans: [Span]
-
-    static let empty = PinyinReading(spans: [])
-
-    static func plain(_ text: String) -> PinyinReading {
-        PinyinReading(spans: text.isEmpty ? [] : [Span(text: text, isCorrected: false)])
-    }
-
-    /// The corrected reading, without struck-out letters.
-    var text: String { spans.filter { !$0.isTypo }.map(\.text).joined() }
-    /// Text as rendered, including struck-out letters.
-    var displayText: String { spans.map(\.text).joined() }
-    var isEmpty: Bool { spans.allSatisfy { $0.text.isEmpty } }
-    var hasCorrection: Bool { spans.contains { $0.isCorrected || $0.isTypo } }
-}
-
 class PinyinSession {
-    private static let candidatePageSize = 9
+    private let preferences: Preferences
+    private var preferencesObserver: NSObjectProtocol?
+    private var candidatePageSize: Int
+    private var contextEnabled: Bool
+
+    init(preferences: Preferences = .shared) {
+        self.preferences = preferences
+        candidatePageSize = preferences.candidatePageSize.rawValue
+        contextEnabled = preferences.contextEnabled
+        preferencesObserver = NotificationCenter.default.addObserver(
+            forName: Preferences.didChangeNotification, object: preferences, queue: nil
+        ) { [weak self] _ in
+            self?.preferencesDidChange()
+        }
+    }
+
+    deinit {
+        if let observer = preferencesObserver {
+            NotificationCenter.default.removeObserver(observer)
+        }
+    }
+
+    private func preferencesDidChange() {
+        let pageSizeChanged = candidatePageSize != preferences.candidatePageSize.rawValue
+        candidatePageSize = preferences.candidatePageSize.rawValue
+        let contextChanged = contextEnabled != preferences.contextEnabled
+        contextEnabled = preferences.contextEnabled
+
+        if contextChanged {
+            contextBeforeInput = ""
+            predictionContext = ""
+            dismissPredictions()
+            if !contextEnabled {
+                _ = gboard_update_input_context("", "", "")
+            }
+        }
+        if !preferences.predictionsEnabled {
+            dismissPredictions()
+        }
+        if isComposing {
+            if contextChanged {
+                fetchCandidates()
+            } else if pageSizeChanged {
+                candidatePage = 0
+                fillCandidatePage()
+            } else {
+                notifyCandidates()
+            }
+        } else if isPredicting && pageSizeChanged {
+            predictionPage = 0
+            notifyPredictions()
+        }
+    }
 
     private(set) var composition = ""
     private(set) var candidates: [String] = []
@@ -73,9 +99,9 @@ class PinyinSession {
 
     /// Predictions on the current page, selectable with 1-9.
     var visiblePredictions: [String] {
-        let start = predictionPage * Self.candidatePageSize
+        let start = predictionPage * candidatePageSize
         guard start < predictions.count else { return [] }
-        let end = min(start + Self.candidatePageSize, predictions.count)
+        let end = min(start + candidatePageSize, predictions.count)
         return Array(predictions[start..<end])
     }
 
@@ -111,7 +137,8 @@ class PinyinSession {
     func appendLetter(_ ch: String) -> KeyResult {
         if composition.isEmpty {
             dismissPredictions()
-            contextBeforeInput = delegate?.sessionContextBeforeInput() ?? ""
+            contextBeforeInput = preferences.contextEnabled
+                ? delegate?.sessionContextBeforeInput() ?? "" : ""
         }
         composition += ch
         fetchCandidates()
@@ -169,7 +196,7 @@ class PinyinSession {
         let text = candidates[index]
 
         // Get the vertex range BEFORE selecting (like Android does)
-        let engineIndex = candidatePage * Self.candidatePageSize + index
+        let engineIndex = candidatePage * candidatePageSize + index
         let consumed = Int(gboard_get_candidate_consumed(Int32(engineIndex)))
 
         // Capture this segment before selection mutates the engine state.
@@ -233,6 +260,7 @@ class PinyinSession {
             return result
         }
         guard !composition.isEmpty else { return .passThrough }
+        guard n <= candidates.count else { return .handled }
         return selectCandidate(index: n - 1)
     }
 
@@ -268,7 +296,7 @@ class PinyinSession {
 
     func nextPredictionPage() {
         guard isPredicting,
-              (predictionPage + 1) * Self.candidatePageSize < predictions.count
+              (predictionPage + 1) * candidatePageSize < predictions.count
         else { return }
         predictionPage += 1
         notifyPredictions()
@@ -284,7 +312,7 @@ class PinyinSession {
                 delegate?.sessionHideCandidates()
             }
         }
-        guard !context.isEmpty else { return }
+        guard preferences.predictionsEnabled, !context.isEmpty else { return }
 
         context.withCString { _ = gboard_set_context($0) }
         let maxCount = Self.maxPredictions
@@ -305,7 +333,7 @@ class PinyinSession {
             pinyin: .empty,
             selectedIndex: 0,
             canGoPrevious: predictionPage > 0,
-            canGoNext: (predictionPage + 1) * Self.candidatePageSize
+            canGoNext: (predictionPage + 1) * candidatePageSize
                 < predictions.count
         )
     }
@@ -570,9 +598,9 @@ class PinyinSession {
     }
 
     private func fillCandidatePage() {
-        let maxCount = Self.candidatePageSize + 1
+        let maxCount = candidatePageSize + 1
         var bufs = [UnsafeMutablePointer<CChar>?](repeating: nil, count: maxCount)
-        let offset = candidatePage * Self.candidatePageSize
+        let offset = candidatePage * candidatePageSize
         let count = Int(gboard_get_candidates_page(&bufs, Int32(offset), Int32(maxCount)))
 
         var results: [String] = []
@@ -582,8 +610,8 @@ class PinyinSession {
             }
         }
 
-        hasNextPage = results.count > Self.candidatePageSize
-        candidates = Array(results.prefix(Self.candidatePageSize))
+        hasNextPage = results.count > candidatePageSize
+        candidates = Array(results.prefix(candidatePageSize))
         selectedIndex = 0
         updateSegmentation()
         notifyCandidates()
@@ -597,7 +625,7 @@ class PinyinSession {
             pinyinReading = readingForSelectedCandidate()
             delegate?.sessionShowCandidates(
                 candidates,
-                pinyin: pinyinReading,
+                pinyin: pinyinReading.styled(preferences.correctionStyle),
                 selectedIndex: selectedIndex,
                 canGoPrevious: candidatePage > 0,
                 canGoNext: hasNextPage
@@ -613,7 +641,7 @@ class PinyinSession {
     private func readingForSelectedCandidate() -> PinyinReading {
         let fallback = PinyinReading.plain(segmentedPinyin)
         guard selectedIndex < candidates.count else { return fallback }
-        let engineIndex = Int32(candidatePage * Self.candidatePageSize + selectedIndex)
+        let engineIndex = Int32(candidatePage * candidatePageSize + selectedIndex)
         let maxTokens = 64
         var tokens = [HmmTokenReading](repeating: HmmTokenReading(), count: maxTokens)
         let tokenCount = Int(gboard_get_corrected_candidate_reading(

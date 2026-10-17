@@ -103,6 +103,9 @@ clean       Remove build artifacts
 
 Switch to GboardIME from the menu bar input source picker, then type pinyin.
 
+Choose **设置…** (Settings) in the input method menu to open the settings
+window; changes are saved automatically.
+
 | Key | Action |
 |-----|--------|
 | a-z | Append to pinyin composition |
