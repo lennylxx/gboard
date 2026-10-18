@@ -959,6 +959,51 @@ static void test_user_dict_persist_and_reload(const char *executable,
     child_ok = pid > 0 && waitpid(pid, &status, 0) == pid &&
                WIFEXITED(status) && WEXITSTATUS(status) == 0;
     check("fresh process reloads learned English ranking", child_ok);
+    // Clearing removes both dictionaries' data and stale copies on disk.
+    for (int i = 0; i < 5; i++) {
+        hmm_user_dict_learn(tokens, types, 2, "车时", true);
+        hmm_user_dict_learn(english_tokens, english_types, 6, "GITHUB", true);
+    }
+    FILE *stale = fopen("tests/test_user_data/user_dict_3_3_bak", "wb");
+    if (stale) { fputs("stale", stale); fclose(stale); }
+    stale = fopen("tests/test_user_data/user_dict_3_3_english_tmp", "wb");
+    if (stale) { fputs("stale", stale); fclose(stale); }
+    check("clear after reload succeeds", hmm_user_dict_clear());
+    check("clear empties Chinese and English dictionaries",
+          hmm_user_dict_get_size() == 0);
+    check("clear removes Chinese backup",
+          access("tests/test_user_data/user_dict_3_3_bak", F_OK) != 0);
+    check("clear removes Chinese temp",
+          access("tests/test_user_data/user_dict_3_3_tmp", F_OK) != 0);
+    check("clear removes English backup",
+          access("tests/test_user_data/user_dict_3_3_english_bak", F_OK) != 0);
+    check("clear removes English temp",
+          access("tests/test_user_data/user_dict_3_3_english_tmp", F_OK) != 0);
+
+    pid = fork();
+    if (pid == 0) {
+        execl(executable, executable, "--verify-user-dict-empty", so, pack,
+              "tests/test_user_data", NULL);
+        _exit(127);
+    }
+    status = 0;
+    child_ok = pid > 0 && waitpid(pid, &status, 0) == pid &&
+               WIFEXITED(status) && WEXITSTATUS(status) == 0;
+    check("fresh process reloads empty dictionaries after clear", child_ok);
+
+    // Saving after clear must keep the dictionaries empty across reloads.
+    check("persist after clear succeeds", hmm_user_dict_persist());
+    pid = fork();
+    if (pid == 0) {
+        execl(executable, executable, "--verify-user-dict-empty", so, pack,
+              "tests/test_user_data", NULL);
+        _exit(127);
+    }
+    status = 0;
+    child_ok = pid > 0 && waitpid(pid, &status, 0) == pid &&
+               WIFEXITED(status) && WEXITSTATUS(status) == 0;
+    check("fresh process stays empty after clear and persist", child_ok);
+
     unlink(english_path);
     unlink("tests/test_user_data/user_dict_3_3_english_bak");
     unlink("tests/test_user_data/user_dict_3_3_english_tmp");
@@ -1116,6 +1161,13 @@ int main(int argc, char **argv) {
         int max_position = atoi(argv[8]);
         hmm_engine_destroy();
         return position >= 0 && position <= max_position ? 0 : 3;
+    }
+    if (argc == 5 && strcmp(argv[1], "--verify-user-dict-empty") == 0) {
+        if (!hmm_engine_init_with_user_data(argv[2], argv[3], argv[4]))
+            return 2;
+        int size = hmm_user_dict_get_size();
+        hmm_engine_destroy();
+        return size == 0 ? 0 : 3;
     }
     if (argc == 8 && strcmp(argv[1], "--verify-user-dict") == 0) {
         if (!hmm_engine_init_with_user_data(argv[2], argv[3], argv[4]))

@@ -15,9 +15,12 @@ func testPreferencesStorage() {
     withTestPreferences { preferences, defaults in
         check("preferences preserve enabled defaults",
               preferences.predictionsEnabled && preferences.contextEnabled &&
-              preferences.shiftToggleEnabled)
+              preferences.shiftToggleEnabled && preferences.pinyinDisplayMode == .candidateWindow &&
+              preferences.learningEnabled)
         check("preferences preserve page and correction defaults",
               preferences.candidatePageSize == .nine && preferences.correctionStyle == .edits)
+        check("user dictionary keeps the four-hour default",
+              preferences.userDictionarySaveInterval == .fourHours)
 
         var notifications = 0
         let observer = NotificationCenter.default.addObserver(
@@ -29,12 +32,28 @@ func testPreferencesStorage() {
         preferences.shiftToggleEnabled = false
         preferences.correctionStyle = .color
         preferences.candidatePageSize = .five
-        check("each preference change notifies synchronously", notifications == 5)
+        preferences.pinyinDisplayMode = .hidden
+        preferences.learningEnabled = false
+        preferences.userDictionarySaveInterval = .fifteenMinutes
+        check("each preference change notifies synchronously", notifications == 8)
 
         let restored = Preferences(defaults: defaults)
         check("disabled switches persist",
               !restored.predictionsEnabled && !restored.contextEnabled &&
-              !restored.shiftToggleEnabled)
+              !restored.shiftToggleEnabled && restored.pinyinDisplayMode == .hidden &&
+              !restored.learningEnabled)
+        check("user dictionary interval persists",
+              restored.userDictionarySaveInterval == .fifteenMinutes)
+        for mode in PinyinDisplayMode.allCases {
+            restored.pinyinDisplayMode = mode
+            check("\(mode.rawValue) display mode persists",
+                  Preferences(defaults: defaults).pinyinDisplayMode == mode)
+        }
+        for interval in UserDictionarySaveInterval.allCases {
+            restored.userDictionarySaveInterval = interval
+            check("\(interval.title) interval persists",
+                  Preferences(defaults: defaults).userDictionarySaveInterval == interval)
+        }
         check("page size and correction style persist",
               restored.candidatePageSize == .five && restored.correctionStyle == .color)
         restored.correctionStyle = .hidden
@@ -43,9 +62,281 @@ func testPreferencesStorage() {
 
         defaults.set(100, forKey: "candidatePageSize")
         defaults.set("invalid", forKey: "correctionStyle")
+        defaults.set(-1, forKey: "userDictionarySaveInterval")
+        defaults.set("invalid", forKey: "pinyinDisplayMode")
         let recovered = Preferences(defaults: defaults)
         check("unrecognized stored options use supported defaults",
-              recovered.candidatePageSize == .nine && recovered.correctionStyle == .edits)
+              recovered.candidatePageSize == .nine && recovered.correctionStyle == .edits &&
+              recovered.userDictionarySaveInterval == .fourHours &&
+              recovered.pinyinDisplayMode == .candidateWindow)
+    }
+}
+
+func testPinyinDisplayModePreference() {
+    print("[test_pinyin_display_mode_preference]")
+    withTestPreferences { preferences, _ in
+        let (session, delegate) = makeSession(preferences: preferences)
+        for ch in "nihoa" { _ = session.appendLetter(String(ch)) }
+        let candidates = session.candidates
+        let markedText = delegate.markedText
+        let reading = delegate.candidateReading
+        check("pinyin bar is visible by default", !reading.isEmpty)
+        let originalMarkedUpdates = delegate.markedTextUpdateCount
+        preferences.pinyinDisplayMode = .hidden
+        check("hiding pinyin immediately removes only the strip",
+              delegate.candidateReading.isEmpty &&
+              delegate.shownCandidates == candidates && delegate.markedText == markedText)
+        check("switching display mode immediately updates the client's marked text",
+              delegate.markedTextUpdateCount == originalMarkedUpdates + 1)
+        let markedRect = NSRect(x: 520, y: 420, width: 1, height: 20)
+        let staleAnchor = NSRect(x: 20, y: 20, width: 1, height: 20)
+        var caretRequested = false
+        let anchor = CandidateWindowController.anchorRect(
+            isPrediction: session.isPredicting,
+            caretRect: { caretRequested = true; return .zero },
+            markedTextRect: { markedRect },
+            previousAnchor: staleAnchor)
+        check("hidden pinyin still anchors composition at marked text, not a stale corner",
+              anchor == markedRect && !caretRequested)
+        preferences.correctionStyle = .color
+        check("changing correction style does not reveal a hidden strip",
+              delegate.candidateReading.isEmpty)
+        preferences.pinyinDisplayMode = .inline
+        check("native inline mode hides the duplicate candidate strip",
+              delegate.candidateReading.isEmpty && delegate.shownCandidates == candidates &&
+              delegate.markedText == session.segmentedPinyin && !session.isPredicting)
+        check("native inline mode supplies visible text to the actual client",
+              preferences.pinyinDisplayMode.markedText(for: session.segmentedPinyin)
+                  == session.segmentedPinyin)
+        preferences.pinyinDisplayMode = .candidateWindow
+        check("showing pinyin restores the current correction style",
+              !delegate.candidateReading.isEmpty &&
+              !delegate.candidateReading.spans.contains(where: \.isTypo))
+        preferences.pinyinDisplayMode = .inline
+        _ = session.selectCurrent()
+        check("inline pinyin does not duplicate committed text", delegate.committedText == "你好")
+        check("prediction windows still have no pinyin bar", delegate.candidateReading.isEmpty)
+        session.dismissPredictions()
+        session.cancel()
+        check("cancelling clears native marked text", delegate.markedText == nil)
+        let idleMarkedUpdates = delegate.markedTextUpdateCount
+        for mode in PinyinDisplayMode.allCases {
+            preferences.pinyinDisplayMode = mode
+            check("\(mode.rawValue) clears rather than inserts empty marked text",
+                  mode.markedText(for: "").isEmpty)
+            check("\(mode.rawValue) preserves the composition anchor when text is invisible",
+                  mode == .inline || mode.markedText(for: "ni'hao") == "\u{200B}")
+            session.showPredictions(context: "生日快")
+            check("\(mode.rawValue) predictions never show a pinyin strip",
+                  session.isPredicting && delegate.candidateReading.isEmpty)
+            session.dismissPredictions()
+        }
+        check("changing display mode while idle does not insert marked text",
+              delegate.markedTextUpdateCount == idleMarkedUpdates)
+    }
+}
+
+func testPinyinDisplayModeMigration() {
+    print("[test_pinyin_display_mode_migration]")
+    withTestPreferences { _, defaults in
+        defaults.set(false, forKey: "pinyinBarEnabled")
+        let hidden = Preferences(defaults: defaults)
+        check("legacy disabled pinyin remains hidden", hidden.pinyinDisplayMode == .hidden)
+        hidden.pinyinDisplayMode = .inline
+        check("new inline selection overrides the old disabled switch",
+              Preferences(defaults: defaults).pinyinDisplayMode == .inline)
+        defaults.removeObject(forKey: "pinyinDisplayMode")
+        defaults.set(true, forKey: "pinyinBarEnabled")
+        check("legacy enabled pinyin remains in the candidate window",
+              Preferences(defaults: defaults).pinyinDisplayMode == .candidateWindow)
+    }
+}
+
+func testNativeMarkedTextPresentation() {
+    print("[test_native_marked_text_presentation]")
+    let editor = NSTextView(frame: NSRect(x: 0, y: 0, width: 400, height: 100))
+    let prefix = "前文🧩 "
+    editor.string = prefix
+    editor.setSelectedRange(NSRange(location: prefix.utf16.count, length: 0))
+
+    func update(_ mode: PinyinDisplayMode, _ pinyin: String) {
+        let text = mode.markedText(for: pinyin)
+        editor.setMarkedText(
+            NSAttributedString(string: text),
+            selectedRange: NSRange(location: text.utf16.count, length: 0),
+            replacementRange: NSRange(location: NSNotFound, length: 0))
+    }
+
+    update(.inline, "ni'hao")
+    check("native marked text is visible inside the editor",
+          editor.string == prefix + "ni'hao" && editor.hasMarkedText())
+    update(.inline, "ni'hao'ma")
+    check("updating native marked text replaces rather than appends",
+          editor.string == prefix + "ni'hao'ma")
+    update(.hidden, "ni'hao'ma")
+    check("switching to hidden removes visible text without committing",
+          editor.string == prefix + "\u{200B}" && editor.hasMarkedText())
+    update(.candidateWindow, "ni'hao'ma")
+    check("candidate-window mode keeps only an invisible native anchor",
+          editor.string == prefix + "\u{200B}")
+    update(.inline, "ni'hao")
+    editor.insertText("你好", replacementRange: NSRange(location: NSNotFound, length: 0))
+    check("candidate selection replaces native pinyin exactly once",
+          editor.string == prefix + "你好" && !editor.hasMarkedText())
+    update(.inline, "shi")
+    update(.inline, "")
+    check("cancelling native marked text preserves previously committed text",
+          editor.string == prefix + "你好" && !editor.hasMarkedText())
+}
+
+func testLearningPreference() {
+    print("[test_learning_preference]")
+    withTestPreferences { preferences, _ in
+        preferences.predictionsEnabled = false
+        preferences.contextEnabled = false
+        check("learning preference test starts with an empty dictionary",
+              gboard_user_dict_clear() && gboard_user_dict_get_size() == 0)
+
+        func selectPhrase(_ afterFirstSegment: () -> Void = {}) {
+            let (session, delegate) = makeSession(preferences: preferences)
+            for ch in "ceshi" { _ = session.appendLetter(String(ch)) }
+            check("learning test selects its first segment",
+                  selectCandidate("侧", in: session) && session.composition == "shi")
+            afterFirstSegment()
+            check("learning test completes its phrase",
+                  selectCandidate("试", in: session) && delegate.committedText == "侧试")
+            session.cancel()
+        }
+
+        preferences.learningEnabled = false
+        for _ in 0..<3 { selectPhrase() }
+        check("disabled learning does not add selected phrases",
+              gboard_user_dict_get_size() == 0)
+        preferences.learningEnabled = true
+        selectPhrase()
+        check("reenabled learning records new phrases", gboard_user_dict_get_size() > 0)
+        let learnedSize = gboard_user_dict_get_size()
+        preferences.learningEnabled = false
+        check("disabling learning retains existing learned data",
+              gboard_user_dict_get_size() == learnedSize)
+
+        check("mid-composition test resets learning data", gboard_user_dict_clear())
+        preferences.learningEnabled = true
+        selectPhrase {
+            preferences.learningEnabled = false
+            preferences.learningEnabled = true
+        }
+        check("reenabling mid-phrase does not learn earlier disabled input",
+              gboard_user_dict_get_size() == 0)
+        selectPhrase()
+        check("the next full phrase can be learned normally",
+              gboard_user_dict_get_size() > 0)
+        check("learning test cleans up its dictionary", gboard_user_dict_clear())
+    }
+}
+
+func testUserDictionarySettings() {
+    print("[test_user_dictionary_settings]")
+    withTestPreferences { preferences, _ in
+        var ready = false
+        var saves = 0
+        var clears = 0
+        var savesSucceed = true
+        var clearsSucceed = true
+        let dictionary = UserDictionary(
+            preferences: preferences, isReady: { ready },
+            persist: {
+                check("dictionary saves run on the engine thread", Thread.isMainThread)
+                saves += 1
+                return savesSucceed
+            },
+            clear: {
+                check("dictionary clears run on the engine thread", Thread.isMainThread)
+                clears += 1
+                return clearsSucceed
+            }
+        )
+        dictionary.startAutomaticSaving()
+        check("automatic saving waits for initialization", dictionary.saveTimer == nil)
+        if case .failure(.notReady) = dictionary.clearLearningData() {
+            check("clear reports an unavailable dictionary without calling the engine", clears == 0)
+        } else { check("clear must report an unavailable dictionary", false) }
+        ready = true
+        dictionary.startAutomaticSaving()
+        let initialTimer = dictionary.saveTimer
+        dictionary.startAutomaticSaving()
+        check("starting automatic saving is idempotent",
+              dictionary.saveTimer === initialTimer)
+        for interval in UserDictionarySaveInterval.allCases {
+            let oldTimer = dictionary.saveTimer
+            let oldInterval = oldTimer?.timeInterval
+            preferences.userDictionarySaveInterval = interval
+            check("\(interval.title) reschedules the actual timer",
+                  dictionary.saveTimer?.timeInterval == TimeInterval(interval.rawValue) &&
+                  dictionary.saveTimer?.isValid == true)
+            if oldInterval != TimeInterval(interval.rawValue) {
+                check("rescheduling invalidates the previous timer", oldTimer?.isValid == false)
+            }
+            dictionary.saveTimer?.fire()
+        }
+        check("each scheduled timer calls persistence", saves == 4)
+        let timer = dictionary.saveTimer
+        preferences.learningEnabled = false
+        check("unrelated preferences do not restart the save timer",
+              dictionary.saveTimer === timer)
+        dictionary.saveTimer?.fire()
+        check("disabling learning does not discard pending saves", saves == 5)
+        savesSucceed = false
+        check("save failures are reported", !dictionary.persist())
+
+        var notifications = 0
+        let observer = NotificationCenter.default.addObserver(
+            forName: UserDictionary.didClearNotification, object: dictionary, queue: nil
+        ) { _ in notifications += 1 }
+        defer { NotificationCenter.default.removeObserver(observer) }
+        if case .success = dictionary.clearLearningData() {
+            check("clear success is published after the engine call", clears == 1 && notifications == 1)
+        } else { check("successful clear is reported", false) }
+        clearsSucceed = false
+        if case .failure(.clearFailed) = dictionary.clearLearningData() {
+            check("partial clear failure also refreshes sessions", clears == 2 && notifications == 2)
+        } else { check("failed clear must not report success", false) }
+    }
+    weak var releasedDictionary: UserDictionary?
+    var timer: Timer?
+    withTestPreferences { preferences, _ in
+        let dictionary = UserDictionary(preferences: preferences, isReady: { true })
+        dictionary.startAutomaticSaving()
+        releasedDictionary = dictionary
+        timer = dictionary.saveTimer
+    }
+    check("observation and timers do not retain dictionary services",
+          releasedDictionary == nil && timer?.isValid == false)
+}
+
+func testClearLearningSessionUpdates() {
+    print("[test_clear_learning_session_updates]")
+    withTestPreferences { preferences, _ in
+        let dictionary = UserDictionary(preferences: preferences)
+        let (session, delegate) = makeSession(preferences: preferences)
+        for ch in "ceshi" { _ = session.appendLetter(String(ch)) }
+        check("clear test starts a segmented selection", selectCandidate("侧", in: session))
+        let composition = session.composition
+        if case .failure = dictionary.clearLearningData() {
+            check("isolated test dictionary can be cleared", false)
+        }
+        check("clear refreshes candidates without committing the remaining composition",
+              session.composition == composition && !delegate.shownCandidates.isEmpty &&
+              delegate.committedText == "侧")
+        check("remaining segment still commits normally", selectCandidate("试", in: session))
+        check("clear discards previously accumulated learning",
+              gboard_user_dict_get_size() == 0)
+        session.showPredictions(context: "生日快")
+        check("clear test has visible predictions", session.isPredicting)
+        _ = dictionary.clearLearningData()
+        check("clear dismisses stale predictions",
+              !session.isPredicting && delegate.shownCandidates.isEmpty)
+        session.cancel()
     }
 }
 

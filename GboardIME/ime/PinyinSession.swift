@@ -32,17 +32,31 @@ enum KeyResult {
 class PinyinSession {
     private let preferences: Preferences
     private var preferencesObserver: NSObjectProtocol?
+    private var dictionaryObserver: NSObjectProtocol?
     private var candidatePageSize: Int
     private var contextEnabled: Bool
+    private var pinyinDisplayMode: PinyinDisplayMode
 
     init(preferences: Preferences = .shared) {
         self.preferences = preferences
         candidatePageSize = preferences.candidatePageSize.rawValue
         contextEnabled = preferences.contextEnabled
+        pinyinDisplayMode = preferences.pinyinDisplayMode
         preferencesObserver = NotificationCenter.default.addObserver(
             forName: Preferences.didChangeNotification, object: preferences, queue: nil
         ) { [weak self] _ in
             self?.preferencesDidChange()
+        }
+        dictionaryObserver = NotificationCenter.default.addObserver(
+            forName: UserDictionary.didClearNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            guard let self = self else { return }
+            self.dismissPredictions()
+            if self.isComposing {
+                self.pendingLearningValid = false
+                self.fetchCandidates()
+                self.delegate?.sessionSetMarkedText(self.segmentedPinyin)
+            }
         }
     }
 
@@ -50,9 +64,17 @@ class PinyinSession {
         if let observer = preferencesObserver {
             NotificationCenter.default.removeObserver(observer)
         }
+        if let observer = dictionaryObserver {
+            NotificationCenter.default.removeObserver(observer)
+        }
     }
 
     private func preferencesDidChange() {
+        let displayModeChanged = pinyinDisplayMode != preferences.pinyinDisplayMode
+        pinyinDisplayMode = preferences.pinyinDisplayMode
+        if !preferences.learningEnabled && isComposing {
+            pendingLearningValid = false
+        }
         let pageSizeChanged = candidatePageSize != preferences.candidatePageSize.rawValue
         candidatePageSize = preferences.candidatePageSize.rawValue
         let contextChanged = contextEnabled != preferences.contextEnabled
@@ -70,6 +92,9 @@ class PinyinSession {
             dismissPredictions()
         }
         if isComposing {
+            if displayModeChanged {
+                delegate?.sessionSetMarkedText(segmentedPinyin)
+            }
             if contextChanged {
                 fetchCandidates()
             } else if pageSizeChanged {
@@ -200,7 +225,8 @@ class PinyinSession {
         let consumed = Int(gboard_get_candidate_consumed(Int32(engineIndex)))
 
         // Capture this segment before selection mutates the engine state.
-        let tokenCount = gboard_user_dict_extract_token_count(Int32(engineIndex))
+        let tokenCount = preferences.learningEnabled
+            ? gboard_user_dict_extract_token_count(Int32(engineIndex)) : 0
         let letterCount = composition.filter { $0 != "'" }.count
         if committedInComposition.isEmpty {
             predictionContext = contextBeforeInput
@@ -489,7 +515,7 @@ class PinyinSession {
 
     private func accumulateLearningSegment(text: String, engineIndex: Int,
                                            tokenCount: Int) {
-        guard gboard_user_dict_is_ready() else {
+        guard preferences.learningEnabled, gboard_user_dict_is_ready() else {
             pendingLearningValid = false
             return
         }
@@ -524,7 +550,7 @@ class PinyinSession {
     }
 
     private func commitPendingLearning() {
-        guard pendingLearningValid,
+        guard preferences.learningEnabled, pendingLearningValid,
               !pendingLearningText.isEmpty,
               !pendingLearningTokens.isEmpty,
               pendingLearningTokens.count == pendingLearningTypes.count else {
@@ -625,7 +651,8 @@ class PinyinSession {
             pinyinReading = readingForSelectedCandidate()
             delegate?.sessionShowCandidates(
                 candidates,
-                pinyin: pinyinReading.styled(preferences.correctionStyle),
+                pinyin: preferences.pinyinDisplayMode == .candidateWindow
+                    ? pinyinReading.styled(preferences.correctionStyle) : .empty,
                 selectedIndex: selectedIndex,
                 canGoPrevious: candidatePage > 0,
                 canGoNext: hasNextPage

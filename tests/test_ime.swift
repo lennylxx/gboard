@@ -24,6 +24,7 @@ func gboard_reset()
 class MockDelegate: PinyinSessionDelegate {
     var committedText = ""
     var markedText: String? = nil
+    var markedTextUpdateCount = 0
     var candidatePinyin: String? = nil
     var candidateReading = PinyinReading.empty
     var shownCandidates: [String] = []
@@ -40,6 +41,7 @@ class MockDelegate: PinyinSessionDelegate {
         committedText += text
     }
     func sessionSetMarkedText(_ text: String) {
+        markedTextUpdateCount += 1
         markedText = text.isEmpty ? nil : text
     }
     func sessionShowCandidates(
@@ -1137,6 +1139,12 @@ testCorrectedPinyinReading()
         testCorrectionStylePreference()
         testShiftTogglePreference()
         testPinyinTextAttributes()
+        testPinyinDisplayModePreference()
+        testPinyinDisplayModeMigration()
+        testNativeMarkedTextPresentation()
+        testLearningPreference()
+        testUserDictionarySettings()
+        testClearLearningSessionUpdates()
 
         print("\n══════════════════════════════════")
         print("Results: \(gPass) passed, \(gFail) failed")

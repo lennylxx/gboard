@@ -363,6 +363,30 @@ int hmm_user_dict_get_size(void) {
 
 // ── Clear ───────────────────────────────────────────────────────────────────
 
+// Deletes one user dictionary file; a missing file already counts as removed.
+static bool remove_dictionary_file(const UserDict *dict, const char *suffix) {
+    char path[4096];
+    build_path(path, sizeof(path), dict, suffix);
+    if (unlink(path) == 0 || errno == ENOENT) return true;
+    LOGERR("failed to remove user dictionary file '%s' (errno=%d)",
+           path, errno);
+    return false;
+}
+
+// Removes stale copies of cleared data. Dictionaries with an accessor keep
+// their freshly persisted empty primary file; dictionaries without one cannot
+// persist, so their primary file is removed too.
+static bool remove_cleared_files(void) {
+    bool ok = true;
+    for (int i = 0; i < DICT_COUNT; ++i) {
+        const UserDict *dict = &s_dicts[i];
+        if (!dict->accessor && !remove_dictionary_file(dict, "")) ok = false;
+        if (!remove_dictionary_file(dict, "_bak")) ok = false;
+        if (!remove_dictionary_file(dict, "_tmp")) ok = false;
+    }
+    return ok;
+}
+
 bool hmm_user_dict_clear(void) {
     if (!s_ready || !s_natives->newEmptyDictionary) return false;
 
@@ -381,7 +405,8 @@ bool hmm_user_dict_clear(void) {
 
     if (s_user_data_dir[0]) {
         bool persisted = hmm_user_dict_persist();
-        return all_cleared && persisted;
+        bool removed = remove_cleared_files();
+        return all_cleared && persisted && removed;
     }
     atomic_store(&s_decoder_refresh_pending, true);
     return all_cleared;

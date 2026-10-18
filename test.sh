@@ -51,6 +51,7 @@ swiftc -g -parse-as-library -o "$TEST_DIR/test_ime" \
     "GboardIME/ime/PinyinSession.swift" \
     "GboardIME/ime/PinyinReading.swift" \
     "GboardIME/ime/Preferences.swift" \
+    "GboardIME/ime/UserDictionary.swift" \
     "GboardIME/ime/ShiftToggleTracker.swift" \
     "GboardIME/ime/SessionContextRetriever.swift" \
     "GboardIME/ime/CandidateWindow.swift" \

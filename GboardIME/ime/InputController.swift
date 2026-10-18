@@ -1,8 +1,6 @@
 import Cocoa
 import InputMethodKit
 
-private let userDictionaryPersistInterval: TimeInterval = 4 * 60 * 60
-
 // MARK: - InputController
 
 @objc(GboardInputController)
@@ -16,12 +14,6 @@ class GboardInputController: IMKInputController, PinyinSessionDelegate {
     private var chineseMode = true
     private var shiftTracker = ShiftToggleTracker()
     private var preferencesObserver: NSObjectProtocol?
-
-    /// Periodic user dictionary persistence (every 4 hours)
-    private static var persistTimer: Timer?
-    private static let persistQueue = DispatchQueue(
-        label: "com.lennylxx.inputmethod.GboardIME.user-dictionary-persist"
-    )
 
     override init!(server: IMKServer!, delegate: Any!, client: Any!) {
         super.init(server: server, delegate: delegate, client: client)
@@ -65,32 +57,9 @@ class GboardInputController: IMKInputController, PinyinSessionDelegate {
         engineReady = gboard_init_with_user_data(soPath, packDir, userDataDir)
         imeLog("Engine ready: \(engineReady)")
 
-        // Schedule periodic persistence every 4 hours
         if engineReady && gboard_user_dict_is_ready() {
-            persistTimer = Timer.scheduledTimer(
-                withTimeInterval: userDictionaryPersistInterval,
-                repeats: true
-            ) { _ in
-                imeLog("Periodic user dict persist (size=\(gboard_user_dict_get_size()))")
-                persistUserDictionary()
-            }
+            UserDictionary.shared.startAutomaticSaving()
         }
-    }
-
-    static func persistUserDictionary(wait: Bool = false) {
-        if !wait {
-            persistQueue.async {
-                _ = gboard_user_dict_persist()
-            }
-            return
-        }
-
-        let completed = DispatchSemaphore(value: 0)
-        persistQueue.async {
-            _ = gboard_user_dict_persist()
-            completed.signal()
-        }
-        _ = completed.wait(timeout: .now() + 5)
     }
 
     // ── Key handling ───────────────────────────────────────────────────────
@@ -323,17 +292,18 @@ class GboardInputController: IMKInputController, PinyinSessionDelegate {
 
     func sessionSetMarkedText(_ text: String) {
         guard let client = currentClient as? IMKTextInput else { return }
-        if text.isEmpty {
+        let markedText = Preferences.shared.pinyinDisplayMode.markedText(for: text)
+        if markedText.isEmpty {
             client.setMarkedText("",
                                  selectionRange: NSRange(location: 0, length: 0),
                                  replacementRange: NSRange(location: NSNotFound, length: 0))
         } else {
             let attrs = mark(forStyle: kTSMHiliteSelectedRawText,
                              at: NSRange(location: NSNotFound, length: 0))
-            let str = NSAttributedString(string: "\u{200B}",
+            let str = NSAttributedString(string: markedText,
                                          attributes: attrs as? [NSAttributedString.Key: Any])
             client.setMarkedText(str,
-                                 selectionRange: NSRange(location: 1, length: 0),
+                                 selectionRange: NSRange(location: markedText.utf16.count, length: 0),
                                  replacementRange: NSRange(location: NSNotFound, length: 0))
         }
     }
@@ -381,7 +351,7 @@ class GboardInputController: IMKInputController, PinyinSessionDelegate {
         )
         if let client = currentClient as? IMKTextInput {
             let rect = CandidateWindowController.anchorRect(
-                isPrediction: pinyin.isEmpty,
+                isPrediction: session.isPredicting,
                 caretRect: {
                     let location = client.selectedRange().location
                     guard location != NSNotFound else { return nil }
