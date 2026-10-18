@@ -30,7 +30,13 @@ A macOS input method that runs Gboard's native HMM Pinyin engine via a custom AR
 - **Pinyin typo correction** — Uses Gboard's built-in corrector for swapped,
   missing, or extra letters. For example, `nihoa` yields `你好` and
   `zhonguo` yields `中国`. The Pinyin strip marks the fix: extra letters are
-  struck out and inserted letters are shown in orange.
+  struck out and inserted letters are shown in orange. Settings offers
+  independent correction alignment: insert/delete marks (default, LCS) or
+  swap-aware marks (restricted Damerau-Levenshtein, DL/OSA). Swap-aware marks
+  highlight adjacent swapped letters together in corrected order:
+  `nihoa` shows `ni'hao`, with `ao` in orange.
+  Alignment changes take effect immediately and are saved; they work with
+  all three marking styles and do not affect native candidate generation.
 - **Fuzzy Pinyin** — Independently enable 12 pronunciation pairs in Settings:
   z/zh, c/ch, s/sh, an/ang, en/eng, in/ing, l/n, f/h, r/l, k/g, ian/iang,
   and uan/uang. All are off by default. Changes are saved and take effect

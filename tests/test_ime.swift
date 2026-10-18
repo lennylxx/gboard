@@ -697,15 +697,88 @@ func testVisualPinyinSegmentation() {
 
 func testCorrectionSpans() {
     print("[test_correction_spans]")
-    func render(_ typed: String, _ corrected: String) -> String {
-        PinyinSession.correctionSpans(typed: typed, corrected: corrected).map {
+    func render(
+        _ typed: String, _ corrected: String, alignment: CorrectionAlignment = .dl
+    ) -> String {
+        PinyinSession.correctionSpans(
+            typed: typed, corrected: corrected, alignment: alignment
+        ).map {
             $0.isTypo ? "[-\($0.text)]" : $0.isCorrected ? "[+\($0.text)]" : $0.text
         }.joined()
     }
-    check("extra letter is struck like Sogou cuu̸o", render("cuuo", "cuo") == "cu[-u]o")
+    check("extra letter is struck", render("cuuo", "cuo") == "cu[-u]o")
     check("missing letter is inserted", render("uo", "guo") == "[+g]uo")
-    check("transposition is one strike and one insert", render("hoa", "hao") == "h[-o]a[+o]")
-    check("substitution strikes then inserts", render("xain", "xian") == "x[-a]i[+a]n")
+    check("transposition highlights both corrected letters", render("hoa", "hao") == "h[+ao]")
+    check("internal transposition keeps matching suffix", render("xain", "xian") == "x[+ia]n")
+    check("substitution strikes then inserts", render("hap", "hao") == "ha[-p][+o]")
+    check("empty strings have no spans", render("", "") == "")
+    check("empty input inserts all letters", render("", "hao") == "[+hao]")
+    check("empty target strikes all letters", render("hao", "") == "[-hao]")
+    check("unchanged spelling has no marks", render("hao", "hao") == "hao")
+    check("case-only differences are not corrections", render("HAO", "hao") == "hao")
+    check("transposition ignores case and preserves target case",
+          render("HoA", "hAO") == "h[+AO]")
+    check("leading transposition is highlighted", render("ah", "ha") == "[+ha]")
+    check("separate transpositions are both highlighted",
+          render("abxcd", "baxdc") == "[+ba]x[+dc]")
+    check("adjacent transpositions merge highlights",
+          render("abcd", "badc") == "[+badc]")
+    check("transposition can precede an insertion", render("ab", "bac") == "[+bac]")
+    check("transposition can follow a deletion", render("xab", "ba") == "[-x][+ba]")
+    check("repeated letter insertion keeps the earliest match",
+          render("cuo", "cuuo") == "cu[+u]o")
+    check("all repeated letters are handled deterministically",
+          render("aaaa", "aa") == "aa[-aa]")
+    check("OSA does not edit inside a transposition again",
+          render("ca", "abc") == "[-c]a[+bc]")
+    check("LCS preserves the previous transposition marks",
+          render("hoa", "hao", alignment: .lcs) == "h[-o]a[+o]")
+    check("LCS preserves the previous internal transposition marks",
+          render("xain", "xian", alignment: .lcs) == "x[-a]i[+a]n")
+    check("LCS preserves repeated-letter deletion placement",
+          render("cuuo", "cuo", alignment: .lcs) == "cu[-u]o")
+    check("LCS preserves substitutions", render("hap", "hao", alignment: .lcs) == "ha[-p][+o]")
+
+    for alignment in CorrectionAlignment.allCases {
+        let example = PinyinReading(spans:
+            PinyinSession.correctionSpans(typed: "nii", corrected: "ni", alignment: alignment) +
+            [.init(text: "'", isCorrected: false)] +
+            PinyinSession.correctionSpans(typed: "hoa", corrected: "hao", alignment: alignment))
+        for style in CorrectionStyle.allCases {
+            let styled = example.styled(style)
+            let rendered = styled.spans.map {
+                $0.isTypo ? "[-\($0.text)]" : $0.isCorrected ? "[+\($0.text)]" : $0.text
+            }.joined()
+            let expected: String
+            switch (alignment, style) {
+            case (.lcs, .edits): expected = "ni[-i]'h[-o]a[+o]"
+            case (.lcs, .color): expected = "ni'ha[+o]"
+            case (.dl, .edits): expected = "ni[-i]'h[+ao]"
+            case (.dl, .color): expected = "ni'h[+ao]"
+            case (_, .hidden): expected = "ni'hao"
+            }
+            check("\(alignment.rawValue)/\(style.rawValue) example shows the intended marks",
+                  rendered == expected && styled.text == "ni'hao")
+        }
+    }
+
+    for alignment in CorrectionAlignment.allCases {
+        for (typed, corrected) in [
+            ("hoa", "hao"), ("cuuo", "cuo"), ("uo", "guo"), ("hap", "hao"),
+            ("", ""), ("", "hao"), ("hao", ""), ("ab", "bac"), ("ca", "abc")
+        ] {
+            let reading = PinyinReading(spans: PinyinSession.correctionSpans(
+                typed: typed, corrected: corrected, alignment: alignment))
+            check("\(alignment.rawValue): \(typed) -> \(corrected) reads as the target",
+                  reading.text == corrected)
+            check("\(alignment.rawValue): \(typed) -> \(corrected) color style reads as the target",
+                  reading.styled(.color).displayText == corrected)
+            check("\(alignment.rawValue): \(typed) -> \(corrected) hidden style has no marks",
+                  reading.styled(.hidden) == .plain(corrected))
+            check("\(alignment.rawValue): \(typed) -> \(corrected) uses exclusive span styles",
+                  reading.spans.allSatisfy { !$0.text.isEmpty && !($0.isCorrected && $0.isTypo) })
+        }
+    }
 }
 
 func testCorrectedPinyinReading() {
@@ -717,7 +790,7 @@ func testCorrectedPinyinReading() {
     check("corrected reading shows ni'hao", d.candidatePinyin == "ni'hao")
     check("only hao is highlighted",
           d.candidateReading.hasCorrection)
-    check("nihoa strikes the extra o and inserts o: ni'ho̶ao",
+    check("default LCS strikes the extra o and inserts o",
           d.candidateReading.displayText == "ni'hoao" &&
           d.candidateReading.spans.filter(\.isTypo).map(\.text) == ["o"] &&
           d.candidateReading.spans.filter(\.isCorrected).map(\.text) == ["o"])
@@ -1148,6 +1221,7 @@ testCorrectedPinyinReading()
         testContextPreference()
         testCandidatePageSizePreference()
         testCorrectionStylePreference()
+        testCorrectionAlignmentPreference()
         testShiftTogglePreference()
         testPinyinTextAttributes()
         testPinyinDisplayModePreference()

@@ -1,6 +1,18 @@
 import Combine
 import Foundation
 
+enum CorrectionAlignment: String, CaseIterable {
+    case lcs
+    case dl
+
+    var title: String {
+        switch self {
+        case .lcs: return "增删标记（默认）"
+        case .dl: return "交换标记"
+        }
+    }
+}
+
 enum CorrectionStyle: String, CaseIterable {
     case edits
     case color
@@ -127,6 +139,7 @@ final class Preferences: NSObject, ObservableObject {
         static let context = "contextEnabled"
         static let shift = "shiftToggleEnabled"
         static let correction = "correctionStyle"
+        static let correctionAlignment = "correctionAlignment"
         static let pageSize = "candidatePageSize"
         static let legacyPinyinBar = "pinyinBarEnabled"
         static let pinyinDisplayMode = "pinyinDisplayMode"
@@ -150,6 +163,10 @@ final class Preferences: NSObject, ObservableObject {
 
     @Published var correctionStyle: CorrectionStyle {
         didSet { save(correctionStyle.rawValue, forKey: Key.correction) }
+    }
+
+    @Published var correctionAlignment: CorrectionAlignment {
+        didSet { save(correctionAlignment.rawValue, forKey: Key.correctionAlignment) }
     }
 
     @Published var candidatePageSize: CandidatePageSize {
@@ -261,6 +278,7 @@ final class Preferences: NSObject, ObservableObject {
             Key.context: true,
             Key.shift: true,
             Key.correction: CorrectionStyle.edits.rawValue,
+            Key.correctionAlignment: CorrectionAlignment.lcs.rawValue,
             Key.pageSize: CandidatePageSize.nine.rawValue,
             Key.pinyinDisplayMode: defaultDisplayMode.rawValue,
             Key.learning: true,
@@ -272,6 +290,9 @@ final class Preferences: NSObject, ObservableObject {
         correctionStyle = CorrectionStyle(
             rawValue: defaults.string(forKey: Key.correction) ?? ""
         ) ?? .edits
+        correctionAlignment = CorrectionAlignment(
+            rawValue: defaults.string(forKey: Key.correctionAlignment) ?? ""
+        ) ?? .lcs
         candidatePageSize = CandidatePageSize(
             rawValue: defaults.integer(forKey: Key.pageSize)
         ) ?? .nine

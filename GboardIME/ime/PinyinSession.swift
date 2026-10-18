@@ -721,7 +721,9 @@ class PinyinSession {
             if isLatin || corrected.lowercased() == typed.lowercased() {
                 spans.append(.init(text: isLatin ? typed : corrected, isCorrected: false))
             } else {
-                spans += Self.correctionSpans(typed: typed, corrected: corrected)
+                spans += Self.correctionSpans(
+                    typed: typed, corrected: corrected,
+                    alignment: preferences.correctionAlignment)
             }
             consumedLetters += typed.count
             previousLatin = isLatin
@@ -743,19 +745,31 @@ class PinyinSession {
         return PinyinReading(spans: spans)
     }
 
-    /// Marks the fewest letter edits from typed to corrected, like Sogou's
-    /// "cuu̸o": extra typed letters are struck out in place and missing
-    /// letters are inserted as corrections, e.g. "hoa" -> h o̶ a o.
-    static func correctionSpans(typed: String, corrected: String) -> [PinyinReading.Span] {
+    /// LCS permits insertions/deletions; restricted DL (OSA) also permits
+    /// substitutions and adjacent transpositions, each costing one edit.
+    /// Swapped letters appear in corrected order, both highlighted; deletions
+    /// are struck out and replacements strike the old letter before the new.
+    static func correctionSpans(
+        typed: String, corrected: String, alignment: CorrectionAlignment = .lcs
+    ) -> [PinyinReading.Span] {
         let a = Array(typed), b = Array(corrected)
-        let lower = { (c: Character) in c.lowercased() }
-        var lcs = [[Int]](repeating: [Int](repeating: 0, count: b.count + 1),
-                          count: a.count + 1)
+        let lowerA = a.map { $0.lowercased() }, lowerB = b.map { $0.lowercased() }
+        // A cost of two preserves LCS alignment, with deletion winning ties.
+        let replacementCost = alignment == .dl ? 1 : 2
+        var distance = [[Int]](repeating: [Int](repeating: 0, count: b.count + 1),
+                               count: a.count + 1)
+        for i in 0...a.count { distance[i][b.count] = a.count - i }
+        for j in 0...b.count { distance[a.count][j] = b.count - j }
         for i in stride(from: a.count - 1, through: 0, by: -1) {
             for j in stride(from: b.count - 1, through: 0, by: -1) {
-                lcs[i][j] = lower(a[i]) == lower(b[j])
-                    ? lcs[i + 1][j + 1] + 1
-                    : max(lcs[i + 1][j], lcs[i][j + 1])
+                let substitution = lowerA[i] == lowerB[j] ? 0 : replacementCost
+                distance[i][j] = min(distance[i + 1][j] + 1,
+                                     distance[i][j + 1] + 1,
+                                     distance[i + 1][j + 1] + substitution)
+                if alignment == .dl, i + 1 < a.count, j + 1 < b.count,
+                   lowerA[i] == lowerB[j + 1], lowerA[i + 1] == lowerB[j] {
+                    distance[i][j] = min(distance[i][j], distance[i + 2][j + 2] + 1)
+                }
             }
         }
 
@@ -770,10 +784,21 @@ class PinyinSession {
         }
         var i = 0, j = 0
         while i < a.count || j < b.count {
-            if i < a.count, j < b.count, lower(a[i]) == lower(b[j]) {
+            if i < a.count, j < b.count, lowerA[i] == lowerB[j] {
                 append(b[j], corrected: false, typo: false); i += 1; j += 1
-            } else if i < a.count, j == b.count || lcs[i + 1][j] >= lcs[i][j + 1] {
+            } else if alignment == .dl, i + 1 < a.count, j + 1 < b.count,
+                      lowerA[i] == lowerB[j + 1], lowerA[i + 1] == lowerB[j],
+                      distance[i][j] == distance[i + 2][j + 2] + 1 {
+                append(b[j], corrected: true, typo: false)
+                append(b[j + 1], corrected: true, typo: false)
+                i += 2; j += 2
+            } else if i < a.count, distance[i][j] == distance[i + 1][j] + 1 {
                 append(a[i], corrected: false, typo: true); i += 1
+            } else if alignment == .dl, i < a.count, j < b.count,
+                      distance[i][j] == distance[i + 1][j + 1] + 1 {
+                append(a[i], corrected: false, typo: true)
+                append(b[j], corrected: true, typo: false)
+                i += 1; j += 1
             } else {
                 append(b[j], corrected: true, typo: false); j += 1
             }

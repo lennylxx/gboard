@@ -120,6 +120,19 @@ private struct SettingsView: View {
                             .help("输入框模式使用应用原生的 marked text。")
                         }
                         HStack {
+                            Text("纠错对齐")
+                            Spacer()
+                            Picker("纠错对齐", selection: $preferences.correctionAlignment) {
+                                ForEach(CorrectionAlignment.allCases, id: \.self) { alignment in
+                                    Text(alignment.title).tag(alignment)
+                                }
+                            }
+                            .labelsHidden()
+                            .pickerStyle(.segmented)
+                            .frame(width: 270)
+                            .help("交换标记将相邻颠倒的两个字母按正确顺序一起标色；不改变实际纠错。")
+                        }
+                        HStack {
                             Text("纠错标记")
                             Spacer()
                             Picker("纠错标记", selection: $preferences.correctionStyle) {
@@ -132,7 +145,7 @@ private struct SettingsView: View {
                             .frame(width: 270)
                         }
                         HStack(alignment: .firstTextBaseline, spacing: 8) {
-                            note("例：nihoa →")
+                            note("例：niihoa →")
                             Text(correctionExample)
                         }
                         .help("只调整候选窗口中的拼音标记，不影响原生组合文本或实际纠错。")
@@ -275,12 +288,15 @@ private struct SettingsView: View {
     }
 
     private var correctionExample: AttributedString {
-        var example = PinyinReading(spans: [
-            .init(text: "ni'h", isCorrected: false),
-            .init(text: "o", isCorrected: false, isTypo: true),
-            .init(text: "a", isCorrected: false),
-            .init(text: "o", isCorrected: true)
-        ]).styled(preferences.correctionStyle).attributedText
+        var example = PinyinReading(
+            spans: PinyinSession.correctionSpans(
+                typed: "nii", corrected: "ni",
+                alignment: preferences.correctionAlignment) +
+                [.init(text: "'", isCorrected: false)] +
+                PinyinSession.correctionSpans(
+                    typed: "hoa", corrected: "hao",
+                    alignment: preferences.correctionAlignment)
+        ).styled(preferences.correctionStyle).attributedText
         example.font = .system(size: 12)
         return example
     }

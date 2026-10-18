@@ -18,7 +18,8 @@ func testPreferencesStorage() {
               preferences.shiftToggleEnabled && preferences.pinyinDisplayMode == .candidateWindow &&
               preferences.learningEnabled)
         check("preferences preserve page and correction defaults",
-              preferences.candidatePageSize == .nine && preferences.correctionStyle == .edits)
+              preferences.candidatePageSize == .nine && preferences.correctionStyle == .edits &&
+              preferences.correctionAlignment == .lcs)
         check("user dictionary keeps the four-hour default",
               preferences.userDictionarySaveInterval == .fourHours)
         check("fuzzy pinyin defaults to disabled",
@@ -33,12 +34,13 @@ func testPreferencesStorage() {
         preferences.contextEnabled = false
         preferences.shiftToggleEnabled = false
         preferences.correctionStyle = .color
+        preferences.correctionAlignment = .dl
         preferences.candidatePageSize = .five
         preferences.pinyinDisplayMode = .hidden
         preferences.learningEnabled = false
         preferences.userDictionarySaveInterval = .fifteenMinutes
         preferences.fuzzyPinyinGroups = [.lN, .anAng]
-        check("each preference change notifies synchronously", notifications == 9)
+        check("each preference change notifies synchronously", notifications == 10)
 
         let restored = Preferences(defaults: defaults)
         check("disabled switches persist",
@@ -81,17 +83,23 @@ func testPreferencesStorage() {
         }
         check("page size and correction style persist",
               restored.candidatePageSize == .five && restored.correctionStyle == .color)
+        check("DL correction alignment persists", restored.correctionAlignment == .dl)
+        restored.correctionAlignment = .lcs
+        check("LCS correction alignment persists",
+              Preferences(defaults: defaults).correctionAlignment == .lcs)
         restored.correctionStyle = .hidden
         check("hidden correction style persists",
               Preferences(defaults: defaults).correctionStyle == .hidden)
 
         defaults.set(100, forKey: "candidatePageSize")
         defaults.set("invalid", forKey: "correctionStyle")
+        defaults.set("invalid", forKey: "correctionAlignment")
         defaults.set(-1, forKey: "userDictionarySaveInterval")
         defaults.set("invalid", forKey: "pinyinDisplayMode")
         let recovered = Preferences(defaults: defaults)
         check("unrecognized stored options use supported defaults",
               recovered.candidatePageSize == .nine && recovered.correctionStyle == .edits &&
+              recovered.correctionAlignment == .lcs &&
               recovered.userDictionarySaveInterval == .fourHours &&
               recovered.pinyinDisplayMode == .candidateWindow)
     }
@@ -883,8 +891,9 @@ func testCorrectionStylePreference() {
         for ch in "nihoa" { _ = session.appendLetter(String(ch)) }
         let candidates = session.candidates
         let corrected = delegate.candidateReading.text
+        let originalReading = delegate.candidateReading
         check("default correction style retains strikeout spans",
-              delegate.candidateReading.spans.contains(where: \.isTypo))
+              originalReading.spans.contains(where: \.isTypo))
 
         preferences.correctionStyle = .color
         check("color-only style removes extra letters but retains highlights",
@@ -896,14 +905,53 @@ func testCorrectionStylePreference() {
               delegate.candidateReading.displayText == corrected &&
               !delegate.candidateReading.hasCorrection)
         preferences.correctionStyle = .edits
-        check("changing back immediately restores strikeouts",
-              delegate.candidateReading.spans.contains(where: \.isTypo))
+        check("changing back immediately restores correction marks",
+              delegate.candidateReading == originalReading)
         check("correction appearance does not change composition or candidates",
               session.composition == "nihoa" && session.candidates == candidates &&
               delegate.committedText.isEmpty)
         preferences.correctionStyle = .hidden
         _ = session.selectCurrent()
         check("hiding marks does not disable correction", delegate.committedText == "你好")
+        session.dismissPredictions()
+    }
+}
+
+func testCorrectionAlignmentPreference() {
+    print("[test_correction_alignment_preference]")
+    withTestPreferences { preferences, defaults in
+        let (session, delegate) = makeSession(preferences: preferences)
+        for ch in "nihoa" { _ = session.appendLetter(String(ch)) }
+        let candidates = session.candidates
+        let selectedIndex = session.selectedIndex
+        let originalReading = delegate.candidateReading
+        check("default LCS retains the previous transposition marks",
+              originalReading.displayText == "ni'hoao" &&
+              originalReading.spans.filter(\.isTypo).map(\.text) == ["o"])
+
+        for style in CorrectionStyle.allCases {
+            preferences.correctionStyle = style
+            preferences.correctionAlignment = .dl
+            let reading = delegate.candidateReading
+            check("\(style.rawValue) DL immediately shows corrected order without deletions",
+                  reading.displayText == "ni'hao" &&
+                  !reading.spans.contains(where: \.isTypo))
+            check("\(style.rawValue) DL respects the highlight preference",
+                  reading.spans.filter(\.isCorrected).map(\.text) ==
+                      (style == .hidden ? [] : ["ao"]))
+            preferences.correctionAlignment = .lcs
+            check("\(style.rawValue) returning to LCS restores the original style",
+                  delegate.candidateReading == originalReading.styled(style))
+        }
+        preferences.correctionAlignment = .dl
+        check("alignment changes preserve composition, candidate order and selection",
+              session.composition == "nihoa" && session.candidates == candidates &&
+              session.selectedIndex == selectedIndex && delegate.committedText.isEmpty)
+        check("alignment and style persist independently",
+              Preferences(defaults: defaults).correctionAlignment == .dl &&
+              Preferences(defaults: defaults).correctionStyle == .hidden)
+        _ = session.selectCurrent()
+        check("DL alignment does not change committed text", delegate.committedText == "你好")
         session.dismissPredictions()
     }
 }
