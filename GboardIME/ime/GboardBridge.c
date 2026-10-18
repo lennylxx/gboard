@@ -27,6 +27,16 @@ bool gboard_set_fuzzy_pinyin(uint32_t groups) {
 
 uint32_t gboard_get_fuzzy_pinyin(void) { return hmm_engine_get_fuzzy_pinyin(); }
 
+bool gboard_set_pinyin_scheme(HmmPinyinScheme scheme) {
+    bool ok = hmm_engine_set_pinyin_scheme(scheme);
+    if (ok) s_cached_cand_idx = -1;
+    return ok;
+}
+
+HmmPinyinScheme gboard_get_pinyin_scheme(void) {
+    return hmm_engine_get_pinyin_scheme();
+}
+
 bool gboard_set_context(const char *text)          { return hmm_engine_set_context(text); }
 bool gboard_update_input_context(const char *before, const char *selected,
                                   const char *after) {

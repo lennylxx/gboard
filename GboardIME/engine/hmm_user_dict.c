@@ -34,6 +34,7 @@ static UserDict s_dicts[] = {
 
 static const HmmUserDictNatives *s_natives = NULL;
 static bool  s_ready = false;
+static bool  s_pinyin_settings_valid = true;
 static atomic_bool s_decoder_refresh_pending = false;
 static char  s_user_data_dir[4096] = {0};
 static char  s_pack_dir[4096] = {0};
@@ -174,6 +175,43 @@ bool hmm_user_dict_init(const char *user_data_dir, const char *pack_dir) {
 
 // ── Learn / unlearn ─────────────────────────────────────────────────────────
 
+bool hmm_user_dict_pinyin_settings_valid(void) {
+    return s_pinyin_settings_valid;
+}
+
+static bool refresh_pinyin_accessor(void) {
+    volatile bool refreshed = false;
+    // Both decoder and accessor resolve to the same nativeRefreshData(J)V.
+    CRASH_PROTECT_BEGIN()
+    g_refreshData(g_env, NULL, PINYIN_DICT->accessor);
+    refreshed = true;
+    CRASH_PROTECT_END("MutableDictionaryAccessor nativeRefreshData(pinyin scheme)")
+    return refreshed;
+}
+
+bool hmm_user_dict_set_pinyin_scheme(HmmPinyinScheme scheme) {
+    if (!s_ready) return true;
+    if (!g_refreshData) {
+        LOGERR("Cannot refresh user dictionary accessor settings");
+        return false;
+    }
+    // AbstractHmmChineseDecodeProcessor.C() refreshes the existing
+    // accessor; replacing it can discard unpersisted learning.
+    bool refreshed = hmm_enroll_pinyin_accessor_settings(s_pack_dir, scheme) &&
+                     refresh_pinyin_accessor();
+    if (!refreshed) {
+        LOGERR("Cannot switch user dictionary accessor to pinyin scheme %d", scheme);
+        s_pinyin_settings_valid = hmm_enroll_pinyin_accessor_settings(
+            s_pack_dir, hmm_engine_get_pinyin_scheme()) && refresh_pinyin_accessor();
+        if (!s_pinyin_settings_valid) {
+            LOGERR("Cannot restore accessor settings; input and learning blocked until retry");
+        }
+        return false;
+    }
+    s_pinyin_settings_valid = true;
+    return true;
+}
+
 static bool build_token_arrays(const char **tokens, const int *token_types,
                                int token_count, jobject *token_array,
                                jintArray *type_array) {
@@ -199,6 +237,10 @@ static bool build_token_arrays(const char **tokens, const int *token_types,
 bool hmm_user_dict_learn(const char **tokens, const int *token_types,
                          int token_count, const char *value,
                          bool is_full_match) {
+    if (!s_pinyin_settings_valid) {
+        LOGERR("Cannot learn: pinyin accessor settings require a successful retry");
+        return false;
+    }
     if (!s_ready || !s_natives->addCount ||
         !tokens || !token_types ||
         token_count <= 0 || !value || !value[0]) {
@@ -225,6 +267,10 @@ bool hmm_user_dict_learn(const char **tokens, const int *token_types,
 
 bool hmm_user_dict_unlearn(const char **tokens, const int *token_types,
                            int token_count, const char *value) {
+    if (!s_pinyin_settings_valid) {
+        LOGERR("Cannot unlearn: pinyin accessor settings require a successful retry");
+        return false;
+    }
     if (!s_ready || !s_natives->decreaseCount ||
         !tokens || !token_types ||
         token_count <= 0 || !value || !value[0]) {
@@ -482,6 +528,7 @@ void hmm_user_dict_destroy(void) {
     }
     s_natives = NULL;
     s_ready = false;
+    s_pinyin_settings_valid = true;
     atomic_store(&s_decoder_refresh_pending, false);
     s_user_data_dir[0] = '\0';
     s_pack_dir[0] = '\0';

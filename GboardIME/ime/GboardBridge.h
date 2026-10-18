@@ -7,6 +7,8 @@ bool  gboard_init_with_user_data(const char *so_path, const char *pack_dir,
                                   const char *user_data_dir);
 bool  gboard_set_fuzzy_pinyin(uint32_t groups);
 uint32_t gboard_get_fuzzy_pinyin(void);
+bool  gboard_set_pinyin_scheme(HmmPinyinScheme scheme);
+HmmPinyinScheme gboard_get_pinyin_scheme(void);
 bool  gboard_set_context(const char *text_before_cursor);
 bool  gboard_update_input_context(const char *before_selection,
                                   const char *selected_text,

@@ -97,9 +97,10 @@ typedef struct {
     int field;
     const uint8_t *bytes;
     size_t length;
+    bool replace;
 } SettingAppend;
 
-// Appends serialized bytes to the end of selected length-delimited
+// Appends or replaces serialized bytes in selected length-delimited
 // SettingScheme fields, preserving all other fields unchanged.
 static uint8_t *append_to_setting_fields(const uint8_t *orig, size_t orig_len,
                                          const SettingAppend *appends,
@@ -143,11 +144,12 @@ static uint8_t *append_to_setting_fields(const uint8_t *orig, size_t orig_len,
                 }
             }
             if (match) {
+                size_t retained = match->replace ? 0 : (size_t)value_len;
                 out_pos += pb_write_tag(out + out_pos, field, 2);
                 out_pos += pb_write_varint(out + out_pos,
-                                           value_len + match->length);
-                memcpy(out + out_pos, value, (size_t)value_len);
-                out_pos += (size_t)value_len;
+                                           retained + match->length);
+                memcpy(out + out_pos, value, retained);
+                out_pos += retained;
                 memcpy(out + out_pos, match->bytes, match->length);
                 out_pos += match->length;
             } else {
@@ -225,8 +227,8 @@ static uint8_t *add_english_mixed_input_to_setting(const uint8_t *orig,
         dicts + dicts_len, 3, "contacts_dict_3_3_english", 3);
 
     const SettingAppend appends[] = {
-        {2, tokens, tokens_len},
-        {4, dicts, dicts_len},
+        {2, tokens, tokens_len, false},
+        {4, dicts, dicts_len, false},
     };
     uint8_t *out = append_to_setting_fields(orig, orig_len, appends, 2, out_len);
     if (out) LOGERR("Added English mixed-input dictionaries to setting scheme");
@@ -241,8 +243,8 @@ static uint8_t *add_user_dictionary_to_setting(const uint8_t *orig,
     uint8_t entry[128];
     size_t entry_len = pb_write_dictionary_entry(entry, 2, "user_dict_3_3", 2);
     const SettingAppend appends[] = {
-        {4, entry, entry_len},
-        {5, entry, entry_len},
+        {4, entry, entry_len, false},
+        {5, entry, entry_len, false},
     };
     uint8_t *out = append_to_setting_fields(orig, orig_len, appends, 2, out_len);
     if (out) LOGERR("Added user_dict_3_3 to setting dictionary configs");
@@ -542,18 +544,47 @@ static bool enroll_decoder_setting(const uint8_t *bytes, size_t length,
     return ok;
 }
 
-bool hmm_enroll_decoder_settings(const char *pack_dir, uint32_t fuzzy_groups) {
-    if (!pack_dir || !g_sm || !g_enrollSettingScheme ||
-        (fuzzy_groups & ~HMM_FUZZY_ALL)) {
-        LOGERR("Cannot enroll decoder settings (fuzzy mask=%u)", fuzzy_groups);
-        return false;
+static uint8_t *configure_pinyin_tokens(const uint8_t *original, size_t length,
+                                       const char *pack_dir, HmmPinyinScheme scheme,
+                                       size_t *out_length) {
+    // PinyinHmmEngineFactory.X()/p()/q() share this token list. Token ID
+    // tables belong to the separate gesture decoder, not the HMM scheme.
+    static const char *const scheme_names[] = {
+        NULL, "abc", "flypy", "jiajia", "ms", "ziguang", "ziranma"
+    };
+    if (scheme < HMM_PINYIN_FULL || scheme > HMM_PINYIN_SHUANGPIN_ZIRANMA)
+        return NULL;
+    uint8_t tokens[256];
+    size_t tokens_length;
+    if (scheme == HMM_PINYIN_FULL) {
+        tokens_length = pb_write_string(
+            tokens, 1, "zh_t_i0_pinyin_android_token_dictionary");
+    } else {
+        char path[4096], name[128];
+        snprintf(path, sizeof(path), "%s/tokens_shuangpin_%s",
+                 pack_dir, scheme_names[scheme]);
+        if (access(path, R_OK) != 0) {
+            LOGERR("Cannot read shuangpin dictionary: %s", path);
+            return NULL;
+        }
+        snprintf(name, sizeof(name),
+                 "zh_t_i0_shuangpin_%s_android_token_dictionary",
+                 scheme_names[scheme]);
+        tokens_length = pb_write_string(tokens, 1, name);
     }
+    const SettingAppend replacement = {2, tokens, tokens_length, true};
+    return append_to_setting_fields(
+        original, length, &replacement, 1, out_length);
+}
+
+static uint8_t *read_setting(const char *pack_dir, const char *filename,
+                             size_t *out_length) {
     char path[4096];
-    snprintf(path, sizeof(path), "%s/pinyin_qwerty_setting_scheme", pack_dir);
+    snprintf(path, sizeof(path), "%s/%s", pack_dir, filename);
     FILE *file = fopen(path, "rb");
     if (!file) {
-        LOGERR("Cannot open decoder settings: %s", path);
-        return false;
+        LOGERR("Cannot open settings: %s", path);
+        return NULL;
     }
     bool read_ok = fseek(file, 0, SEEK_END) == 0;
     long length = read_ok ? ftell(file) : -1;
@@ -562,15 +593,62 @@ bool hmm_enroll_decoder_settings(const char *pack_dir, uint32_t fuzzy_groups) {
               fread(original, 1, (size_t)length, file) == (size_t)length;
     fclose(file);
     if (!read_ok) {
-        LOGERR("Cannot read decoder settings: %s", path);
+        LOGERR("Cannot read settings: %s", path);
         free(original);
+        return NULL;
+    }
+    *out_length = (size_t)length;
+    return original;
+}
+
+bool hmm_enroll_pinyin_accessor_settings(const char *pack_dir,
+                                         HmmPinyinScheme scheme) {
+    size_t length = 0, configured_length = 0;
+    uint8_t *original = read_setting(
+        pack_dir, "pinyin_mutable_dictionary_accessor_setting_scheme", &length);
+    if (!original) return false;
+    uint8_t *configured = configure_pinyin_tokens(
+        original, length, pack_dir, scheme, &configured_length);
+    free(original);
+    if (!configured) return false;
+    uint8_t english[96];
+    size_t english_length = pb_write_string(
+        english, 1, "zh_t_i0_pinyin_android_english_token_dictionary");
+    const SettingAppend append = {2, english, english_length, false};
+    size_t mixed_length = 0;
+    uint8_t *mixed = append_to_setting_fields(
+        configured, configured_length, &append, 1, &mixed_length);
+    free(configured);
+    bool ok = mixed && enroll_decoder_setting(
+        mixed, mixed_length, "user_dictionary_accessor_for_ime");
+    free(mixed);
+    return ok;
+}
+
+bool hmm_enroll_decoder_settings(const char *pack_dir, uint32_t fuzzy_groups,
+                                 HmmPinyinScheme scheme) {
+    if (!pack_dir || !g_sm || !g_enrollSettingScheme ||
+        scheme < HMM_PINYIN_FULL || scheme > HMM_PINYIN_SHUANGPIN_ZIRANMA ||
+        (fuzzy_groups & ~HMM_FUZZY_ALL)) {
+        LOGERR("Cannot enroll decoder settings (fuzzy mask=%u, scheme=%d)",
+               fuzzy_groups, scheme);
+        return false;
+    }
+    size_t length = 0, configured_length = 0;
+    uint8_t *original = read_setting(pack_dir, "pinyin_qwerty_setting_scheme", &length);
+    if (!original) return false;
+    uint8_t *configured = configure_pinyin_tokens(
+        original, length, pack_dir, scheme, &configured_length);
+    free(original);
+    if (!configured) {
+        LOGERR("Cannot configure pinyin token dictionary");
         return false;
     }
 
     size_t base_length = 0;
     uint8_t *base = add_english_mixed_input_to_setting(
-        original, (size_t)length, &base_length);
-    free(original);
+        configured, configured_length, &base_length);
+    free(configured);
     if (!base) {
         LOGERR("Cannot configure English mixed input");
         return false;
@@ -591,7 +669,7 @@ bool hmm_enroll_decoder_settings(const char *pack_dir, uint32_t fuzzy_groups) {
             dictionaries + dictionaries_length, 1, name);
     }
     if (dictionaries_length) {
-        const SettingAppend append = {3, dictionaries, dictionaries_length};
+        const SettingAppend append = {3, dictionaries, dictionaries_length, false};
         size_t fuzzy_length = 0;
         uint8_t *fuzzy = append_to_setting_fields(
             base, base_length, &append, 1, &fuzzy_length);
@@ -653,7 +731,7 @@ bool hmm_enroll_all(const char *pack_dir) {
     }
 
     // 3. Enroll setting schemes (SettingScheme / aohv)
-    bool setting_ok = hmm_enroll_decoder_settings(pack_dir, 0);
+    bool setting_ok = hmm_enroll_decoder_settings(pack_dir, 0, HMM_PINYIN_FULL);
     jlong handles[] = { g_sm, 0 };
 
     if (g_loadBuiltInSettingScheme && !setting_ok) {

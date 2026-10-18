@@ -1103,6 +1103,13 @@ func testPredictionEdgeCases() {
         check("engine initializes", initOk)
         guard initOk else { print("Engine init failed."); exit(1) }
 
+        if args.dropFirst(3).contains("--shuangpin-only") {
+            testPinyinSchemePreference()
+            testPinyinSchemeRestoreFailure()
+            print("Results: \(gPass) passed, \(gFail) failed")
+            exit(gFail > 0 ? 1 : 0)
+        }
+
         testBasicTyping()
         testNumberSelection()
         testDelete()
@@ -1135,6 +1142,8 @@ testCorrectedPinyinReading()
         testPreferencesStorage()
         testFuzzyPinyinPreference()
         testFuzzyPinyinRestoreFailure()
+        testPinyinSchemePreference()
+        testPinyinSchemeRestoreFailure()
         testPreferenceSessionUpdates()
         testContextPreference()
         testCandidatePageSizePreference()

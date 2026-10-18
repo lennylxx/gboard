@@ -19,6 +19,40 @@ enum CandidatePageSize: Int, CaseIterable {
     case five = 5, six, seven, eight, nine
 }
 
+enum PinyinScheme: String, CaseIterable {
+    case full
+    case flypy
+    case ziranma
+    case ms
+    case abc
+    case ziguang
+    case jiajia
+
+    var title: String {
+        switch self {
+        case .full: return "全拼"
+        case .flypy: return "小鹤双拼"
+        case .ziranma: return "自然码双拼"
+        case .ms: return "微软双拼"
+        case .abc: return "智能 ABC 双拼"
+        case .ziguang: return "紫光双拼"
+        case .jiajia: return "拼音加加双拼"
+        }
+    }
+
+    var nativeValue: HmmPinyinScheme {
+        switch self {
+        case .full: return HMM_PINYIN_FULL
+        case .flypy: return HMM_PINYIN_SHUANGPIN_FLYPY
+        case .ziranma: return HMM_PINYIN_SHUANGPIN_ZIRANMA
+        case .ms: return HMM_PINYIN_SHUANGPIN_MS
+        case .abc: return HMM_PINYIN_SHUANGPIN_ABC
+        case .ziguang: return HMM_PINYIN_SHUANGPIN_ZIGUANG
+        case .jiajia: return HMM_PINYIN_SHUANGPIN_JIAJIA
+        }
+    }
+}
+
 enum PinyinDisplayMode: String, CaseIterable {
     case candidateWindow
     case inline
@@ -85,6 +119,8 @@ final class Preferences: NSObject, ObservableObject {
     static let didChangeNotification = Notification.Name("GboardIME.PreferencesDidChange")
 
     private let defaults: UserDefaults
+    private var pinyinCompositions: Set<ObjectIdentifier> = []
+    private var pinyinSchemeRetryPending = false
 
     private enum Key {
         static let predictions = "predictionsEnabled"
@@ -97,6 +133,7 @@ final class Preferences: NSObject, ObservableObject {
         static let learning = "learningEnabled"
         static let saveInterval = "userDictionarySaveInterval"
         static let fuzzyPinyin = "fuzzyPinyinGroups"
+        static let pinyinScheme = "pinyinScheme"
     }
 
     @Published var predictionsEnabled: Bool {
@@ -139,6 +176,52 @@ final class Preferences: NSObject, ObservableObject {
     }
 
     @Published private(set) var fuzzyPinyinApplyFailed = false
+    @Published private(set) var pinyinScheme: PinyinScheme {
+        didSet { save(pinyinScheme.rawValue, forKey: Key.pinyinScheme) }
+    }
+    @Published private(set) var pinyinSchemeApplyFailed = false
+
+    var pinyinSchemePending: Bool {
+        !pinyinSchemeApplyFailed && gboard_get_pinyin_scheme() != pinyinScheme.nativeValue
+    }
+
+    @discardableResult
+    func applyPinyinScheme(
+        _ scheme: PinyinScheme? = nil,
+        using apply: (HmmPinyinScheme) -> Bool = { gboard_set_pinyin_scheme($0) }
+    ) -> Bool {
+        precondition(Thread.isMainThread)
+        let requested = scheme ?? pinyinScheme
+        if pinyinCompositions.isEmpty {
+            pinyinSchemeRetryPending = false
+            guard apply(requested.nativeValue) else {
+                pinyinSchemeApplyFailed = true
+                NSLog("Unable to apply pinyin scheme: %@", requested.rawValue)
+                return false
+            }
+            pinyinSchemeApplyFailed = false
+        } else {
+            pinyinSchemeRetryPending = true
+        }
+        if requested != pinyinScheme {
+            pinyinScheme = requested
+        } else {
+            NotificationCenter.default.post(name: Self.didChangeNotification, object: self)
+        }
+        return true
+    }
+
+    func beginPinyinComposition(_ owner: AnyObject) {
+        pinyinCompositions.insert(ObjectIdentifier(owner))
+    }
+
+    func endPinyinComposition(_ owner: AnyObject) {
+        guard pinyinCompositions.remove(ObjectIdentifier(owner)) != nil else { return }
+        if pinyinCompositions.isEmpty &&
+            (pinyinSchemeRetryPending || pinyinSchemePending) {
+            applyPinyinScheme()
+        }
+    }
 
     var fuzzyPinyinMask: UInt32 {
         fuzzyPinyinGroups.reduce(0) { $0 | $1.mask }
@@ -202,6 +285,9 @@ final class Preferences: NSObject, ObservableObject {
         fuzzyPinyinGroups = Set(
             (defaults.stringArray(forKey: Key.fuzzyPinyin) ?? [])
                 .compactMap(FuzzyPinyinGroup.init(rawValue:)))
+        pinyinScheme = PinyinScheme(
+            rawValue: defaults.string(forKey: Key.pinyinScheme) ?? ""
+        ) ?? .full
         super.init()
     }
 

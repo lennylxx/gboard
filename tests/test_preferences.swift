@@ -186,6 +186,217 @@ func testFuzzyPinyinPreference() {
     }
 }
 
+func testPinyinSchemePreference() {
+    print("[test_pinyin_scheme_preference]")
+    withTestPreferences { preferences, defaults in
+        check("pinyin defaults to full", preferences.pinyinScheme == .full)
+        check("all seven schemes have distinct native values",
+              Set(PinyinScheme.allCases.map { $0.nativeValue.rawValue }).count == 7)
+        for scheme in PinyinScheme.allCases {
+            var applied: HmmPinyinScheme?
+            check("scheme preference applies its native value",
+                  preferences.applyPinyinScheme(scheme, using: {
+                      applied = $0
+                      return true
+                  }) && applied == scheme.nativeValue)
+            check("each scheme persists",
+                  Preferences(defaults: defaults).pinyinScheme == scheme)
+        }
+        defaults.set("unsupported", forKey: "pinyinScheme")
+        check("unknown stored scheme falls back to full",
+              Preferences(defaults: defaults).pinyinScheme == .full)
+        defaults.set(42, forKey: "pinyinScheme")
+        check("malformed stored scheme falls back to full",
+              Preferences(defaults: defaults).pinyinScheme == .full)
+    }
+
+    withTestPreferences { preferences, defaults in
+        preferences.contextEnabled = false
+        preferences.predictionsEnabled = false
+        preferences.learningEnabled = false
+        check("flypy scheme applies without a restart", preferences.applyPinyinScheme(.flypy))
+        let (session, delegate) = makeSession(preferences: preferences)
+        let (idleSession, _) = makeSession(preferences: preferences)
+        for ch in "nihc" { _ = session.appendLetter(String(ch)) }
+        check("flypy uses native keys and reading",
+              session.candidates.first == "你好" &&
+              session.segmentedPinyin == "ni'hc" &&
+              session.pinyinReading.text == "ni'hc" &&
+              !session.pinyinReading.spans.contains { $0.isCorrected || $0.isTypo })
+        let before = session.candidates
+        check("scheme switch is accepted but deferred during composition",
+              preferences.applyPinyinScheme(.ms) && preferences.pinyinSchemePending &&
+              preferences.pinyinScheme == .ms &&
+              gboard_get_pinyin_scheme() == HMM_PINYIN_SHUANGPIN_FLYPY)
+        check("idle sessions do not apply a pending switch early",
+              !idleSession.isComposing &&
+              session.candidates == before && delegate.committedText.isEmpty)
+        _ = session.deleteBack()
+        _ = session.appendLetter("c")
+        check("replaying input still uses the original scheme",
+              session.candidates.first == "你好" && session.composition == "nihc")
+        preferences.fuzzyPinyinGroups = [.lN]
+        check("fuzzy updates do not apply the deferred scheme",
+              session.candidates.first == "你好" &&
+              gboard_get_pinyin_scheme() == HMM_PINYIN_SHUANGPIN_FLYPY)
+        preferences.fuzzyPinyinGroups = []
+        check("partial shuangpin selection preserves remaining original keys",
+              selectCandidate("你", in: session) &&
+              session.composition == "hc" && session.candidates.first == "好" &&
+              gboard_get_pinyin_scheme() == HMM_PINYIN_SHUANGPIN_FLYPY)
+        _ = session.selectCurrent()
+        check("scheme applies only after the entire composition ends",
+              delegate.committedText == "你好" && !session.isComposing &&
+              !preferences.pinyinSchemePending &&
+              gboard_get_pinyin_scheme() == HMM_PINYIN_SHUANGPIN_MS)
+        check("deferred selection is persisted",
+              Preferences(defaults: defaults).pinyinScheme == .ms)
+
+        for scheme: PinyinScheme in [.ms, .ziguang] {
+            check("semicolon scheme applies", preferences.applyPinyinScheme(scheme))
+            delegate.clear()
+            _ = session.handlePunctuation(";")
+            check("semicolon outside composition remains punctuation",
+                  delegate.committedText == "；" && !session.isComposing)
+            delegate.clear()
+            _ = session.appendLetter("b")
+            _ = session.handlePunctuation(";")
+            check("semicolon reaches the native decoder",
+                  session.composition == "b;" && session.candidates.contains("冰") &&
+                  delegate.committedText.isEmpty)
+            _ = session.deleteBack()
+            check("semicolon deletes as one raw key", session.composition == "b")
+            session.cancel()
+        }
+        check("switch to full pinyin", preferences.applyPinyinScheme(.full))
+        delegate.clear()
+        for ch in "nihao" { _ = session.appendLetter(String(ch)) }
+        check("request flypy while full pinyin is active",
+              preferences.applyPinyinScheme(.flypy))
+        _ = session.commitRawPinyin()
+        check("Return preserves old raw input then switches",
+              delegate.committedText == "nihao" &&
+              gboard_get_pinyin_scheme() == HMM_PINYIN_SHUANGPIN_FLYPY)
+
+        delegate.clear()
+        for ch in "nihc" { _ = session.appendLetter(String(ch)) }
+        check("request full pinyin during flypy input", preferences.applyPinyinScheme(.full))
+        session.cancel()
+        check("Escape applies the pending scheme without inserting text",
+              delegate.committedText.isEmpty && !session.isComposing &&
+              gboard_get_pinyin_scheme() == HMM_PINYIN_FULL)
+        check("enable flypy for explicit separator", preferences.applyPinyinScheme(.flypy))
+        for ch in "ni" { _ = session.appendLetter(String(ch)) }
+        _ = session.handlePunctuation("'")
+        for ch in "hc" { _ = session.appendLetter(String(ch)) }
+        check("explicit separators remain raw-key based",
+              session.composition == "ni'hc" && session.segmentedPinyin == "ni'hc" &&
+              session.candidates.first == "你好")
+        _ = session.selectCurrent()
+        check("explicitly separated shuangpin commits correctly",
+              delegate.committedText == "你好" && !session.isComposing)
+
+        preferences.learningEnabled = true
+        delegate.clear()
+        check("shuangpin learning starts empty", gboard_user_dict_clear())
+        for ch in "ceui" { _ = session.appendLetter(String(ch)) }
+        check("shuangpin learning selects its first segment",
+              selectCandidate("侧", in: session) && session.composition == "ui")
+        check("request full pinyin before finishing learned phrase",
+              preferences.applyPinyinScheme(.full))
+        check("pending learning finishes before the accessor switches",
+              selectCandidate("试", in: session) &&
+              delegate.committedText == "侧试" && !session.isComposing &&
+              gboard_user_dict_get_size() > 0 &&
+              gboard_get_pinyin_scheme() == HMM_PINYIN_FULL)
+        for ch in "ceshi" { _ = session.appendLetter(String(ch)) }
+        check("shuangpin learning remains usable in full pinyin",
+              candidatePosition("侧试", in: session) != nil)
+        session.cancel()
+        check("clear shuangpin test learning", gboard_user_dict_clear())
+
+        preferences.predictionsEnabled = true
+        session.showPredictions(context: "生日快")
+        check("scheme test has predictions", session.isPredicting)
+        check("switch to flypy after prediction", preferences.applyPinyinScheme(.flypy))
+        check("scheme change dismisses stale predictions", !session.isPredicting)
+        _ = session.appendLetter("n")
+        check("request full pinyin before deleting last key", preferences.applyPinyinScheme(.full))
+        _ = session.deleteBack()
+        check("deleting the last key applies pending scheme",
+              !session.isComposing && gboard_get_pinyin_scheme() == HMM_PINYIN_FULL)
+        session.cancel()
+    }
+}
+
+func testPinyinSchemeRestoreFailure() {
+    print("[test_pinyin_scheme_restore_failure]")
+    withTestPreferences { _, defaults in
+        check("scheme restore starts from full", gboard_set_pinyin_scheme(HMM_PINYIN_FULL))
+        defaults.set("flypy", forKey: "pinyinScheme")
+        let preferences = Preferences(defaults: defaults)
+        preferences.contextEnabled = false
+        preferences.predictionsEnabled = false
+        preferences.learningEnabled = false
+        check("failed startup scheme restore is reported",
+              !preferences.applyPinyinScheme(using: { _ in false }) &&
+              preferences.pinyinSchemeApplyFailed)
+        check("failed restore retains the saved selection and native scheme",
+              preferences.pinyinScheme == .flypy &&
+              Preferences(defaults: defaults).pinyinScheme == .flypy &&
+              gboard_get_pinyin_scheme() == HMM_PINYIN_FULL)
+        let (session, delegate) = makeSession(preferences: preferences)
+        for ch in "nihao" { _ = session.appendLetter(String(ch)) }
+        preferences.correctionStyle = .color
+        session.cancel()
+        check("unrelated settings and composition boundaries do not retry a failed restore",
+              gboard_get_pinyin_scheme() == HMM_PINYIN_FULL &&
+              preferences.pinyinSchemeApplyFailed)
+        check("explicit retry restores the saved scheme",
+              preferences.applyPinyinScheme() && !preferences.pinyinSchemeApplyFailed &&
+              gboard_get_pinyin_scheme() == HMM_PINYIN_SHUANGPIN_FLYPY)
+        delegate.clear()
+        for ch in "nihc" { _ = session.appendLetter(String(ch)) }
+        check("restored scheme decodes correctly", session.candidates.first == "你好")
+        session.cancel()
+        check("failed new selection retains the previous selection",
+              !preferences.applyPinyinScheme(.ms, using: { _ in false }) &&
+              preferences.pinyinSchemeApplyFailed &&
+              preferences.pinyinScheme == .flypy &&
+              Preferences(defaults: defaults).pinyinScheme == .flypy &&
+              gboard_get_pinyin_scheme() == HMM_PINYIN_SHUANGPIN_FLYPY)
+        check("restore full after failure tests", preferences.applyPinyinScheme(.full))
+    }
+    withTestPreferences { preferences, _ in
+        preferences.contextEnabled = false
+        preferences.predictionsEnabled = false
+        preferences.learningEnabled = false
+        check("deferred recovery starts with a visible native failure",
+              !preferences.applyPinyinScheme(using: { _ in false }) &&
+              preferences.pinyinSchemeApplyFailed)
+        let (session, _) = makeSession(preferences: preferences)
+        _ = session.appendLetter("n")
+        var prematureApplies = 0
+        let unexpectedApply: (HmmPinyinScheme) -> Bool = { _ in
+            prematureApplies += 1
+            return true
+        }
+        check("queued selection does not clear an existing native failure",
+              preferences.applyPinyinScheme(.flypy, using: unexpectedApply) &&
+              preferences.pinyinSchemeApplyFailed)
+        check("selecting the old scheme still retains failure and queues a retry",
+              preferences.applyPinyinScheme(.full, using: unexpectedApply) &&
+              preferences.pinyinSchemeApplyFailed &&
+              preferences.pinyinScheme.nativeValue == gboard_get_pinyin_scheme())
+        check("queued recovery never applies before composition ends",
+              prematureApplies == 0)
+        session.cancel()
+        check("composition boundary retries even when the scheme value is unchanged",
+              !preferences.pinyinSchemeApplyFailed &&
+              preferences.pinyinScheme == .full && !preferences.pinyinSchemePending)
+    }
+}
+
 func testFuzzyPinyinRestoreFailure() {
     print("[test_fuzzy_pinyin_restore_failure]")
     withTestPreferences { _, defaults in

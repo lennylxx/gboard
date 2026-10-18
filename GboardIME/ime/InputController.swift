@@ -57,6 +57,7 @@ class GboardInputController: IMKInputController, PinyinSessionDelegate {
         engineReady = gboard_init_with_user_data(soPath, packDir, userDataDir)
         imeLog("Engine ready: \(engineReady)")
         if engineReady {
+            Preferences.shared.applyPinyinScheme()
             Preferences.shared.applyFuzzyPinyin()
         }
 

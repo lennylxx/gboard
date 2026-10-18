@@ -40,6 +40,12 @@ A macOS input method that runs Gboard's native HMM Pinyin engine via a custom AR
 - **Chinese-English mixed input** — Offers English words inside Pinyin
   input using Gboard's English token and system dictionaries. For example,
   `woyaogithub` yields `我要GitHub` and `yongpythonxie` yields `用Python写`.
+- **Double Pinyin (Shuangpin)** — Choose Flypy, Ziranma, Microsoft, Smart ABC,
+  Ziguang, or Pinyin Jiajia in Settings. Full Pinyin remains the default.
+  Uses Gboard's native token dictionaries, with raw scheme keys shown in the
+  Pinyin strip (for example, Flypy `nihc` → `你好`). Changes are saved and
+  take effect after the current composition ends, preserving partial
+  selections and learning. Microsoft and Ziguang accept `;` while composing.
 - **Chinese next-word prediction** — After a candidate is committed, shows
   the engine's next-word predictions for the last committed Chinese text.
   Press `Space` for the first one, `1-9` or click to insert one and continue
@@ -115,6 +121,7 @@ window; changes are saved automatically.
 | Key | Action |
 |-----|--------|
 | a-z | Append to pinyin composition |
+| ; | Append a Shuangpin key in Microsoft/Ziguang while composing; otherwise Chinese punctuation |
 | 1-9 | Select nth candidate or next-word prediction |
 | - | Show previous candidate or prediction page |
 | = | Show next candidate or prediction page |

@@ -43,6 +43,21 @@ enum {
 bool hmm_engine_set_fuzzy_pinyin(uint32_t groups);
 uint32_t hmm_engine_get_fuzzy_pinyin(void);
 
+typedef enum {
+    HMM_PINYIN_FULL = 0,
+    HMM_PINYIN_SHUANGPIN_ABC,
+    HMM_PINYIN_SHUANGPIN_FLYPY,
+    HMM_PINYIN_SHUANGPIN_JIAJIA,
+    HMM_PINYIN_SHUANGPIN_MS,
+    HMM_PINYIN_SHUANGPIN_ZIGUANG,
+    HMM_PINYIN_SHUANGPIN_ZIRANMA
+} HmmPinyinScheme;
+
+// Like fuzzy settings, a new scheme is adopted on the next decoder reset.
+// Call only at a composition boundary; raw keys belong to their old scheme.
+bool hmm_engine_set_pinyin_scheme(HmmPinyinScheme scheme);
+HmmPinyinScheme hmm_engine_get_pinyin_scheme(void);
+
 // Set the committed text immediately before the cursor. The engine keeps the
 // same trailing context window as Gboard Java: 5 Chinese UTF-16 code units or
 // 20 Latin UTF-16 code units, stopping at a language or punctuation boundary.

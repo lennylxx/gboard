@@ -37,6 +37,7 @@ class PinyinSession {
     private var contextEnabled: Bool
     private var pinyinDisplayMode: PinyinDisplayMode
     private var fuzzyPinyinMask: UInt32
+    private var requestedPinyinScheme: PinyinScheme
 
     init(preferences: Preferences = .shared) {
         self.preferences = preferences
@@ -44,6 +45,7 @@ class PinyinSession {
         contextEnabled = preferences.contextEnabled
         pinyinDisplayMode = preferences.pinyinDisplayMode
         fuzzyPinyinMask = gboard_get_fuzzy_pinyin()
+        requestedPinyinScheme = preferences.pinyinScheme
         preferencesObserver = NotificationCenter.default.addObserver(
             forName: Preferences.didChangeNotification, object: preferences, queue: nil
         ) { [weak self] _ in
@@ -69,9 +71,14 @@ class PinyinSession {
         if let observer = dictionaryObserver {
             NotificationCenter.default.removeObserver(observer)
         }
+        preferences.endPinyinComposition(self)
     }
 
     private func preferencesDidChange() {
+        if requestedPinyinScheme != preferences.pinyinScheme {
+            requestedPinyinScheme = preferences.pinyinScheme
+            dismissPredictions()
+        }
         let displayModeChanged = pinyinDisplayMode != preferences.pinyinDisplayMode
         pinyinDisplayMode = preferences.pinyinDisplayMode
         if !preferences.learningEnabled && isComposing {
@@ -174,6 +181,7 @@ class PinyinSession {
 
     func appendLetter(_ ch: String) -> KeyResult {
         if composition.isEmpty {
+            preferences.beginPinyinComposition(self)
             dismissPredictions()
             contextBeforeInput = preferences.contextEnabled
                 ? delegate?.sessionContextBeforeInput() ?? "" : ""
@@ -452,6 +460,9 @@ class PinyinSession {
     /// Handles a punctuation key: commits composition if needed, then inserts Chinese punctuation.
     /// Exception: apostrophe while composing sets a separator in the engine (e.g. xi'an).
     func handlePunctuation(_ ch: Character) -> KeyResult {
+        if ch == ";" && isComposing && usesSemicolonForPinyin {
+            return appendLetter(";")
+        }
         if (ch == "'" || ch == "\u{2019}" || ch == "\u{2018}") && isComposing {
             composition += "'"
             // Track separator at the vertex matching the letter count up to this apostrophe
@@ -469,6 +480,12 @@ class PinyinSession {
         dismissPredictions()
         delegate?.sessionInsertText(punct)
         return .handled
+    }
+
+    private var usesSemicolonForPinyin: Bool {
+        let scheme = gboard_get_pinyin_scheme()
+        return scheme == HMM_PINYIN_SHUANGPIN_MS ||
+            scheme == HMM_PINYIN_SHUANGPIN_ZIGUANG
     }
 
     // MARK: - Non-letter while composing
@@ -601,6 +618,7 @@ class PinyinSession {
         predictionContext = ""
         gboard_reset()
         delegate?.sessionHideCandidates()
+        preferences.endPinyinComposition(self)
     }
 
     /// Separator vertex positions set by user apostrophes.

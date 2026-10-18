@@ -229,4 +229,7 @@ static inline void *hmm_sym(ElfHandle *h, const char *name) {
 void hmm_resolve_natives(void);
 const HmmUserDictNatives *hmm_get_user_dict_natives(void);
 bool hmm_enroll_all(const char *pack_dir);
-bool hmm_enroll_decoder_settings(const char *pack_dir, uint32_t fuzzy_groups);
+bool hmm_enroll_decoder_settings(const char *pack_dir, uint32_t fuzzy_groups,
+                                 HmmPinyinScheme scheme);
+bool hmm_enroll_pinyin_accessor_settings(const char *pack_dir,
+                                         HmmPinyinScheme scheme);

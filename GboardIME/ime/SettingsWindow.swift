@@ -8,6 +8,7 @@ private struct SettingsView: View {
     @State private var clearError = ""
     @State private var didClear = false
     @State private var showFuzzyError = false
+    @State private var showPinyinSchemeError = false
     let onClose: () -> Void
 
     var body: some View {
@@ -37,6 +38,31 @@ private struct SettingsView: View {
             ScrollView {
                 VStack(spacing: 10) {
                     section("输入", systemImage: "keyboard") {
+                        HStack {
+                            Text("拼音方案")
+                            Spacer()
+                            Picker("拼音方案", selection: pinyinSchemeBinding) {
+                                ForEach(PinyinScheme.allCases, id: \.self) { scheme in
+                                    Text(scheme.title).tag(scheme)
+                                }
+                            }
+                            .labelsHidden()
+                            .pickerStyle(.menu)
+                            .frame(width: 150)
+                        }
+                        note("双拼使用原生键位，拼音栏显示双拼按键。切换在本次输入结束后生效。")
+                        if preferences.pinyinSchemeApplyFailed {
+                            Label("上次拼音方案切换失败", systemImage: "exclamationmark.triangle")
+                                .foregroundStyle(.orange)
+                            note("当前保存方案为「\(preferences.pinyinScheme.title)」；若输入暂停，请重新应用。")
+                            Button("重新应用「\(preferences.pinyinScheme.title)」") {
+                                if !preferences.applyPinyinScheme() {
+                                    showPinyinSchemeError = true
+                                }
+                            }
+                        } else if preferences.pinyinSchemePending {
+                            note("等待本次输入结束后切换。")
+                        }
                         toggle("单击 Shift 切换中英文", isOn: $preferences.shiftToggleEnabled)
                         note("关闭时恢复中文；不影响系统 Caps Lock 设置。")
                     }
@@ -184,6 +210,22 @@ private struct SettingsView: View {
         } message: {
             Text("原生引擎未能切换模糊音，已保留原设置和输入内容，请重试。")
         }
+        .alert("无法切换拼音方案", isPresented: $showPinyinSchemeError) {
+            Button("好", role: .cancel) {}
+        } message: {
+            Text("原生引擎未能完成方案切换。已保留原设置；若输入暂停，请重试应用。")
+        }
+    }
+
+    private var pinyinSchemeBinding: Binding<PinyinScheme> {
+        Binding(
+            get: { preferences.pinyinScheme },
+            set: {
+                if !preferences.applyPinyinScheme($0) {
+                    showPinyinSchemeError = true
+                }
+            }
+        )
     }
 
     private func fuzzyBinding(for group: FuzzyPinyinGroup) -> Binding<Bool> {

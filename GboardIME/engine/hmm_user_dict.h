@@ -3,6 +3,7 @@
 #pragma once
 
 #include <stdbool.h>
+#include "hmm_engine.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -54,6 +55,8 @@ void hmm_user_dict_destroy(void);
 
 // Returns true if the user dictionary subsystem is initialized.
 bool hmm_user_dict_is_ready(void);
+bool hmm_user_dict_set_pinyin_scheme(HmmPinyinScheme scheme);
+bool hmm_user_dict_pinyin_settings_valid(void);
 
 // Apply a dictionary snapshot enrolled by persist after the decoder resets.
 void hmm_user_dict_refresh_decoder_if_needed(void);

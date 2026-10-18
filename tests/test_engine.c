@@ -97,10 +97,35 @@ static void test_jni_native_lookup(void) {
 
 static fn_EnrollSettingScheme s_real_enroll_setting;
 static bool s_fail_enrollment;
+static bool s_fail_accessor_enrollment;
+static bool s_fail_decoder_rollback;
+static fn_RefreshData s_real_refresh_data;
+static int s_refresh_failures_remaining;
+static int s_refresh_calls;
+
+static void fail_settings_refresh(JNIEnv *env, jclass cls, jlong handle) {
+    s_refresh_calls++;
+    if (s_refresh_failures_remaining > 0) {
+        s_refresh_failures_remaining--;
+        raise(SIGSEGV);
+        return;
+    }
+    s_real_refresh_data(env, cls, handle);
+}
+
 static jboolean fail_context_setting(JNIEnv *env, jclass cls, jlong manager,
                                        jstring type, jstring locale, jbyteArray bytes) {
     if (s_fail_enrollment && strstr(jni_get_string(type), "-context")) {
         s_fail_enrollment = false;
+        return JNI_FALSE;
+    }
+    if (s_fail_accessor_enrollment &&
+        strcmp(jni_get_string(type), "user_dictionary_accessor_for_ime") == 0) {
+        s_fail_accessor_enrollment = false;
+        if (s_fail_decoder_rollback) {
+            s_fail_decoder_rollback = false;
+            s_fail_enrollment = true;
+        }
         return JNI_FALSE;
     }
     return s_real_enroll_setting(env, cls, manager, type, locale, bytes);
@@ -200,6 +225,207 @@ static void test_fuzzy_pinyin(void) {
     check("retry after enrollment failure succeeds",
           hmm_engine_set_fuzzy_pinyin(HMM_FUZZY_L_N));
     check("final fuzzy reset succeeds", hmm_engine_set_fuzzy_pinyin(0));
+}
+
+static void test_shuangpin(void) {
+    printf("[test_shuangpin]\n");
+    static const struct {
+        HmmPinyinScheme scheme;
+        const char *input;
+        const char *reading;
+    } cases[] = {
+        {HMM_PINYIN_SHUANGPIN_ABC, "nihk", "ni'hk"},
+        {HMM_PINYIN_SHUANGPIN_FLYPY, "nihc", "ni'hc"},
+        {HMM_PINYIN_SHUANGPIN_JIAJIA, "nihd", "ni'hd"},
+        {HMM_PINYIN_SHUANGPIN_MS, "nihk", "ni'hk"},
+        {HMM_PINYIN_SHUANGPIN_ZIGUANG, "nihq", "ni'hq"},
+        {HMM_PINYIN_SHUANGPIN_ZIRANMA, "nihk", "ni'hk"},
+    };
+    set_editor_context("");
+    check("default scheme is full pinyin",
+          hmm_engine_get_pinyin_scheme() == HMM_PINYIN_FULL);
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+        check("enable native shuangpin scheme",
+              hmm_engine_set_pinyin_scheme(cases[i].scheme) &&
+              hmm_engine_get_pinyin_scheme() == cases[i].scheme);
+        char *cands[50] = {0};
+        int count = get_candidates_bulk(cases[i].input, cands, 50);
+        check("native shuangpin phrase is first without correction",
+              count > 0 && strcmp(cands[0], "你好") == 0);
+        HmmTokenReading corrected[32];
+        check("scheme keys are not mistaken for spelling corrections",
+              hmm_engine_get_corrected_candidate_reading(0, corrected, 32) == 0);
+        char reading[256];
+        hmm_engine_get_segmented_pinyin(reading, sizeof(reading));
+        check("reading displays native shuangpin keys",
+              strcmp(reading, cases[i].reading) == 0);
+        check("full phrase consumes four original keys",
+              hmm_engine_get_candidate_consumed(0) == 4);
+        for (int j = 0; j < count; j++) {
+            if (strcmp(cands[j], "你") == 0) {
+                check("partial phrase consumes two original keys",
+                      hmm_engine_get_candidate_consumed(j) == 2);
+                break;
+            }
+        }
+        char tokens[32][16];
+        int types[32];
+        int token_count = hmm_user_dict_extract_tokens(0, tokens, types, 32);
+        const char *token_ptrs[32];
+        for (int t = 0; t < token_count; t++) token_ptrs[t] = tokens[t];
+        check("learn using the scheme-matched accessor",
+              token_count == 2 &&
+              hmm_user_dict_learn(token_ptrs, types, token_count, "你好", true));
+        check("learned entries survive accessor changes", hmm_user_dict_get_size() > 0);
+        free_cands(cands, count);
+        set_editor_context("我说");
+        count = get_candidates_bulk(cases[i].input, cands, 50);
+        check("context decoder also uses the selected scheme",
+              has_candidate(cands, count, "你好") &&
+              hmm_engine_get_candidate_consumed(0) == 4);
+        free_cands(cands, count);
+        set_editor_context("");
+        if (cases[i].scheme == HMM_PINYIN_SHUANGPIN_MS ||
+            cases[i].scheme == HMM_PINYIN_SHUANGPIN_ZIGUANG) {
+            count = get_candidates_bulk("b;", cands, 50);
+            check("semicolon final is decoded natively",
+                  has_candidate(cands, count, "冰"));
+            free_cands(cands, count);
+        }
+    }
+    check("enable flypy for edge cases",
+          hmm_engine_set_pinyin_scheme(HMM_PINYIN_SHUANGPIN_FLYPY));
+    char *cands[50] = {0};
+    int count = get_candidates_bulk("aa", cands, 50);
+    check("zero-initial syllable is native", has_candidate(cands, count, "啊"));
+    free_cands(cands, count);
+    count = get_candidates_bulk("n", cands, 50);
+    check("half syllable retains candidates", has_candidate(cands, count, "你"));
+    free_cands(cands, count);
+    count = get_candidates_bulk("github", cands, 50);
+    check("English mixed-input dictionary remains available",
+          has_candidate(cands, count, "GitHub"));
+    free_cands(cands, count);
+    check("fuzzy setting can coexist with shuangpin",
+          hmm_engine_set_fuzzy_pinyin(HMM_FUZZY_L_N));
+    count = get_candidates_bulk("hulj", cands, 50);
+    check("shuangpin uses enabled fuzzy expansions",
+          has_candidate(cands, count, "湖南"));
+    free_cands(cands, count);
+    check("reset fuzzy pinyin after shuangpin test", hmm_engine_set_fuzzy_pinyin(0));
+
+    count = get_candidates_bulk("nihc", cands, 50);
+    free_cands(cands, count);
+    jlong original = g_engine;
+    check("invalid pinyin scheme is rejected",
+          !hmm_engine_set_pinyin_scheme((HmmPinyinScheme)-1) &&
+          !hmm_engine_set_pinyin_scheme((HmmPinyinScheme)7) &&
+          hmm_engine_get_pinyin_scheme() == HMM_PINYIN_SHUANGPIN_FLYPY);
+    s_real_enroll_setting = g_enrollSettingScheme;
+    g_enrollSettingScheme = fail_context_setting;
+    s_fail_enrollment = true;
+    bool switched = hmm_engine_set_pinyin_scheme(HMM_PINYIN_SHUANGPIN_MS);
+    check("failed decoder enrollment retains the old scheme",
+          !switched && g_engine == original &&
+          hmm_engine_get_pinyin_scheme() == HMM_PINYIN_SHUANGPIN_FLYPY);
+    s_fail_accessor_enrollment = true;
+    switched = hmm_engine_set_pinyin_scheme(HMM_PINYIN_SHUANGPIN_MS);
+    g_enrollSettingScheme = s_real_enroll_setting;
+    check("failed accessor enrollment retains the old scheme",
+          !switched && hmm_engine_get_pinyin_scheme() == HMM_PINYIN_SHUANGPIN_FLYPY);
+    count = hmm_engine_get_candidates(cands, 50);
+    check("failed switch preserves active composition",
+          count > 0 && strcmp(cands[0], "你好") == 0);
+    free_cands(cands, count);
+    count = get_candidates_bulk("nihc", cands, 50);
+    check("rollback also survives the next decoder refresh",
+          count > 0 && strcmp(cands[0], "你好") == 0);
+    free_cands(cands, count);
+
+    s_real_refresh_data = g_refreshData;
+    g_refreshData = fail_settings_refresh;
+    s_refresh_failures_remaining = 1;
+    s_refresh_calls = 0;
+    switched = hmm_engine_set_pinyin_scheme(HMM_PINYIN_SHUANGPIN_MS);
+    check("accessor rollback refreshes the restored settings after a crash",
+          !switched && s_refresh_calls == 2 &&
+          hmm_user_dict_pinyin_settings_valid());
+    g_refreshData = s_real_refresh_data;
+    count = get_candidates_bulk("nihc", cands, 50);
+    check("accessor refresh recovery preserves the previous scheme",
+          count > 0 && strcmp(cands[0], "你好") == 0);
+    free_cands(cands, count);
+
+    g_refreshData = fail_settings_refresh;
+    s_refresh_failures_remaining = 2;
+    s_refresh_calls = 0;
+    switched = hmm_engine_set_pinyin_scheme(HMM_PINYIN_SHUANGPIN_MS);
+    check("failed accessor rollback is recorded explicitly",
+          !switched && s_refresh_calls == 2 &&
+          !hmm_user_dict_pinyin_settings_valid());
+    g_refreshData = s_real_refresh_data;
+    hmm_engine_prepare_input("nihc");
+    hmm_engine_reset();
+    check("failed accessor rollback blocks further input",
+          !hmm_engine_append("nihc"));
+    const char *blocked_tokens[] = {"ni", "hc"};
+    int blocked_types[] = {16, 16};
+    check("failed accessor rollback blocks learning with uncertain tokens",
+          !hmm_user_dict_learn(blocked_tokens, blocked_types, 2, "你好", true));
+    check("fuzzy settings cannot bypass failed accessor rollback",
+          !hmm_engine_set_fuzzy_pinyin(0));
+    check("retrying the current scheme repairs the accessor",
+          hmm_engine_set_pinyin_scheme(HMM_PINYIN_SHUANGPIN_FLYPY) &&
+          hmm_user_dict_pinyin_settings_valid());
+
+    g_enrollSettingScheme = fail_context_setting;
+    s_fail_accessor_enrollment = true;
+    s_fail_decoder_rollback = true;
+    switched = hmm_engine_set_pinyin_scheme(HMM_PINYIN_SHUANGPIN_MS);
+    g_enrollSettingScheme = s_real_enroll_setting;
+    check("failed decoder rollback retains the previous scheme selection",
+          !switched &&
+          hmm_engine_get_pinyin_scheme() == HMM_PINYIN_SHUANGPIN_FLYPY);
+    g_refreshData = fail_settings_refresh;
+    s_refresh_calls = 0;
+    hmm_engine_prepare_input("nihc");
+    hmm_engine_reset();
+    check("failed rollback blocks personalized decoder refresh and input",
+          s_refresh_calls == 0 && !hmm_engine_append("nihc"));
+    set_editor_context("我说");
+    hmm_engine_prepare_input("nihc");
+    hmm_engine_reset();
+    check("failed rollback also blocks context decoder refresh and input",
+          s_refresh_calls == 0 && !hmm_engine_append("nihc"));
+    check("dictionary snapshots cannot bypass inconsistent settings",
+          !hmm_engine_refresh_user_dictionary() && s_refresh_calls == 0);
+    g_refreshData = s_real_refresh_data;
+    check("unchanged fuzzy selection reenrolls a complete configuration to recover",
+          hmm_engine_set_fuzzy_pinyin(0));
+    count = get_candidates_bulk("nihc", cands, 50);
+    check("recovered context decoder uses the old scheme",
+          count > 0 && strcmp(cands[0], "你好") == 0);
+    free_cands(cands, count);
+    set_editor_context("");
+    count = get_candidates_bulk("nihc", cands, 50);
+    check("recovered personalized decoder uses the old scheme",
+          count > 0 && strcmp(cands[0], "你好") == 0);
+    free_cands(cands, count);
+
+    const char *learn_tokens[] = {"ce", "ui"};
+    int learn_types[] = {16, 16};
+    check("learn a distinctive shuangpin phrase",
+          hmm_user_dict_learn(learn_tokens, learn_types, 2, "侧试", true));
+    check("restore full pinyin", hmm_engine_set_pinyin_scheme(HMM_PINYIN_FULL));
+    count = get_candidates_bulk("nihao", cands, 50);
+    check("full pinyin works after switching back",
+          count > 0 && strcmp(cands[0], "你好") == 0);
+    free_cands(cands, count);
+    char *learned[500] = {0};
+    count = get_candidates_bulk("ceshi", learned, 500);
+    check("shuangpin learning remains usable after switching to full pinyin",
+          has_candidate(learned, count, "侧试"));
+    free_cands(learned, count);
 }
 
 static void test_init(const char *so, const char *pack) {
@@ -1263,6 +1489,41 @@ static void test_next_word_prediction(void) {
 int main(int argc, char **argv) {
     const char *so = "../source/resources/lib/arm64-v8a/libintegrated_shared_object.so";
     const char *pack = "../hmmoemdata/current";
+    if (argc == 4 && strcmp(argv[1], "--shuangpin-only") == 0) {
+        char user_dir[] = "/tmp/gboard-shuangpin-XXXXXX";
+        if (!mkdtemp(user_dir)) {
+            perror("mkdtemp(shuangpin)");
+            return 2;
+        }
+        if (!hmm_engine_init_with_user_data(argv[2], argv[3], user_dir)) return 2;
+        test_shuangpin();
+        check("persist shuangpin learning", hmm_user_dict_persist());
+        pid_t pid = fork();
+        if (pid == 0) {
+            execl(argv[0], argv[0], "--verify-user-dict", argv[2], argv[3],
+                  user_dir, "ceshi", "侧试", "500", NULL);
+            _exit(127);
+        }
+        int status = 0;
+        check("fresh process reloads shuangpin learning as full pinyin",
+              pid > 0 && waitpid(pid, &status, 0) == pid &&
+              WIFEXITED(status) && WEXITSTATUS(status) == 0);
+        check("clear entries learned by shuangpin test", hmm_user_dict_clear());
+        hmm_engine_destroy();
+        const char *files[] = {
+            "user_dict_3_3", "user_dict_3_3_bak", "user_dict_3_3_tmp",
+            "user_dict_3_3_english", "user_dict_3_3_english_bak",
+            "user_dict_3_3_english_tmp"
+        };
+        for (size_t i = 0; i < sizeof(files) / sizeof(files[0]); i++) {
+            char path[4096];
+            snprintf(path, sizeof(path), "%s/%s", user_dir, files[i]);
+            unlink(path);
+        }
+        rmdir(user_dir);
+        printf("Results: %d passed, %d failed\n", g_pass, g_fail);
+        return g_fail > 0 ? 1 : 0;
+    }
     if (argc == 4 && strcmp(argv[1], "--fuzzy-only") == 0) {
         test_jni_native_lookup();
         if (!hmm_engine_init(argv[2], argv[3])) return 2;
@@ -1386,6 +1647,16 @@ int main(int argc, char **argv) {
     test_english_mixed_input();
     test_next_word_prediction();
     test_fuzzy_pinyin();
+    pid_t shuangpin_pid = fork();
+    if (shuangpin_pid == 0) {
+        execl(argv[0], argv[0], "--shuangpin-only", so, pack, NULL);
+        _exit(127);
+    }
+    int shuangpin_status = 0;
+    check("native shuangpin integration passes in an isolated process",
+          shuangpin_pid > 0 &&
+          waitpid(shuangpin_pid, &shuangpin_status, 0) == shuangpin_pid &&
+          WIFEXITED(shuangpin_status) && WEXITSTATUS(shuangpin_status) == 0);
 
     // User dictionary tests
     test_user_dict_init();
