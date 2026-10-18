@@ -7,6 +7,7 @@
 #include <unistd.h>
 #include "engine/hmm_engine.h"
 #include "engine/hmm_user_dict.h"
+#include "engine/hmm_internal.h"
 
 static int g_pass = 0, g_fail = 0;
 
@@ -50,6 +51,156 @@ static bool has_candidate(char **cands, int count, const char *expected) {
 }
 
 // ── Tests ────────────────────────────────────────────────────────────────────
+
+static void test_native_stub_a(void) {}
+static void test_native_stub_b(void) {}
+
+static void test_jni_native_lookup(void) {
+    printf("[test_jni_native_lookup]\n");
+    JNIEnv *env = jni_env_create();
+    typedef struct { const char *name; const char *sig; void *fn; } TestNativeMethod;
+    typedef jint (*RegisterNatives)(JNIEnv *, jclass, const void *, jint);
+    RegisterNatives register_natives = (RegisterNatives)((void **)*env)[215];
+    const TestNativeMethod methods[] = {
+        {"testSingle", "(J)V", test_native_stub_a},
+        {"testShared", "(J)V", test_native_stub_a},
+        {"testShared", "(J)V", test_native_stub_a},
+        {"testShared", "(I)V", test_native_stub_b},
+        {"testSharedPrefix", "(J)V", test_native_stub_b},
+        {"testConflict", "(J)V", test_native_stub_a},
+        {"testConflict", "(J)V", test_native_stub_b},
+        {"testInvalid", "(J)V", NULL},
+    };
+    check("test natives register", register_natives(env, NULL, methods, 8) == JNI_OK);
+    check("single exact match resolves",
+          jni_find_registered_native_unique("testSingle", "(J)V") == test_native_stub_a);
+    check("same-address duplicates resolve",
+          jni_find_registered_native_unique("testShared", "(J)V") == test_native_stub_a);
+    check("overloads match their full signature",
+          jni_find_registered_native_unique("testShared", "(I)V") == test_native_stub_b);
+    check("signature substrings do not match",
+          !jni_find_registered_native_unique("testSingle", "(J)"));
+    check("name substrings do not match",
+          !jni_find_registered_native_unique("testShare", "(J)V"));
+    check("conflicting addresses are rejected",
+          !jni_find_registered_native_unique("testConflict", "(J)V"));
+    check("null native addresses are rejected",
+          !jni_find_registered_native_unique("testInvalid", "(J)V"));
+    check("missing native is rejected",
+          !jni_find_registered_native_unique("testMissing", "(J)V"));
+    jni_env_destroy(env);
+    env = jni_env_create();
+    check("new JNI environment clears stale registrations",
+          !jni_find_registered_native_unique("testSingle", "(J)V"));
+    jni_env_destroy(env);
+}
+
+static fn_EnrollSettingScheme s_real_enroll_setting;
+static bool s_fail_enrollment;
+static jboolean fail_context_setting(JNIEnv *env, jclass cls, jlong manager,
+                                       jstring type, jstring locale, jbyteArray bytes) {
+    if (s_fail_enrollment && strstr(jni_get_string(type), "-context")) {
+        s_fail_enrollment = false;
+        return JNI_FALSE;
+    }
+    return s_real_enroll_setting(env, cls, manager, type, locale, bytes);
+}
+
+static void test_fuzzy_pinyin(void) {
+    printf("[test_fuzzy_pinyin]\n");
+    static const struct {
+        uint32_t group;
+        const char *pinyin;
+        const char *expected;
+    } cases[] = {
+        {HMM_FUZZY_Z_ZH, "zidao", "知道"},
+        {HMM_FUZZY_C_CH, "cifan", "吃饭"},
+        {HMM_FUZZY_S_SH, "sijie", "世界"},
+        {HMM_FUZZY_AN_ANG, "shanhai", "上海"},
+        {HMM_FUZZY_EN_ENG, "penyou", "朋友"},
+        {HMM_FUZZY_IN_ING, "beijin", "北京"},
+        {HMM_FUZZY_L_N, "hulan", "湖南"},
+        {HMM_FUZZY_F_H, "feise", "黑色"},
+        {HMM_FUZZY_R_L, "lenmin", "人民"},
+        {HMM_FUZZY_K_G, "kaoxin", "高兴"},
+        {HMM_FUZZY_IAN_IANG, "xianfa", "想法"},
+        {HMM_FUZZY_UAN_UANG, "huanjin", "黄金"},
+    };
+    set_editor_context("");
+    check("fuzzy pinyin defaults to disabled", hmm_engine_get_fuzzy_pinyin() == 0);
+    check("shared decoder refresh resolves without a class name",
+          g_refreshData && g_refreshData == hmm_get_user_dict_natives()->refreshData &&
+          g_refreshData == jni_find_registered_native_unique("nativeRefreshData", "(J)V"));
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+        char *baseline[9] = {0};
+        int baseline_count = get_candidates_bulk(cases[i].pinyin, baseline, 9);
+        jlong original_engine = g_engine;
+        check("enable one fuzzy group", hmm_engine_set_fuzzy_pinyin(cases[i].group));
+        check("fuzzy setting does not rebuild the decoder", g_engine == original_engine);
+        char *unchanged[9] = {0};
+        int unchanged_count = hmm_engine_get_candidates(unchanged, 9);
+        bool deferred = unchanged_count == baseline_count;
+        for (int j = 0; j < unchanged_count && j < baseline_count; j++) {
+            if (strcmp(unchanged[j], baseline[j]) != 0) deferred = false;
+        }
+        check("enrollment preserves candidates until the next reset", deferred);
+        free_cands(unchanged, unchanged_count);
+        check("active fuzzy mask matches", hmm_engine_get_fuzzy_pinyin() == cases[i].group);
+        char *cands[50] = {0};
+        int count = get_candidates_bulk(cases[i].pinyin, cands, 50);
+        printf("    fuzzy %s ->", cases[i].pinyin);
+        for (int j = 0; j < count && j < 10; j++) printf(" %s", cands[j]);
+        printf("\n");
+        check(cases[i].expected, has_candidate(cands, count, cases[i].expected));
+        bool changed = count < baseline_count;
+        for (int j = 0; j < baseline_count && j < count; j++) {
+            if (strcmp(baseline[j], cands[j]) != 0) changed = true;
+        }
+        check("enabled group changes candidate ranking", changed);
+        free_cands(cands, count);
+        set_editor_context("我在");
+        count = get_candidates_bulk(cases[i].pinyin, cands, 50);
+        check("context decoder also uses fuzzy group",
+              has_candidate(cands, count, cases[i].expected));
+        free_cands(cands, count);
+        set_editor_context("");
+        check("disable individual fuzzy group", hmm_engine_set_fuzzy_pinyin(0));
+        count = get_candidates_bulk(cases[i].pinyin, cands, 9);
+        bool restored = count == baseline_count;
+        for (int j = 0; j < baseline_count && j < count; j++) {
+            if (strcmp(baseline[j], cands[j]) != 0) restored = false;
+        }
+        check("disabling restores original candidates", restored);
+        free_cands(cands, count);
+        free_cands(baseline, baseline_count);
+    }
+    check("all fuzzy groups can be combined", hmm_engine_set_fuzzy_pinyin(HMM_FUZZY_ALL));
+    check("disable all fuzzy groups", hmm_engine_set_fuzzy_pinyin(0));
+
+    char *cands[9] = {0};
+    int count = get_candidates_bulk("nihao", cands, 9);
+    free_cands(cands, count);
+    jlong original = g_engine;
+    check("unchanged settings preserve the decoder",
+          hmm_engine_set_fuzzy_pinyin(0) && g_engine == original);
+    check("invalid fuzzy mask is rejected",
+          !hmm_engine_set_fuzzy_pinyin(1u << 12) && g_engine == original &&
+          hmm_engine_get_fuzzy_pinyin() == 0);
+    s_real_enroll_setting = g_enrollSettingScheme;
+    s_fail_enrollment = true;
+    g_enrollSettingScheme = fail_context_setting;
+    bool switched = hmm_engine_set_fuzzy_pinyin(HMM_FUZZY_L_N);
+    g_enrollSettingScheme = s_real_enroll_setting;
+    check("failed enrollment keeps previous decoder and mask",
+          !switched && g_engine == original && hmm_engine_get_fuzzy_pinyin() == 0);
+    count = hmm_engine_get_candidates(cands, 9);
+    check("failed enrollment preserves active composition",
+          count > 0 && strcmp(cands[0], "你好") == 0);
+    free_cands(cands, count);
+    check("retry after enrollment failure succeeds",
+          hmm_engine_set_fuzzy_pinyin(HMM_FUZZY_L_N));
+    check("final fuzzy reset succeeds", hmm_engine_set_fuzzy_pinyin(0));
+}
 
 static void test_init(const char *so, const char *pack) {
     printf("[test_init]\n");
@@ -1112,6 +1263,14 @@ static void test_next_word_prediction(void) {
 int main(int argc, char **argv) {
     const char *so = "../source/resources/lib/arm64-v8a/libintegrated_shared_object.so";
     const char *pack = "../hmmoemdata/current";
+    if (argc == 4 && strcmp(argv[1], "--fuzzy-only") == 0) {
+        test_jni_native_lookup();
+        if (!hmm_engine_init(argv[2], argv[3])) return 2;
+        test_fuzzy_pinyin();
+        hmm_engine_destroy();
+        printf("Results: %d passed, %d failed\n", g_pass, g_fail);
+        return g_fail > 0 ? 1 : 0;
+    }
     if (argc == 5 && strcmp(argv[1], "--verify-ranking-policy") == 0) {
         if (!hmm_engine_init_with_user_data(argv[2], argv[3], argv[4]))
             return 2;
@@ -1197,6 +1356,7 @@ int main(int argc, char **argv) {
     unlink("tests/test_user_data/user_dict_3_3_english_tmp");
     unlink("tests/test_user_data/user_dict_3_3_english_bak");
 
+    test_jni_native_lookup();
     test_init(so, pack);
     if (g_fail > 0) { printf("\nEngine init failed — cannot continue.\n"); return 1; }
 
@@ -1225,6 +1385,7 @@ int main(int argc, char **argv) {
     test_segmented_pinyin();
     test_english_mixed_input();
     test_next_word_prediction();
+    test_fuzzy_pinyin();
 
     // User dictionary tests
     test_user_dict_init();

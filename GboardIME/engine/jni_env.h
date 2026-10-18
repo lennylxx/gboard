@@ -70,6 +70,9 @@ void        jni_SetIntArrayRegion(JNIEnv *e, jintArray a, jsize start, jsize len
 void       *jni_find_registered_native(const char *name_substring);
 void       *jni_find_registered_native_exact(const char *name);
 void       *jni_find_registered_native_by_sig(const char *name, const char *sig_substring);
+// Exact name/signature match; duplicate registrations must share one address.
+// Logs and returns NULL when missing, invalid, or ambiguous.
+void       *jni_find_registered_native_unique(const char *name, const char *sig);
 
 // Fake ScoredInput object for nativeAppend
 jobject     jni_create_scored_input(JNIEnv *env, const char *input, float score);

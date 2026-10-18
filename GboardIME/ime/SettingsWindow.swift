@@ -7,6 +7,7 @@ private struct SettingsView: View {
     @State private var showClearError = false
     @State private var clearError = ""
     @State private var didClear = false
+    @State private var showFuzzyError = false
     let onClose: () -> Void
 
     var body: some View {
@@ -38,6 +39,27 @@ private struct SettingsView: View {
                     section("输入", systemImage: "keyboard") {
                         toggle("单击 Shift 切换中英文", isOn: $preferences.shiftToggleEnabled)
                         note("关闭时恢复中文；不影响系统 Caps Lock 设置。")
+                    }
+                    section("模糊音", systemImage: "character.phonetic") {
+                        note("按需勾选易混淆的读音，立即生效，无需重启。默认全部关闭。")
+                        if preferences.fuzzyPinyinApplyFailed {
+                            Label("模糊音设置未生效", systemImage: "exclamationmark.triangle")
+                                .foregroundStyle(.orange)
+                            note("已保留原勾选项，输入暂使用引擎原有配置。")
+                            Button("重试应用") {
+                                if !preferences.applyFuzzyPinyin() {
+                                    showFuzzyError = true
+                                }
+                            }
+                        }
+                        LazyVGrid(columns: [
+                            GridItem(.flexible()), GridItem(.flexible())
+                        ], alignment: .leading, spacing: 8) {
+                            ForEach(FuzzyPinyinGroup.allCases, id: \.self) { group in
+                                Toggle(group.title, isOn: fuzzyBinding(for: group))
+                                    .toggleStyle(.checkbox)
+                            }
+                        }
                     }
                     section("候选与预测", systemImage: "list.bullet.rectangle") {
                         toggle("下一词预测", isOn: $preferences.predictionsEnabled)
@@ -157,6 +179,25 @@ private struct SettingsView: View {
         } message: {
             Text(clearError)
         }
+        .alert("无法更新模糊音设置", isPresented: $showFuzzyError) {
+            Button("好", role: .cancel) {}
+        } message: {
+            Text("原生引擎未能切换模糊音，已保留原设置和输入内容，请重试。")
+        }
+    }
+
+    private func fuzzyBinding(for group: FuzzyPinyinGroup) -> Binding<Bool> {
+        Binding(
+            get: { preferences.fuzzyPinyinGroups.contains(group) },
+            set: { enabled in
+                var groups = preferences.fuzzyPinyinGroups
+                if enabled { groups.insert(group) } else { groups.remove(group) }
+                guard preferences.applyFuzzyPinyin(groups) else {
+                    showFuzzyError = true
+                    return
+                }
+            }
+        )
     }
 
     private func section<Content: View>(

@@ -29,6 +29,10 @@ GboardIME 是一款适用于 macOS 的中文输入法。本项目通过自定义
 - **拼音纠错**：使用 Gboard 内置纠错，处理字母颠倒、漏打或多打。例如，
   `nihoa` 得到“你好”，`zhonguo` 得到“中国”。拼音条会标出改动：多打的
   字母加删除线，补上的字母显示为橙色。
+- **模糊音**：设置中可独立开启 12 组易混读音：z/zh、c/ch、s/sh、
+  an/ang、en/eng、in/ing、l/n、f/h、r/l、k/g、ian/iang、uan/uang。
+  默认全部关闭；修改立即生效并自动保存，无需重启，保留正在输入的拼音、
+  手动分隔和学习数据。例如，开启 l/n 后输入 `hulan` 可选择“湖南”。
 - **中英文混合输入**：使用 Gboard 的英文 token 与系统词典，在拼音输入
   中直接给出英文单词。例如，`woyaogithub` 得到“我要GitHub”，
   `yongpythonxie` 得到“用Python写”。

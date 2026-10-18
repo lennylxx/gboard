@@ -36,12 +36,14 @@ class PinyinSession {
     private var candidatePageSize: Int
     private var contextEnabled: Bool
     private var pinyinDisplayMode: PinyinDisplayMode
+    private var fuzzyPinyinMask: UInt32
 
     init(preferences: Preferences = .shared) {
         self.preferences = preferences
         candidatePageSize = preferences.candidatePageSize.rawValue
         contextEnabled = preferences.contextEnabled
         pinyinDisplayMode = preferences.pinyinDisplayMode
+        fuzzyPinyinMask = gboard_get_fuzzy_pinyin()
         preferencesObserver = NotificationCenter.default.addObserver(
             forName: Preferences.didChangeNotification, object: preferences, queue: nil
         ) { [weak self] _ in
@@ -79,6 +81,16 @@ class PinyinSession {
         candidatePageSize = preferences.candidatePageSize.rawValue
         let contextChanged = contextEnabled != preferences.contextEnabled
         contextEnabled = preferences.contextEnabled
+        let fuzzyChanged = !preferences.fuzzyPinyinApplyFailed &&
+            fuzzyPinyinMask != preferences.fuzzyPinyinMask
+        if fuzzyChanged {
+            guard gboard_set_fuzzy_pinyin(preferences.fuzzyPinyinMask) else {
+                NSLog("Unable to update fuzzy pinyin: mask=%u", preferences.fuzzyPinyinMask)
+                return
+            }
+            fuzzyPinyinMask = preferences.fuzzyPinyinMask
+            dismissPredictions()
+        }
 
         if contextChanged {
             contextBeforeInput = ""
@@ -95,8 +107,9 @@ class PinyinSession {
             if displayModeChanged {
                 delegate?.sessionSetMarkedText(segmentedPinyin)
             }
-            if contextChanged {
+            if contextChanged || fuzzyChanged {
                 fetchCandidates()
+                delegate?.sessionSetMarkedText(segmentedPinyin)
             } else if pageSizeChanged {
                 candidatePage = 0
                 fillCandidatePage()

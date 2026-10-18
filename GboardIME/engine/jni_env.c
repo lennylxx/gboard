@@ -219,6 +219,25 @@ void *jni_find_registered_native_by_sig(const char *name, const char *sig_substr
     }
     return NULL;
 }
+
+void *jni_find_registered_native_unique(const char *name, const char *sig) {
+    void *resolved = NULL;
+    for (int i = 0; i < g_reg_count; i++) {
+        const RegMethod *method = &g_reg_methods[i];
+        if (!method->name || !method->sig ||
+            strcmp(method->name, name) != 0 || strcmp(method->sig, sig) != 0) continue;
+        if (!method->fn || (resolved && resolved != method->fn)) {
+            fprintf(stderr, "[JNI] Conflicting native registration: %s %s (%p, %p)\n",
+                    name, sig, resolved, method->fn);
+            return NULL;
+        }
+        resolved = method->fn;
+    }
+    if (!resolved) {
+        fprintf(stderr, "[JNI] Native method not found: %s %s\n", name, sig);
+    }
+    return resolved;
+}
 static jint     fn_UnregisterNatives(JNIEnv *e, jclass c)        { (void)e;(void)c; return 0; }
 static jint     fn_PushLocalFrame(JNIEnv *e, jint n)             { (void)e;(void)n; return 0; }
 static jobject  fn_PopLocalFrame(JNIEnv *e, jobject o)           { (void)e; return o; }
@@ -827,6 +846,8 @@ static void build_iface(void) {
 
 JNIEnv *jni_env_create(void) {
     if (g_env) return g_env;
+    g_reg_count = 0;
+    s_mid_count = 0;
     build_iface();
     g_vm.functions = &g_vm_iface;
     JNIEnv *env = malloc(sizeof(void*));

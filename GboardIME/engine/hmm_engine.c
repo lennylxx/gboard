@@ -70,6 +70,9 @@ static bool s_has_external_context;
 static uint64_t s_session_id;
 static uint64_t s_last_session_id;
 static bool s_session_active;
+static uint32_t s_fuzzy_groups;
+static bool s_personalized_settings_dirty;
+static bool s_context_settings_dirty;
 
 static size_t put_varint(uint8_t *out, uint64_t value) {
     size_t written = 0;
@@ -203,6 +206,56 @@ static bool create_decoders(void) {
     if (!s_context_engine) return false;
     g_engine = s_personalized_engine;
     g_end_vertex = 0;
+    return true;
+}
+
+uint32_t hmm_engine_get_fuzzy_pinyin(void) {
+    return s_fuzzy_groups;
+}
+
+bool hmm_engine_set_fuzzy_pinyin(uint32_t groups) {
+    if ((groups & ~HMM_FUZZY_ALL) || !g_engine || !g_refreshData) {
+        LOGERR("Cannot set fuzzy pinyin (mask=%u, engine=%lld)",
+               groups, (long long)g_engine);
+        return false;
+    }
+    if (groups == s_fuzzy_groups) return true;
+
+    if (!hmm_enroll_decoder_settings(s_pack_dir, groups)) {
+        if (!hmm_enroll_decoder_settings(s_pack_dir, s_fuzzy_groups)) {
+            LOGERR("Failed to restore previous fuzzy pinyin settings");
+        }
+        LOGERR("Fuzzy pinyin update failed; keeping previous configuration");
+        return false;
+    }
+    s_fuzzy_groups = groups;
+    s_personalized_settings_dirty = true;
+    s_context_settings_dirty = true;
+    LOGERR("Fuzzy pinyin configured: mask=%u; refresh after reset", groups);
+    return true;
+}
+
+static bool settings_pending(void) {
+    return g_engine == s_context_engine
+        ? s_context_settings_dirty : s_personalized_settings_dirty;
+}
+
+bool hmm_engine_refresh_settings_after_reset(void) {
+    if (!settings_pending()) return true;
+    volatile bool refreshed = false;
+    CRASH_PROTECT_BEGIN()
+    g_refreshData(g_env, NULL, g_engine);
+    refreshed = true;
+    CRASH_PROTECT_END("nativeRefreshData(fuzzy pinyin)")
+    if (!refreshed) {
+        LOGERR("Unable to refresh fuzzy pinyin configuration");
+        return false;
+    }
+    if (g_engine == s_context_engine) {
+        s_context_settings_dirty = false;
+    } else {
+        s_personalized_settings_dirty = false;
+    }
     return true;
 }
 
@@ -418,6 +471,9 @@ void hmm_engine_destroy(void) {
     s_has_external_context = false;
     s_session_id = 0;
     s_session_active = false;
+    s_fuzzy_groups = 0;
+    s_personalized_settings_dirty = false;
+    s_context_settings_dirty = false;
     s_pack_dir[0] = '\0';
 
     elf_unload(g_elf);

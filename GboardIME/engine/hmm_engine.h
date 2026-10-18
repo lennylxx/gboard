@@ -1,6 +1,7 @@
 #pragma once
 #include <stddef.h>
 #include <stdbool.h>
+#include <stdint.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -18,6 +19,29 @@ bool hmm_engine_init(const char *so_path, const char *pack_dir);
 //                NULL disables user dictionary persistence.
 bool hmm_engine_init_with_user_data(const char *so_path, const char *pack_dir,
                                      const char *user_data_dir);
+
+enum {
+    HMM_FUZZY_Z_ZH = 1u << 0,
+    HMM_FUZZY_C_CH = 1u << 1,
+    HMM_FUZZY_S_SH = 1u << 2,
+    HMM_FUZZY_AN_ANG = 1u << 3,
+    HMM_FUZZY_EN_ENG = 1u << 4,
+    HMM_FUZZY_IN_ING = 1u << 5,
+    HMM_FUZZY_L_N = 1u << 6,
+    HMM_FUZZY_F_H = 1u << 7,
+    HMM_FUZZY_R_L = 1u << 8,
+    HMM_FUZZY_K_G = 1u << 9,
+    HMM_FUZZY_IAN_IANG = 1u << 10,
+    HMM_FUZZY_UAN_UANG = 1u << 11,
+    HMM_FUZZY_ALL = (1u << 12) - 1
+};
+
+// Enroll updated settings without replacing decoders or disturbing input.
+// Each decoder adopts them on its next reset via nativeRefreshData.
+// To update active candidates immediately, reset and replay the composition.
+// Failed enrollment retains the previous configuration and composition.
+bool hmm_engine_set_fuzzy_pinyin(uint32_t groups);
+uint32_t hmm_engine_get_fuzzy_pinyin(void);
 
 // Set the committed text immediately before the cursor. The engine keeps the
 // same trailing context window as Gboard Java: 5 Chinese UTF-16 code units or

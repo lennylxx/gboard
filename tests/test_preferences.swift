@@ -21,6 +21,8 @@ func testPreferencesStorage() {
               preferences.candidatePageSize == .nine && preferences.correctionStyle == .edits)
         check("user dictionary keeps the four-hour default",
               preferences.userDictionarySaveInterval == .fourHours)
+        check("fuzzy pinyin defaults to disabled",
+              preferences.fuzzyPinyinGroups.isEmpty && preferences.fuzzyPinyinMask == 0)
 
         var notifications = 0
         let observer = NotificationCenter.default.addObserver(
@@ -35,7 +37,8 @@ func testPreferencesStorage() {
         preferences.pinyinDisplayMode = .hidden
         preferences.learningEnabled = false
         preferences.userDictionarySaveInterval = .fifteenMinutes
-        check("each preference change notifies synchronously", notifications == 8)
+        preferences.fuzzyPinyinGroups = [.lN, .anAng]
+        check("each preference change notifies synchronously", notifications == 9)
 
         let restored = Preferences(defaults: defaults)
         check("disabled switches persist",
@@ -44,6 +47,28 @@ func testPreferencesStorage() {
               !restored.learningEnabled)
         check("user dictionary interval persists",
               restored.userDictionarySaveInterval == .fifteenMinutes)
+        check("fuzzy groups persist independently",
+              restored.fuzzyPinyinGroups == [.lN, .anAng] &&
+              restored.fuzzyPinyinMask == UInt32(HMM_FUZZY_L_N | HMM_FUZZY_AN_ANG))
+        for group in FuzzyPinyinGroup.allCases {
+            restored.fuzzyPinyinGroups = [group]
+            check("\(group.title) persists with its native mask",
+                  Preferences(defaults: defaults).fuzzyPinyinGroups == [group] &&
+                  restored.fuzzyPinyinMask == group.mask)
+        }
+        restored.fuzzyPinyinGroups = Set(FuzzyPinyinGroup.allCases)
+        check("all fuzzy masks are distinct and cover native options",
+              restored.fuzzyPinyinMask == UInt32(HMM_FUZZY_ALL) &&
+              Set(FuzzyPinyinGroup.allCases.map(\.mask)).count == 12)
+        restored.fuzzyPinyinGroups = []
+        check("disabled fuzzy groups persist",
+              Preferences(defaults: defaults).fuzzyPinyinGroups.isEmpty)
+        defaults.set(["l_n", "unknown", "l_n"], forKey: "fuzzyPinyinGroups")
+        check("unknown fuzzy groups are ignored and duplicates removed",
+              Preferences(defaults: defaults).fuzzyPinyinGroups == [.lN])
+        defaults.set(42, forKey: "fuzzyPinyinGroups")
+        check("malformed fuzzy preferences remain disabled",
+              Preferences(defaults: defaults).fuzzyPinyinGroups.isEmpty)
         for mode in PinyinDisplayMode.allCases {
             restored.pinyinDisplayMode = mode
             check("\(mode.rawValue) display mode persists",
@@ -69,6 +94,167 @@ func testPreferencesStorage() {
               recovered.candidatePageSize == .nine && recovered.correctionStyle == .edits &&
               recovered.userDictionarySaveInterval == .fourHours &&
               recovered.pinyinDisplayMode == .candidateWindow)
+    }
+}
+
+func testFuzzyPinyinPreference() {
+    print("[test_fuzzy_pinyin_preference]")
+    withTestPreferences { preferences, defaults in
+        preferences.contextEnabled = false
+        preferences.predictionsEnabled = false
+        preferences.learningEnabled = false
+        let (session, delegate) = makeSession(preferences: preferences)
+        for ch in "hulan" { _ = session.appendLetter(String(ch)) }
+        let baseline = session.candidates
+        preferences.fuzzyPinyinGroups = [.lN]
+        check("fuzzy preference immediately redecodes the active composition",
+              session.composition == "hulan" && session.candidates.first == "湖南" &&
+              delegate.shownCandidates == session.candidates &&
+              delegate.committedText.isEmpty &&
+              delegate.markedText == session.segmentedPinyin)
+        preferences.fuzzyPinyinGroups = []
+        check("disabling fuzzy pinyin restores current candidates",
+              session.candidates == baseline && session.composition == "hulan")
+        preferences.fuzzyPinyinGroups = [.lN]
+        _ = session.selectCurrent()
+        check("fuzzy candidate consumes its original typed pinyin",
+              delegate.committedText == "湖南" && !session.isComposing)
+
+        session.cancel()
+        delegate.clear()
+        for ch in "xi" { _ = session.appendLetter(String(ch)) }
+        _ = session.handlePunctuation("'")
+        for ch in "an" { _ = session.appendLetter(String(ch)) }
+        preferences.fuzzyPinyinGroups = [.lN, .zZh]
+        check("fuzzy switch preserves manual separators",
+              session.composition == "xi'an" &&
+              session.segmentedPinyin == "xi'an" && session.candidates.first == "西安")
+        _ = session.selectCurrent()
+        check("manual separator selection still commits correctly",
+              delegate.committedText == "西安" && !session.isComposing)
+
+        session.cancel()
+        delegate.clear()
+        for ch in "nihaohulan" { _ = session.appendLetter(String(ch)) }
+        check("partial selection before fuzzy switch succeeds",
+              selectCandidate("你好", in: session) && session.composition == "hulan")
+        preferences.fuzzyPinyinGroups = [.lN]
+        _ = session.selectCurrent()
+        check("fuzzy switch retains partial commits and remaining consumption",
+              delegate.committedText == "你好湖南" && !session.isComposing)
+        session.cancel()
+        preferences.fuzzyPinyinGroups = []
+        preferences.predictionsEnabled = true
+        session.showPredictions(context: "生日快")
+        check("fuzzy test has predictions", session.isPredicting)
+        preferences.fuzzyPinyinGroups = [.lN]
+        check("fuzzy switch dismisses stale predictions without inserting text",
+              !session.isPredicting && !session.isComposing &&
+              delegate.committedText == "你好湖南")
+        let restored = Preferences(defaults: defaults)
+        check("saved fuzzy configuration can be restored to the engine",
+              gboard_set_fuzzy_pinyin(restored.fuzzyPinyinMask) &&
+              gboard_get_fuzzy_pinyin() == restored.fuzzyPinyinMask)
+        session.cancel()
+        delegate.clear()
+        preferences.contextEnabled = true
+        delegate.contextBeforeInput = "我对这里很"
+        for ch in "bushu" { _ = session.appendLetter(String(ch)) }
+        preferences.fuzzyPinyinGroups = [.lN, .fH]
+        check("fuzzy updates preserve context-aware ranking",
+              session.candidates.first == "不熟" && session.composition == "bushu" &&
+              delegate.contextRequestCount == 1)
+        session.cancel()
+        delegate.clear()
+        preferences.contextEnabled = false
+        preferences.learningEnabled = true
+        check("fuzzy learning test clears existing data", gboard_user_dict_clear())
+        for ch in "ceshi" { _ = session.appendLetter(String(ch)) }
+        check("fuzzy learning test selects its first segment",
+              selectCandidate("侧", in: session) && session.composition == "shi")
+        preferences.fuzzyPinyinGroups = [.lN]
+        check("fuzzy switch retains pending segmented learning",
+              selectCandidate("试", in: session) && delegate.committedText == "侧试" &&
+              !session.isComposing && gboard_user_dict_get_size() > 0)
+        let learnedSize = gboard_user_dict_get_size()
+        preferences.fuzzyPinyinGroups = [.zZh, .anAng]
+        check("fuzzy switch keeps learned dictionary entries",
+              gboard_user_dict_get_size() == learnedSize)
+        check("fuzzy learning test clears its learned entries", gboard_user_dict_clear())
+        preferences.fuzzyPinyinGroups = []
+        session.cancel()
+    }
+}
+
+func testFuzzyPinyinRestoreFailure() {
+    print("[test_fuzzy_pinyin_restore_failure]")
+    withTestPreferences { _, defaults in
+        check("restore test starts with fuzzy pinyin disabled", gboard_set_fuzzy_pinyin(0))
+        defaults.set(["l_n"], forKey: "fuzzyPinyinGroups")
+        let preferences = Preferences(defaults: defaults)
+        preferences.contextEnabled = false
+        preferences.predictionsEnabled = false
+        preferences.learningEnabled = false
+        var requestedMasks: [UInt32] = []
+        let failApply: (UInt32) -> Bool = { mask in
+            requestedMasks.append(mask)
+            return false
+        }
+        check("startup restore failure is reported",
+              !preferences.applyFuzzyPinyin(using: failApply) &&
+              preferences.fuzzyPinyinApplyFailed)
+        check("startup failure keeps saved selections and native configuration",
+              preferences.fuzzyPinyinGroups == [.lN] &&
+              Preferences(defaults: defaults).fuzzyPinyinGroups == [.lN] &&
+              gboard_get_fuzzy_pinyin() == 0)
+        check("failure status is transient, not a saved preference",
+              !Preferences(defaults: defaults).fuzzyPinyinApplyFailed)
+
+        let (session, delegate) = makeSession(preferences: preferences)
+        for ch in "hulan" { _ = session.appendLetter(String(ch)) }
+        let originalCandidates = session.candidates
+        let originalMarkedText = delegate.markedText
+        check("composition still uses original configuration after failed restore",
+              originalCandidates.first == "护栏" && session.composition == "hulan")
+        check("failed retry continues to report unapplied settings",
+              !preferences.applyFuzzyPinyin(using: failApply) &&
+              preferences.fuzzyPinyinApplyFailed)
+        check("failed retry preserves composition, candidates and saved choices",
+              session.composition == "hulan" && session.candidates == originalCandidates &&
+              delegate.markedText == originalMarkedText && delegate.committedText.isEmpty &&
+              Preferences(defaults: defaults).fuzzyPinyinGroups == [.lN])
+        preferences.correctionStyle = .color
+        check("unrelated preferences do not silently retry failed fuzzy settings",
+              preferences.fuzzyPinyinApplyFailed && gboard_get_fuzzy_pinyin() == 0 &&
+              session.candidates == originalCandidates)
+        check("retry always uses the saved mask",
+              requestedMasks == [UInt32(HMM_FUZZY_L_N), UInt32(HMM_FUZZY_L_N)])
+
+        check("successful retry clears failure status",
+              preferences.applyFuzzyPinyin() && !preferences.fuzzyPinyinApplyFailed)
+        check("retry refreshes a session created after failed startup",
+              session.composition == "hulan" && session.candidates.first == "湖南" &&
+              delegate.shownCandidates == session.candidates &&
+              delegate.committedText.isEmpty &&
+              delegate.markedText == session.segmentedPinyin)
+        check("retry preserves persisted selections",
+              Preferences(defaults: defaults).fuzzyPinyinGroups == [.lN])
+        let appliedCandidates = session.candidates
+        check("failed new selection leaves existing applied state intact",
+              !preferences.applyFuzzyPinyin([.lN, .zZh], using: failApply) &&
+              !preferences.fuzzyPinyinApplyFailed &&
+              preferences.fuzzyPinyinGroups == [.lN] &&
+              gboard_get_fuzzy_pinyin() == UInt32(HMM_FUZZY_L_N) &&
+              session.candidates == appliedCandidates)
+        check("failed new selection does not overwrite stored choices",
+              Preferences(defaults: defaults).fuzzyPinyinGroups == [.lN])
+        check("successful selection updates settings and runtime together",
+              preferences.applyFuzzyPinyin([.lN, .zZh]) &&
+              preferences.fuzzyPinyinGroups == [.lN, .zZh] &&
+              Preferences(defaults: defaults).fuzzyPinyinGroups == [.lN, .zZh] &&
+              !preferences.fuzzyPinyinApplyFailed)
+        check("restore test resets fuzzy pinyin", preferences.applyFuzzyPinyin([]))
+        session.cancel()
     }
 }
 

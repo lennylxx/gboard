@@ -173,8 +173,9 @@ static uint8_t *append_to_setting_fields(const uint8_t *orig, size_t orig_len,
 
     for (int i = 0; i < append_count; i++) {
         if (!applied[i]) {
-            LOGERR("SettingScheme field %d not found; append skipped",
+            LOGERR("SettingScheme field %d not found",
                    appends[i].field);
+            goto invalid;
         }
     }
     *out_len = out_pos;
@@ -518,6 +519,107 @@ static bool enroll_pack(const char *pack_dir) {
     return ok;
 }
 
+static bool enroll_decoder_setting(const uint8_t *bytes, size_t length,
+                                    const char *identifier) {
+    size_t renamed_length = 0;
+    uint8_t *renamed = replace_setting_id(
+        bytes, length, identifier, &renamed_length);
+    if (!renamed) return false;
+    jbyteArray payload = jni_NewByteArray(g_env, (jsize)renamed_length);
+    jni_SetByteArrayRegion(g_env, payload, 0, (jsize)renamed_length,
+                           (jbyte *)renamed);
+    free(renamed);
+    jstring type = jni_NewStringUTF(g_env, identifier);
+    jstring locale = jni_NewStringUTF(g_env, "");
+    volatile bool ok = false;
+    CRASH_PROTECT_BEGIN()
+    ok = g_enrollSettingScheme(g_env, NULL, g_sm, type, locale, payload);
+    CRASH_PROTECT_END("nativeEnrollSettingScheme(decoder)")
+    free(payload);
+    jni_release_string(type);
+    jni_release_string(locale);
+    if (!ok) LOGERR("Failed to enroll decoder setting '%s'", identifier);
+    return ok;
+}
+
+bool hmm_enroll_decoder_settings(const char *pack_dir, uint32_t fuzzy_groups) {
+    if (!pack_dir || !g_sm || !g_enrollSettingScheme ||
+        (fuzzy_groups & ~HMM_FUZZY_ALL)) {
+        LOGERR("Cannot enroll decoder settings (fuzzy mask=%u)", fuzzy_groups);
+        return false;
+    }
+    char path[4096];
+    snprintf(path, sizeof(path), "%s/pinyin_qwerty_setting_scheme", pack_dir);
+    FILE *file = fopen(path, "rb");
+    if (!file) {
+        LOGERR("Cannot open decoder settings: %s", path);
+        return false;
+    }
+    bool read_ok = fseek(file, 0, SEEK_END) == 0;
+    long length = read_ok ? ftell(file) : -1;
+    uint8_t *original = length > 0 ? malloc((size_t)length) : NULL;
+    read_ok = original && fseek(file, 0, SEEK_SET) == 0 &&
+              fread(original, 1, (size_t)length, file) == (size_t)length;
+    fclose(file);
+    if (!read_ok) {
+        LOGERR("Cannot read decoder settings: %s", path);
+        free(original);
+        return false;
+    }
+
+    size_t base_length = 0;
+    uint8_t *base = add_english_mixed_input_to_setting(
+        original, (size_t)length, &base_length);
+    free(original);
+    if (!base) {
+        LOGERR("Cannot configure English mixed input");
+        return false;
+    }
+    // Keep bit ordering in sync with HMM_FUZZY_* and PinyinHmmEngineFactory.
+    static const char *const groups[] = {
+        "z_zh", "c_ch", "s_sh", "an_ang", "en_eng", "in_ing",
+        "l_n", "f_h", "r_l", "k_g", "ian_iang", "uan_uang"
+    };
+    uint8_t dictionaries[2048];
+    size_t dictionaries_length = 0;
+    for (size_t i = 0; i < sizeof(groups) / sizeof(groups[0]); i++) {
+        if (!(fuzzy_groups & (1u << i))) continue;
+        char name[128];
+        snprintf(name, sizeof(name),
+                 "zh_t_i0_pinyin_android_%s_fuzzy_expansion_dictionary", groups[i]);
+        dictionaries_length += pb_write_string(
+            dictionaries + dictionaries_length, 1, name);
+    }
+    if (dictionaries_length) {
+        const SettingAppend append = {3, dictionaries, dictionaries_length};
+        size_t fuzzy_length = 0;
+        uint8_t *fuzzy = append_to_setting_fields(
+            base, base_length, &append, 1, &fuzzy_length);
+        free(base);
+        base = fuzzy;
+        base_length = fuzzy_length;
+        if (!base) {
+            LOGERR("Cannot configure fuzzy pinyin dictionaries");
+            return false;
+        }
+    }
+
+    size_t personalized_length = 0;
+    uint8_t *personalized = add_user_dictionary_to_setting(
+        base, base_length, &personalized_length);
+    bool ok = personalized &&
+        enroll_decoder_setting(personalized, personalized_length,
+                               "zh-t-i0-pinyin-x-f0-delight") &&
+        enroll_decoder_setting(personalized, personalized_length,
+                               "zh-t-i0-pinyin") &&
+        enroll_decoder_setting(base, base_length,
+                               "zh-t-i0-pinyin-x-f0-delight-context");
+    free(personalized);
+    free(base);
+    if (!ok) LOGERR("Decoder setting enrollment failed (fuzzy mask=%u)", fuzzy_groups);
+    return ok;
+}
+
 // ── Public enrollment entry point ───────────────────────────────────────────
 
 bool hmm_enroll_all(const char *pack_dir) {
@@ -551,77 +653,8 @@ bool hmm_enroll_all(const char *pack_dir) {
     }
 
     // 3. Enroll setting schemes (SettingScheme / aohv)
-    bool setting_ok = false;
+    bool setting_ok = hmm_enroll_decoder_settings(pack_dir, 0);
     jlong handles[] = { g_sm, 0 };
-
-    if (g_enrollSettingScheme) {
-        const char *scheme_files[] = { "pinyin_qwerty_setting_scheme", NULL };
-        const char *type_strs[] = { "zh-t-i0-pinyin-x-f0-delight", "zh-t-i0-pinyin", NULL };
-        for (int si = 0; scheme_files[si]; si++) {
-            char spath[4096];
-            snprintf(spath, sizeof(spath), "%s/%s", pack_dir, scheme_files[si]);
-            FILE *sfp = fopen(spath, "rb");
-            if (!sfp) continue;
-            fseek(sfp, 0, SEEK_END);
-            long ssz = ftell(sfp);
-            fseek(sfp, 0, SEEK_SET);
-            uint8_t *sbuf = malloc((size_t)ssz);
-            fread(sbuf, 1, (size_t)ssz, sfp);
-            fclose(sfp);
-            size_t base_size = (size_t)ssz;
-            uint8_t *english = add_english_mixed_input_to_setting(
-                sbuf, (size_t)ssz, &base_size);
-            const uint8_t *base_bytes = english ? english : sbuf;
-            if (!english) base_size = (size_t)ssz;
-
-            size_t setting_size = base_size;
-            uint8_t *modified = add_user_dictionary_to_setting(
-                base_bytes, base_size, &setting_size);
-            const uint8_t *setting_bytes = modified ? modified : base_bytes;
-            if (!modified) setting_size = base_size;
-            jbyteArray ba = jni_NewByteArray(g_env, (jsize)setting_size);
-            jni_SetByteArrayRegion(g_env, ba, 0, (jsize)setting_size,
-                                   (jbyte *)setting_bytes);
-            for (int hi = 0; handles[hi]; hi++) {
-                for (int ti = 0; type_strs[ti]; ti++) {
-                    jstring st = jni_NewStringUTF(g_env, type_strs[ti]);
-                    jstring sl = jni_NewStringUTF(g_env, "");
-                    CRASH_PROTECT_BEGIN()
-                    jboolean r = g_enrollSettingScheme(g_env, NULL, handles[hi], st, sl, ba);
-                    LOGERR("enrollSettingScheme(handle=%lld,'%s','%s') → %d",
-                        (long long)handles[hi], type_strs[ti], scheme_files[si], r);
-                    if (r) setting_ok = true;
-                    CRASH_PROTECT_END("nativeEnrollSettingScheme")
-                }
-
-                const char *context_id =
-                    "zh-t-i0-pinyin-x-f0-delight-context";
-                size_t context_size = 0;
-                uint8_t *context_setting = replace_setting_id(
-                    base_bytes, base_size, context_id, &context_size);
-                if (!context_setting) continue;
-                jbyteArray context_ba =
-                    jni_NewByteArray(g_env, (jsize)context_size);
-                jni_SetByteArrayRegion(
-                    g_env, context_ba, 0, (jsize)context_size,
-                    (jbyte *)context_setting);
-                free(context_setting);
-                jstring context_type = jni_NewStringUTF(g_env, context_id);
-                jstring context_locale = jni_NewStringUTF(g_env, "");
-                CRASH_PROTECT_BEGIN()
-                jboolean context_ok = g_enrollSettingScheme(
-                    g_env, NULL, handles[hi], context_type,
-                    context_locale, context_ba);
-                LOGERR("enrollSettingScheme(context priority) → %d",
-                       context_ok);
-                if (context_ok) setting_ok = true;
-                CRASH_PROTECT_END("nativeEnrollSettingScheme(context)")
-            }
-            free(modified);
-            free(english);
-            free(sbuf);
-        }
-    }
 
     if (g_loadBuiltInSettingScheme && !setting_ok) {
         const char *type_strs[] = { "zh-t-i0-pinyin", "zh-t-i0-pinyin-x-f0-delight", NULL };

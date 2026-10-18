@@ -215,6 +215,7 @@ extern fn_GetPredictionCandString  g_getPredictionCandString;
 
 // Refresh the decoder after a mutable dictionary snapshot is re-enrolled.
 bool hmm_engine_refresh_user_dictionary(void);
+bool hmm_engine_refresh_settings_after_reset(void);
 void hmm_engine_set_external_context(bool has_context);
 
 // ── Symbol helper ───────────────────────────────────────────────────────────
@@ -228,3 +229,4 @@ static inline void *hmm_sym(ElfHandle *h, const char *name) {
 void hmm_resolve_natives(void);
 const HmmUserDictNatives *hmm_get_user_dict_natives(void);
 bool hmm_enroll_all(const char *pack_dir);
+bool hmm_enroll_decoder_settings(const char *pack_dir, uint32_t fuzzy_groups);

@@ -56,6 +56,9 @@ class GboardInputController: IMKInputController, PinyinSessionDelegate {
         imeLog("Engine init: so=\(soPath) pack=\(packDir) userData=\(userDataDir)")
         engineReady = gboard_init_with_user_data(soPath, packDir, userDataDir)
         imeLog("Engine ready: \(engineReady)")
+        if engineReady {
+            Preferences.shared.applyFuzzyPinyin()
+        }
 
         if engineReady && gboard_user_dict_is_ready() {
             UserDictionary.shared.startAutomaticSaving()

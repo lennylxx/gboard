@@ -44,7 +44,7 @@ void hmm_resolve_natives(void) {
     g_getTokenString     = (fn_GetTokenString)     jni_find_registered_native_by_sig("nativeGetTokenString", "(JJ)Ljava/lang/String;");
     g_getTokenNormalizedString = (fn_GetTokenString) jni_find_registered_native_by_sig("nativeGetTokenNormalizedString", "(JJ)Ljava/lang/String;");
     g_isCandidateCorrected = (fn_IsCandidateCorrected) jni_find_registered_native_by_sig("nativeIsCandidateCorrected", "(JI)Z");
-    g_refreshData        = (fn_RefreshData) jni_find_registered_native_by_sig("nativeRefreshData", "(J)V");
+    g_refreshData = (fn_RefreshData) jni_find_registered_native_unique("nativeRefreshData", "(J)V");
     g_fillPredictionCandList  = (fn_FillPredictionCandList)  jni_find_registered_native_by_sig("nativeFillPredictionCandidateList", "(J)Z");
     g_getPredictionCandCount  = (fn_GetPredictionCandCount)  jni_find_registered_native_by_sig("nativeGetPredictionCandidateCount", "(J)I");
     g_getPredictionCandString = (fn_GetPredictionCandString) jni_find_registered_native_by_sig("nativeGetPredictionCandidateString", "(JI)Ljava/lang/String;");

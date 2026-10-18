@@ -22,6 +22,7 @@ static char s_context[CONTEXT_MAX_UTF8_BYTES];
 static bool s_context_ends_latin;
 static bool s_context_injected;
 static int s_context_end_vertex;
+static bool s_settings_ready = true;
 
 static size_t utf8_codepoint_length(const unsigned char *s,
                                     size_t remaining) {
@@ -221,6 +222,10 @@ static bool append_context(void) {
 bool hmm_engine_append(const char *pinyin_input) {
     LOG("append: input='%s' g_append=%p g_engine=%lld", pinyin_input, (void*)g_append, (long long)g_engine);
     if (!g_append || !g_engine) { LOG("append: SKIP (null)"); return false; }
+    if (!s_settings_ready) {
+        LOGERR("Cannot append: decoder settings failed to refresh");
+        return false;
+    }
     if (!append_context()) return false;
 
     size_t len = strlen(pinyin_input);
@@ -303,7 +308,7 @@ int hmm_engine_get_predictions(char **candidates, int max_count) {
     // predictions, then reset so the next composition starts clean.
     hmm_engine_prepare_input("");
     hmm_engine_reset();
-    if (!s_context[0] || !g_engine) return 0;
+    if (!s_context[0] || !g_engine || !s_settings_ready) return 0;
     append_context();
 
     int filled = 0;
@@ -531,10 +536,13 @@ void hmm_engine_reset(void) {
     g_end_vertex = 0;
     s_context_injected = false;
     s_context_end_vertex = 0;
+    volatile bool reset_ok = false;
     if (g_reset && g_engine) {
         CRASH_PROTECT_BEGIN()
         g_reset(g_env, NULL, g_engine);
+        reset_ok = true;
         CRASH_PROTECT_END("nativeReset")
     }
+    s_settings_ready = reset_ok && hmm_engine_refresh_settings_after_reset();
     hmm_user_dict_refresh_decoder_if_needed();
 }

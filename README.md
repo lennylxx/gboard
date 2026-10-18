@@ -31,6 +31,12 @@ A macOS input method that runs Gboard's native HMM Pinyin engine via a custom AR
   missing, or extra letters. For example, `nihoa` yields `你好` and
   `zhonguo` yields `中国`. The Pinyin strip marks the fix: extra letters are
   struck out and inserted letters are shown in orange.
+- **Fuzzy Pinyin** — Independently enable 12 pronunciation pairs in Settings:
+  z/zh, c/ch, s/sh, an/ang, en/eng, in/ing, l/n, f/h, r/l, k/g, ian/iang,
+  and uan/uang. All are off by default. Changes are saved and take effect
+  immediately without restarting, preserving active Pinyin, explicit
+  separators, and learned data. For example, enabling l/n lets `hulan`
+  produce `湖南`.
 - **Chinese-English mixed input** — Offers English words inside Pinyin
   input using Gboard's English token and system dictionaries. For example,
   `woyaogithub` yields `我要GitHub` and `yongpythonxie` yields `用Python写`.

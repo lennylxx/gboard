@@ -3,6 +3,11 @@
 #include "../engine/hmm_user_dict.h"
 #include <string.h>
 
+static char s_cached_tokens[32][16];
+static int  s_cached_types[32];
+static int  s_cached_count = 0;
+static int  s_cached_cand_idx = -1;
+
 bool gboard_init(const char *so_path, const char *pack_dir) {
     return hmm_engine_init(so_path, pack_dir);
 }
@@ -11,6 +16,16 @@ bool gboard_init_with_user_data(const char *so_path, const char *pack_dir,
                                  const char *user_data_dir) {
     return hmm_engine_init_with_user_data(so_path, pack_dir, user_data_dir);
 }
+
+bool gboard_set_fuzzy_pinyin(uint32_t groups) {
+    bool ok = hmm_engine_set_fuzzy_pinyin(groups);
+    if (ok) {
+        s_cached_cand_idx = -1;
+    }
+    return ok;
+}
+
+uint32_t gboard_get_fuzzy_pinyin(void) { return hmm_engine_get_fuzzy_pinyin(); }
 
 bool gboard_set_context(const char *text)          { return hmm_engine_set_context(text); }
 bool gboard_update_input_context(const char *before, const char *selected,
@@ -61,11 +76,6 @@ int gboard_user_dict_extract_tokens(int candidate_index,
 }
 
 // Cache for simplified per-token access from Swift
-static char s_cached_tokens[32][16];
-static int  s_cached_types[32];
-static int  s_cached_count = 0;
-static int  s_cached_cand_idx = -1;
-
 int gboard_user_dict_extract_token_count(int candidate_index) {
     s_cached_cand_idx = candidate_index;
     s_cached_count = hmm_user_dict_extract_tokens(candidate_index,
