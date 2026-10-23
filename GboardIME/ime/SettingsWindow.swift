@@ -65,6 +65,8 @@ private struct SettingsView: View {
                         }
                         toggle("单击 Shift 切换中英文", isOn: $preferences.shiftToggleEnabled)
                         note("关闭时恢复中文；不影响系统 Caps Lock 设置。")
+                        toggle("繁体中文", isOn: $preferences.isTraditional)
+                        note("开启后候选词与上屏内容实时转换为繁体中文；中文模式下可按 ⇧⌘F 切换，按 ⌃1 或 ⌥? 打开 ?123 符号面板。")
                     }
                     section("模糊音", systemImage: "character.phonetic") {
                         note("按需勾选易混淆的读音，立即生效，无需重启。默认全部关闭。")
@@ -106,6 +108,18 @@ private struct SettingsView: View {
                         }
                     }
                     section("外观", systemImage: "paintpalette") {
+                        HStack {
+                            Text("候选窗口主题")
+                            Spacer()
+                            Picker("候选窗口主题", selection: $preferences.themeMode) {
+                                ForEach(ThemeMode.allCases, id: \.self) { theme in
+                                    Text(theme.title).tag(theme)
+                                }
+                            }
+                            .labelsHidden()
+                            .pickerStyle(.segmented)
+                            .frame(width: 270)
+                        }
                         HStack {
                             Text("拼音显示位置")
                             Spacer()
@@ -304,6 +318,7 @@ private struct SettingsView: View {
 
 final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     static let shared = SettingsWindowController()
+    private var previousActiveApp: NSRunningApplication?
 
     private init() {
         let window = NSWindow(
@@ -328,6 +343,10 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     }
 
     func show() {
+        if let frontmost = NSWorkspace.shared.frontmostApplication,
+           frontmost.bundleIdentifier != Bundle.main.bundleIdentifier {
+            previousActiveApp = frontmost
+        }
         // Input methods start as background-only processes.
         if NSApp.activationPolicy() != .accessory,
            !NSApp.setActivationPolicy(.accessory) {
@@ -341,8 +360,13 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     }
 
     func windowWillClose(_ notification: Notification) {
+        let appToRestore = previousActiveApp
+        previousActiveApp = nil
         if !NSApp.setActivationPolicy(.prohibited) {
             imeLog("Unable to restore background activation policy")
+        }
+        if let app = appToRestore, !app.isTerminated {
+            app.activate(options: [.activateIgnoringOtherApps])
         }
     }
 }
