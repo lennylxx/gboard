@@ -1,16 +1,14 @@
-// Stubs for Android-specific and Linux-specific APIs
-// that don't exist on macOS.
+// Symbols the Android .so imports that macOS lacks entirely.
+// See android_stubs.h for how this differs from linux_abi.c.
 
 #include "android_stubs.h"
+#include "linux_abi.h"
 #include "config.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <stdarg.h>
-#include <stdbool.h>
 #include <stdint.h>
-#include <math.h>
-#include <wchar.h>
 #include <pthread.h>
 #include <sys/errno.h>
 #include <sys/types.h>
@@ -121,277 +119,6 @@ void android_stubs_init(const char *asset_base_dir) {
 #define ANDROID_LOG_WARN    5
 #define ANDROID_LOG_ERROR   6
 
-// ── AAPCS64 variadic ABI bridge ───────────────────────────────────────────────
-// The .so follows the standard AArch64 PCS used by Android: variadic arguments
-// are passed like named ones (x0-x7 / v0-v7 first, then 8-byte stack slots),
-// and va_list is a 32-byte struct passed by reference. Apple arm64 instead
-// passes every variadic argument on the stack and uses `char *` as va_list, so
-// the .so's variadic calls cannot be forwarded to macOS printf-family
-// functions. Variadic stubs enter through a trampoline that spills the
-// argument registers into an AAPCS64 va_list, and the formatter below fetches
-// each argument from that va_list according to the format string.
-
-typedef struct {
-    void   *stack;
-    void   *gr_top;
-    void   *vr_top;
-    int32_t gr_offs;
-    int32_t vr_offs;
-} aapcs64_va_list;
-
-typedef struct {
-    uint64_t gr[8];      // x0-x7
-    uint8_t  vr[8][16];  // q0-q7
-} aapcs64_reg_save;
-
-static aapcs64_va_list aapcs64_va_start(const aapcs64_reg_save *regs, void *stack,
-                                        int named_gr) {
-    return (aapcs64_va_list){
-        .stack   = stack,
-        .gr_top  = (void *)(regs->gr + 8),
-        .vr_top  = (void *)(regs->vr + 8),
-        .gr_offs = -(8 - named_gr) * 8,
-        .vr_offs = -8 * 16,
-    };
-}
-
-static uint64_t aapcs64_arg_gr(aapcs64_va_list *ap) {
-    uint64_t v;
-    if (ap->gr_offs < 0) {
-        memcpy(&v, (char *)ap->gr_top + ap->gr_offs, 8);
-        ap->gr_offs += 8;
-    } else {
-        memcpy(&v, ap->stack, 8);
-        ap->stack = (char *)ap->stack + 8;
-    }
-    return v;
-}
-
-static double aapcs64_arg_double(aapcs64_va_list *ap) {
-    double v;
-    if (ap->vr_offs < 0) {
-        memcpy(&v, (char *)ap->vr_top + ap->vr_offs, 8);
-        ap->vr_offs += 16;
-    } else {
-        memcpy(&v, ap->stack, 8);
-        ap->stack = (char *)ap->stack + 8;
-    }
-    return v;
-}
-
-// Android arm64 long double is IEEE binary128 (one q register, or a 16-byte
-// aligned stack slot); macOS long double is binary64.
-static double aapcs64_arg_long_double(aapcs64_va_list *ap) {
-    uint64_t lo, hi;
-    if (ap->vr_offs < 0) {
-        char *slot = (char *)ap->vr_top + ap->vr_offs;
-        memcpy(&lo, slot, 8); memcpy(&hi, slot + 8, 8);
-        ap->vr_offs += 16;
-    } else {
-        uintptr_t slot = ((uintptr_t)ap->stack + 15) & ~(uintptr_t)15;
-        memcpy(&lo, (void *)slot, 8); memcpy(&hi, (void *)(slot + 8), 8);
-        ap->stack = (void *)(slot + 16);
-    }
-    int exp = (int)((hi >> 48) & 0x7fff);
-    double frac = (double)(((hi & 0xffffffffffffULL) << 4) | (lo >> 60)) / 0x1p52;
-    double v = exp == 0x7fff ? (frac != 0 ? NAN : INFINITY)
-             : exp == 0      ? ldexp(frac, -16382)
-                             : ldexp(1.0 + frac, exp - 16383);
-    return (hi >> 63) ? -v : v;
-}
-
-typedef struct { char *buf; size_t cap; size_t len; } FmtOut;
-
-static void fmt_put(FmtOut *o, const char *s, size_t n) {
-    if (o->len < o->cap) {
-        size_t room = o->cap - o->len;
-        memcpy(o->buf + o->len, s, n < room ? n : room);
-    }
-    o->len += n;
-}
-
-// Formats a single conversion with the host printf (host ABI, fixed arity).
-#define FMT_PUT_SPEC(o, spec, val) do {                                   \
-    char *dst_ = (o)->len < (o)->cap ? (o)->buf + (o)->len : NULL;        \
-    int n_ = snprintf(dst_, dst_ ? (o)->cap - (o)->len : 0, spec, val);   \
-    if (n_ > 0) (o)->len += (size_t)n_;                                   \
-} while (0)
-
-// vsnprintf over an AAPCS64 va_list. Returns the untruncated length; `buf`
-// is always NUL-terminated when cap > 0. Positional (%n$) conversions are not
-// supported and are emitted verbatim; %n is ignored (bionic rejects it).
-static size_t aapcs64_vformat(char *buf, size_t cap, const char *fmt,
-                              aapcs64_va_list ap) {
-    FmtOut o = { buf, cap, 0 };
-    const char *p = fmt ? fmt : "";
-    while (*p) {
-        if (*p != '%') {
-            const char *next = strchr(p, '%');
-            size_t n = next ? (size_t)(next - p) : strlen(p);
-            fmt_put(&o, p, n);
-            p += n;
-            continue;
-        }
-        const char *start = p++;
-        char spec[64] = "%";
-        size_t sl = 1;
-        while (*p && strchr("-+ #0'", *p)) {
-            if (sl < 16) spec[sl++] = *p;
-            p++;
-        }
-        if (*p == '*') {
-            p++;
-            int w = (int)aapcs64_arg_gr(&ap);
-            if (w < 0) { spec[sl++] = '-'; w = -w; }
-            sl += (size_t)snprintf(spec + sl, sizeof(spec) - sl, "%d", w);
-        } else {
-            while (*p >= '0' && *p <= '9') { if (sl < 32) spec[sl++] = *p; p++; }
-        }
-        if (*p == '.') {
-            p++;
-            if (*p == '*') {
-                p++;
-                int prec = (int)aapcs64_arg_gr(&ap);
-                if (prec >= 0)
-                    sl += (size_t)snprintf(spec + sl, sizeof(spec) - sl, ".%d", prec);
-            } else {
-                spec[sl++] = '.';
-                while (*p >= '0' && *p <= '9') { if (sl < 48) spec[sl++] = *p; p++; }
-            }
-        }
-        // Integer width in bits for d/i/o/u/x/X (Android arm64 is LP64).
-        int bits = 32;
-        bool wide = false, quad = false;
-        if (p[0] == 'h' && p[1] == 'h')      { bits = 8;  p += 2; }
-        else if (p[0] == 'h')                { bits = 16; p += 1; }
-        else if (p[0] == 'l' && p[1] == 'l') { bits = 64; p += 2; }
-        else if (p[0] && strchr("ljztq", p[0])) { bits = 64; wide = p[0] == 'l'; p += 1; }
-        else if (p[0] == 'L')                { quad = true; p += 1; }
-        char conv = *p;
-        if (conv) p++;
-        spec[sl] = '\0';
-
-        switch (conv) {
-        case 'd': case 'i': {
-            uint64_t raw = aapcs64_arg_gr(&ap);
-            long long v = bits == 8  ? (long long)(signed char)raw
-                        : bits == 16 ? (long long)(short)raw
-                        : bits == 32 ? (long long)(int)raw
-                                     : (long long)raw;
-            strcat(spec, "lld");
-            FMT_PUT_SPEC(&o, spec, v);
-            break;
-        }
-        case 'o': case 'u': case 'x': case 'X': {
-            uint64_t raw = aapcs64_arg_gr(&ap);
-            unsigned long long v = bits == 8  ? (unsigned char)raw
-                                 : bits == 16 ? (unsigned short)raw
-                                 : bits == 32 ? (unsigned int)raw
-                                              : raw;
-            char tail[4] = { 'l', 'l', conv, '\0' };
-            strcat(spec, tail);
-            FMT_PUT_SPEC(&o, spec, v);
-            break;
-        }
-        case 'c':
-            strcat(spec, wide ? "lc" : "c");
-            FMT_PUT_SPEC(&o, spec, (int)aapcs64_arg_gr(&ap));
-            break;
-        case 's': {
-            uintptr_t ptr = (uintptr_t)aapcs64_arg_gr(&ap);
-            if (wide) {
-                strcat(spec, "ls");
-                FMT_PUT_SPEC(&o, spec, (const wchar_t *)ptr);
-            } else {
-                strcat(spec, "s");
-                FMT_PUT_SPEC(&o, spec, ptr ? (const char *)ptr : "(null)");
-            }
-            break;
-        }
-        case 'p':
-            strcat(spec, "p");
-            FMT_PUT_SPEC(&o, spec, (void *)(uintptr_t)aapcs64_arg_gr(&ap));
-            break;
-        case 'f': case 'F': case 'e': case 'E':
-        case 'g': case 'G': case 'a': case 'A': {
-            double v = quad ? aapcs64_arg_long_double(&ap) : aapcs64_arg_double(&ap);
-            char tail[2] = { conv, '\0' };
-            strcat(spec, tail);
-            FMT_PUT_SPEC(&o, spec, v);
-            break;
-        }
-        case 'm':
-            strcat(spec, "s");
-            FMT_PUT_SPEC(&o, spec, strerror(errno));
-            break;
-        case 'n':
-            (void)aapcs64_arg_gr(&ap);
-            break;
-        case '%':
-            fmt_put(&o, "%", 1);
-            break;
-        default:
-            fmt_put(&o, start, (size_t)(p - start));
-            break;
-        }
-    }
-    if (cap) buf[o.len < cap ? o.len : cap - 1] = '\0';
-    return o.len;
-}
-
-#if defined(__aarch64__) || defined(__arm64__)
-#define AAPCS64_STR2(x) #x
-#define AAPCS64_STR(x) AAPCS64_STR2(x)
-// Entry point for a variadic stub: saves x0-x7 / q0-q7 into an
-// aapcs64_reg_save on the stack and calls
-// `int handler(const aapcs64_reg_save *regs, void *caller_stack_args)`.
-#define AAPCS64_VARIADIC_ENTRY(name, handler)                \
-    __attribute__((naked)) static void name(void) {          \
-        __asm__ volatile(                                    \
-            "stp x29, x30, [sp, #-16]!\n"                    \
-            "mov x29, sp\n"                                  \
-            "sub sp, sp, #192\n"                             \
-            "stp x0, x1, [sp, #0]\n"                         \
-            "stp x2, x3, [sp, #16]\n"                        \
-            "stp x4, x5, [sp, #32]\n"                        \
-            "stp x6, x7, [sp, #48]\n"                        \
-            "stp q0, q1, [sp, #64]\n"                        \
-            "stp q2, q3, [sp, #96]\n"                        \
-            "stp q4, q5, [sp, #128]\n"                       \
-            "stp q6, q7, [sp, #160]\n"                       \
-            "mov x0, sp\n"                                   \
-            "add x1, x29, #16\n"                             \
-            "bl " AAPCS64_STR(__USER_LABEL_PREFIX__) #handler "\n" \
-            "mov sp, x29\n"                                  \
-            "ldp x29, x30, [sp], #16\n"                      \
-            "ret\n");                                        \
-    }
-#else
-// The .so is arm64-only; on other architectures the stubs are never called.
-#define AAPCS64_VARIADIC_ENTRY(name, handler) \
-    static int name(void) { return -1; }
-#endif
-
-static int android_log_vprint_impl(int prio, const char *tag, const char *fmt,
-                                   aapcs64_va_list ap) {
-    (void)prio;
-    char buf[1024];
-    int off = snprintf(buf, sizeof(buf), "[%.64s] ", tag ? tag : "?");
-    size_t n = (size_t)off + aapcs64_vformat(buf + off, sizeof(buf) - (size_t)off, fmt, ap);
-    if (n > sizeof(buf) - 2) n = sizeof(buf) - 2;
-    buf[n++] = '\n';
-    write(STDERR_FILENO, buf, n);
-    return 0;
-}
-
-__attribute__((used))
-static int android_log_print_bridge(const aapcs64_reg_save *regs, void *stack) {
-    return android_log_vprint_impl((int)regs->gr[0], (const char *)regs->gr[1],
-                                   (const char *)regs->gr[2],
-                                   aapcs64_va_start(regs, stack, 3));
-}
-AAPCS64_VARIADIC_ENTRY(stub_android_log_print, android_log_print_bridge)
-
 static int stub_android_log_write(int prio, const char *tag, const char *text) {
     (void)prio;
     char buf[1024];
@@ -399,11 +126,22 @@ static int stub_android_log_write(int prio, const char *tag, const char *text) {
     write(STDERR_FILENO, buf, n > 0 ? (size_t)n : 0);
     return 0;
 }
-// AAPCS64 passes va_list (a 32-byte struct) by reference.
+// fmt/ap come from .so code, so format with the AAPCS64-aware formatter.
+__attribute__((used))
 static int stub_android_log_vprint(int prio, const char *tag, const char *fmt,
-                                   const aapcs64_va_list *ap) {
-    return android_log_vprint_impl(prio, tag, fmt, *ap);
+                                   const LinuxVaList *ap) {
+    (void)prio;
+    char buf[1024];
+    int off = snprintf(buf, sizeof(buf), "[%s] ", tag ? tag : "?");
+    if (off < 0 || off > (int)sizeof(buf) - 2) off = (int)sizeof(buf) - 2;
+    int n = linux_abi_vsnprintf(buf + off, sizeof(buf) - off, fmt, ap);
+    if (n > 0) off += n;
+    if (off > (int)sizeof(buf) - 2) off = (int)sizeof(buf) - 2;
+    buf[off++] = '\n';
+    write(STDERR_FILENO, buf, off);
+    return 0;
 }
+LINUX_ABI_VARIADIC(stub_android_log_print, stub_android_log_vprint, 3)
 
 // ── Android system properties ─────────────────────────────────────────────────
 static int stub_system_property_get(const char *name, char *value) {
@@ -613,6 +351,11 @@ static char *stub_gnu_strerror_r(int errnum, char *buf, size_t buflen) {
 uint8_t __sF[3 * BIONIC_FILE_SIZE];
 static FILE *sF_map[3];  // macOS FILE* for stdin/stdout/stderr
 
+// Bionic's stdin/stdout/stderr are FILE* variables pointing into __sF.
+static FILE *bionic_stdin  = (FILE *)&__sF[0 * BIONIC_FILE_SIZE];
+static FILE *bionic_stdout = (FILE *)&__sF[1 * BIONIC_FILE_SIZE];
+static FILE *bionic_stderr = (FILE *)&__sF[2 * BIONIC_FILE_SIZE];
+
 static void __attribute__((constructor)) init_sF(void) {
     memset(__sF, 0, sizeof(__sF));
     sF_map[0] = stdin; sF_map[1] = stdout; sF_map[2] = stderr;
@@ -620,7 +363,7 @@ static void __attribute__((constructor)) init_sF(void) {
 
 // Detect if a FILE* is a fake Bionic __sF entry and return the real macOS FILE*.
 static FILE *fixup_file(FILE *f) {
-    if (!f) return stderr;
+    if (!f) return NULL;
     uintptr_t fp = (uintptr_t)f;
     uintptr_t base = (uintptr_t)__sF;
     if (fp >= base && fp < base + sizeof(__sF)) {
@@ -631,209 +374,7 @@ static FILE *fixup_file(FILE *f) {
     return f;
 }
 
-// ── stdio wrappers (intercept .so calls with fake Bionic FILE*) ───────────────
-static size_t stub_fwrite(const void *ptr, size_t size, size_t nmemb, FILE *stream) {
-    return fwrite(ptr, size, nmemb, fixup_file(stream));
-}
-static int stub_fflush(FILE *stream) {
-    return fflush(fixup_file(stream));
-}
-static int stub_fputs(const char *s, FILE *stream) {
-    return fputs(s, fixup_file(stream));
-}
-static int stub_fputc(int c, FILE *stream) {
-    return fputc(c, fixup_file(stream));
-}
-static size_t stub_fread(void *ptr, size_t size, size_t nmemb, FILE *stream) {
-    return fread(ptr, size, nmemb, fixup_file(stream));
-}
-static int stub_vfprintf(FILE *stream, const char *fmt, const aapcs64_va_list *ap) {
-    char stack_buf[1024];
-    char *out = stack_buf;
-    size_t n = aapcs64_vformat(stack_buf, sizeof(stack_buf), fmt, *ap);
-    if (n >= sizeof(stack_buf)) {
-        out = malloc(n + 1);
-        if (!out) return -1;
-        aapcs64_vformat(out, n + 1, fmt, *ap);
-    }
-    size_t written = fwrite(out, 1, n, fixup_file(stream));
-    if (out != stack_buf) free(out);
-    return written == n ? (int)n : -1;
-}
-__attribute__((used))
-static int fprintf_bridge(const aapcs64_reg_save *regs, void *stack) {
-    aapcs64_va_list ap = aapcs64_va_start(regs, stack, 2);
-    return stub_vfprintf((FILE *)regs->gr[0], (const char *)regs->gr[1], &ap);
-}
-AAPCS64_VARIADIC_ENTRY(stub_fprintf, fprintf_bridge)
-
-// ── pthread wrappers via side-table ───────────────────────────────────────────
-// CRITICAL: Bionic pthread_mutex_t = 40 bytes, macOS = 64 bytes.
-//           Bionic pthread_rwlock_t = 56 bytes, macOS = 200 bytes.
-//           Passing .so's bionic-sized structs to macOS pthread functions causes
-//           buffer overflow and memory corruption. We use a side-table to store
-//           macOS-sized objects separately from the .so's memory.
-#include <os/lock.h>
-
-#define SIDE_TABLE_SIZE 16384
-typedef struct {
-    void *addr;         // bionic struct address in .so memory
-    int type;           // 1=mutex, 2=cond, 3=rwlock
-    union {
-        pthread_mutex_t mutex;
-        pthread_cond_t cond;
-        pthread_rwlock_t rwlock;
-    };
-} SideEntry;
-
-static SideEntry s_side_table[SIDE_TABLE_SIZE];
-static os_unfair_lock s_side_lock = OS_UNFAIR_LOCK_INIT;
-
-static SideEntry *side_get(void *addr, int type) {
-    uint32_t hash = (uint32_t)(((uintptr_t)addr >> 3) % SIDE_TABLE_SIZE);
-    os_unfair_lock_lock(&s_side_lock);
-    for (uint32_t i = 0; i < SIDE_TABLE_SIZE; i++) {
-        uint32_t idx = (hash + i) % SIDE_TABLE_SIZE;
-        if (s_side_table[idx].addr == addr) {
-            os_unfair_lock_unlock(&s_side_lock);
-            return &s_side_table[idx];
-        }
-        if (s_side_table[idx].addr == NULL) {
-            s_side_table[idx].addr = addr;
-            s_side_table[idx].type = type;
-            if (type == 1) pthread_mutex_init(&s_side_table[idx].mutex, NULL);
-            else if (type == 2) pthread_cond_init(&s_side_table[idx].cond, NULL);
-            else if (type == 3) pthread_rwlock_init(&s_side_table[idx].rwlock, NULL);
-            os_unfair_lock_unlock(&s_side_lock);
-            return &s_side_table[idx];
-        }
-    }
-    os_unfair_lock_unlock(&s_side_lock);
-    return NULL; // table full — should never happen
-}
-
-static void side_remove(void *addr) {
-    uint32_t hash = (uint32_t)(((uintptr_t)addr >> 3) % SIDE_TABLE_SIZE);
-    os_unfair_lock_lock(&s_side_lock);
-    for (uint32_t i = 0; i < SIDE_TABLE_SIZE; i++) {
-        uint32_t idx = (hash + i) % SIDE_TABLE_SIZE;
-        if (s_side_table[idx].addr == addr) {
-            if (s_side_table[idx].type == 1) pthread_mutex_destroy(&s_side_table[idx].mutex);
-            else if (s_side_table[idx].type == 2) pthread_cond_destroy(&s_side_table[idx].cond);
-            else if (s_side_table[idx].type == 3) pthread_rwlock_destroy(&s_side_table[idx].rwlock);
-            s_side_table[idx].addr = NULL;
-            s_side_table[idx].type = 0;
-            os_unfair_lock_unlock(&s_side_lock);
-            return;
-        }
-        if (s_side_table[idx].addr == NULL) break;
-    }
-    os_unfair_lock_unlock(&s_side_lock);
-}
-
-// Mutex wrappers — .so passes bionic-sized (40-byte) mutex pointers.
-// We look up/create a macOS mutex in the side table.
-static int stub_pthread_mutex_lock(void *m) {
-    SideEntry *e = side_get(m, 1);
-    return e ? pthread_mutex_lock(&e->mutex) : EINVAL;
-}
-static int stub_pthread_mutex_unlock(void *m) {
-    SideEntry *e = side_get(m, 1);
-    return e ? pthread_mutex_unlock(&e->mutex) : EINVAL;
-}
-static int stub_pthread_mutex_trylock(void *m) {
-    SideEntry *e = side_get(m, 1);
-    return e ? pthread_mutex_trylock(&e->mutex) : EINVAL;
-}
-static int stub_pthread_mutex_init(void *m, const void *attr) {
-    (void)attr;
-    SideEntry *e = side_get(m, 1);
-    return e ? 0 : EINVAL; // side_get already initializes
-}
-static int stub_pthread_mutex_destroy(void *m) {
-    side_remove(m);
-    return 0;
-}
-
-// Condition variable wrappers (bionic cond = 48 bytes, macOS = 48 — same size
-// but different internal layout, so still use side table for correctness)
-static int stub_pthread_cond_wait(void *c, void *m) {
-    SideEntry *ce = side_get(c, 2);
-    SideEntry *me = side_get(m, 1);
-    if (!ce || !me) return EINVAL;
-    char buf[128];
-    int n = snprintf(buf, sizeof(buf), "[stubs] cond_wait: cond=%p mutex=%p\n", c, m);
-    write(STDERR_FILENO, buf, n > 0 ? (size_t)n : 0);
-    int r = pthread_cond_wait(&ce->cond, &me->mutex);
-    n = snprintf(buf, sizeof(buf), "[stubs] cond_wait done: cond=%p ret=%d\n", c, r);
-    write(STDERR_FILENO, buf, n > 0 ? (size_t)n : 0);
-    return r;
-}
-static int stub_pthread_cond_signal(void *c) {
-    SideEntry *e = side_get(c, 2);
-    return e ? pthread_cond_signal(&e->cond) : EINVAL;
-}
-static int stub_pthread_cond_broadcast(void *c) {
-    SideEntry *e = side_get(c, 2);
-    return e ? pthread_cond_broadcast(&e->cond) : EINVAL;
-}
-static int stub_pthread_cond_timedwait(void *c, void *m, const struct timespec *t) {
-    SideEntry *ce = side_get(c, 2);
-    SideEntry *me = side_get(m, 1);
-    if (!ce || !me) return EINVAL;
-    return pthread_cond_timedwait(&ce->cond, &me->mutex, t);
-}
-
-// pthread_once — Bionic: 4 bytes (int), macOS: 16 bytes. Use atomic on first 4 bytes.
-static volatile int s_once_spin_count __attribute__((unused)) = 0;
-static int stub_pthread_once(void *once, void (*init_routine)(void)) {
-    int *flag = (int *)once;
-    if (__sync_val_compare_and_swap(flag, 0, 2) == 0) {
-        init_routine();
-        __sync_synchronize();
-        *flag = 1;
-    } else {
-        int spins = 0;
-        while (__sync_add_and_fetch(flag, 0) != 1) {
-            if (++spins > 100) {
-                char buf[128];
-                int n = snprintf(buf, sizeof(buf),
-                    "[stubs] pthread_once spinning: flag=%p val=%d spins=%d\n",
-                    (void*)flag, *flag, spins);
-                write(STDERR_FILENO, buf, n > 0 ? (size_t)n : 0);
-                if (spins > 200) {
-                    // Give up — force completion to avoid deadlock
-                    *flag = 1;
-                    break;
-                }
-            }
-            usleep(1000);
-        }
-    }
-    return 0;
-}
-
-// Rwlock wrappers — Bionic rwlock = 56 bytes, macOS = 200 bytes!
-static int stub_pthread_rwlock_rdlock(void *rw) {
-    SideEntry *e = side_get(rw, 3);
-    return e ? pthread_rwlock_rdlock(&e->rwlock) : EINVAL;
-}
-static int stub_pthread_rwlock_wrlock(void *rw) {
-    SideEntry *e = side_get(rw, 3);
-    return e ? pthread_rwlock_wrlock(&e->rwlock) : EINVAL;
-}
-static int stub_pthread_rwlock_unlock(void *rw) {
-    SideEntry *e = side_get(rw, 3);
-    return e ? pthread_rwlock_unlock(&e->rwlock) : EINVAL;
-}
-static int stub_pthread_rwlock_tryrdlock(void *rw) {
-    SideEntry *e = side_get(rw, 3);
-    return e ? pthread_rwlock_tryrdlock(&e->rwlock) : EINVAL;
-}
-static int stub_pthread_rwlock_trywrlock(void *rw) {
-    SideEntry *e = side_get(rw, 3);
-    return e ? pthread_rwlock_trywrlock(&e->rwlock) : EINVAL;
-}
+FILE *android_stubs_fixup_file(FILE *f) { return fixup_file(f); }
 
 // ── __errno (Bionic's errno accessor) ─────────────────────────────────────────
 static int *stub_errno(void) { return &errno; }
@@ -894,38 +435,32 @@ static int stub_cxa_thread_atexit_impl(void (*dtor)(void*), void *obj, void *dso
 }
 
 // ── Linux-specific stubs (sched, prctl, sysinfo, etc.) ───────────────────────
-static int stub_clock_gettime(int android_clock_id, struct timespec *time) {
-    clockid_t native_clock_id;
-    switch (android_clock_id) {
-        case 0:  // CLOCK_REALTIME
-            native_clock_id = CLOCK_REALTIME;
-            break;
-        case 1:  // CLOCK_MONOTONIC
-        case 6:  // CLOCK_MONOTONIC_COARSE
-        case 7:  // CLOCK_BOOTTIME
-            native_clock_id = CLOCK_MONOTONIC;
-            break;
-        case 2:  // CLOCK_PROCESS_CPUTIME_ID
-            native_clock_id = CLOCK_PROCESS_CPUTIME_ID;
-            break;
-        case 3:  // CLOCK_THREAD_CPUTIME_ID
-            native_clock_id = CLOCK_THREAD_CPUTIME_ID;
-            break;
-        case 4:  // CLOCK_MONOTONIC_RAW
-            native_clock_id = CLOCK_MONOTONIC_RAW;
-            break;
-        case 5:  // CLOCK_REALTIME_COARSE
-            native_clock_id = CLOCK_REALTIME;
-            break;
-        default:
-            errno = EINVAL;
-            return -1;
-    }
-    return clock_gettime(native_clock_id, time);
+// Bionic's pthread_cleanup_push/pop macros call these with a caller-owned
+// frame; the frames form a per-thread stack.
+typedef struct LinuxCleanup {
+    struct LinuxCleanup *prev;
+    void (*routine)(void *);
+    void *arg;
+} LinuxCleanup;
+
+static __thread LinuxCleanup *t_cleanup_top;
+
+static void stub_pthread_cleanup_push(LinuxCleanup *c,
+                                      void (*routine)(void *), void *arg) {
+    c->prev = t_cleanup_top;
+    c->routine = routine;
+    c->arg = arg;
+    t_cleanup_top = c;
 }
+
+static void stub_pthread_cleanup_pop(LinuxCleanup *c, int execute) {
+    t_cleanup_top = c->prev;
+    if (execute) c->routine(c->arg);
+}
+
 static int stub_sched_setaffinity(int pid, size_t sz, void *m) { (void)pid;(void)sz;(void)m; return 0; }
 static int stub_sched_getaffinity(int pid, size_t sz, void *m) { (void)pid;(void)sz; if(m) memset(m,0xff,sz); return 0; }
-static pid_t stub_gettid(void) {
+pid_t android_stubs_gettid(void) {
     uint64_t thread_id = 0;
     if (pthread_threadid_np(NULL, &thread_id) != 0) return (pid_t)getpid();
     return (pid_t)thread_id;
@@ -963,35 +498,6 @@ static int stub_inotify_add_watch(int fd, const char *path, uint32_t mask) {
     return -1;
 }
 static int stub_posix_fadvise(int fd, off_t o, off_t l, int a) { (void)fd;(void)o;(void)l;(void)a; return 0; }
-static int stub_sem_timedwait(void *sem, const void *ts) { (void)sem;(void)ts; errno=ETIMEDOUT; return -1; }
-static void *stub_mmap64(void *addr, size_t length, int prot, int flags,
-                         int fd, off_t offset) {
-    enum {
-        ANDROID_MAP_SHARED = 0x01,
-        ANDROID_MAP_PRIVATE = 0x02,
-        ANDROID_MAP_FIXED = 0x10,
-        ANDROID_MAP_ANONYMOUS = 0x20
-    };
-    int native_flags = flags & ~(ANDROID_MAP_SHARED | ANDROID_MAP_PRIVATE |
-                                 ANDROID_MAP_FIXED | ANDROID_MAP_ANONYMOUS);
-    if (flags & ANDROID_MAP_SHARED) native_flags |= MAP_SHARED;
-    if (flags & ANDROID_MAP_PRIVATE) native_flags |= MAP_PRIVATE;
-    if (flags & ANDROID_MAP_FIXED) native_flags |= MAP_FIXED;
-    if (flags & ANDROID_MAP_ANONYMOUS) native_flags |= MAP_ANON;
-    void *result = mmap(addr, length, prot, native_flags, fd, offset);
-#if DEBUG
-    if (result == MAP_FAILED) {
-        char buf[256];
-        int n = snprintf(buf, sizeof(buf),
-                         "[mmap64] failed len=%zu prot=0x%x flags=0x%x "
-                         "native=0x%x fd=%d offset=%lld errno=%d\n",
-                         length, prot, flags, native_flags, fd,
-                         (long long)offset, errno);
-        write(STDERR_FILENO, buf, n > 0 ? (size_t)n : 0);
-    }
-#endif
-    return result;
-}
 static void *stub_mremap(void *old, size_t oldsz, size_t newsz, int flags, ...) {
     (void)old;(void)oldsz;(void)newsz;(void)flags; errno=ENOMEM; return (void*)-1;
 }
@@ -1195,20 +701,19 @@ static const SymEntry s_table[] = {
     E("__cxa_thread_atexit_impl",        stub_cxa_thread_atexit_impl),
 
     // Linux scheduling / process
-    E("clock_gettime",                   stub_clock_gettime),
     E("sched_setaffinity",               stub_sched_setaffinity),
     E("sched_getaffinity",               stub_sched_getaffinity),
-    E("gettid",                          stub_gettid),
+    E("gettid",                          android_stubs_gettid),
     E("prctl",                           stub_prctl),
     E("sysinfo",                         stub_sysinfo),
     E("getauxval",                       stub_getauxval),
     E("tgkill",                          stub_tgkill),
+    E("__pthread_cleanup_push",          stub_pthread_cleanup_push),
+    E("__pthread_cleanup_pop",           stub_pthread_cleanup_pop),
     E("__cmsg_nxthdr",                   stub_cmsg_nxthdr),
     E("inotify_init1",                   stub_inotify_init1),
     E("inotify_add_watch",               stub_inotify_add_watch),
     E("posix_fadvise",                   stub_posix_fadvise),
-    E("sem_timedwait",                   stub_sem_timedwait),
-    E("mmap64",                          stub_mmap64),
     E("mremap",                          stub_mremap),
 
     // Timers
@@ -1224,36 +729,10 @@ static const SymEntry s_table[] = {
     E("AStatus_getDescription",          stub_AStatus_getDescription),
     E("AStatus_deleteDescription",       stub_AStatus_deleteDescription),
 
-    // stdio symbols — point into our fake Bionic __sF buffer
-    E("stdin",                           &__sF[0 * BIONIC_FILE_SIZE]),
-    E("stdout",                          &__sF[1 * BIONIC_FILE_SIZE]),
-    E("stderr",                          &__sF[2 * BIONIC_FILE_SIZE]),
-
-    // stdio function wrappers — intercept before dlsym finds macOS versions
-    E("fwrite",                          stub_fwrite),
-    E("fread",                           stub_fread),
-    E("fflush",                          stub_fflush),
-    E("fputs",                           stub_fputs),
-    E("fputc",                           stub_fputc),
-    E("fprintf",                         stub_fprintf),
-    E("vfprintf",                        stub_vfprintf),
-
-    // pthread wrappers — auto-init zero-filled mutexes/condvars for Linux compat
-    E("pthread_mutex_lock",              stub_pthread_mutex_lock),
-    E("pthread_mutex_unlock",            stub_pthread_mutex_unlock),
-    E("pthread_mutex_trylock",           stub_pthread_mutex_trylock),
-    E("pthread_mutex_init",              stub_pthread_mutex_init),
-    E("pthread_mutex_destroy",           stub_pthread_mutex_destroy),
-    E("pthread_cond_wait",               stub_pthread_cond_wait),
-    E("pthread_cond_signal",             stub_pthread_cond_signal),
-    E("pthread_cond_broadcast",          stub_pthread_cond_broadcast),
-    E("pthread_cond_timedwait",          stub_pthread_cond_timedwait),
-    E("pthread_once",                    stub_pthread_once),
-    E("pthread_rwlock_rdlock",           stub_pthread_rwlock_rdlock),
-    E("pthread_rwlock_wrlock",           stub_pthread_rwlock_wrlock),
-    E("pthread_rwlock_unlock",           stub_pthread_rwlock_unlock),
-    E("pthread_rwlock_tryrdlock",        stub_pthread_rwlock_tryrdlock),
-    E("pthread_rwlock_trywrlock",        stub_pthread_rwlock_trywrlock),
+    // stdio variables — each holds a fake Bionic __sF entry
+    E("stdin",                           &bionic_stdin),
+    E("stdout",                          &bionic_stdout),
+    E("stderr",                          &bionic_stderr),
 
     // ICU data
     E("uprv_getICUData_brkitr_char",     stub_uprv_getICUData),

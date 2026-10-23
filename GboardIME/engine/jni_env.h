@@ -49,6 +49,9 @@ void     jni_env_destroy(JNIEnv *env);
 // Helper: unwrap a jstring back to C string (works with our fake strings)
 const char *jni_get_string(jstring s);
 jstring     jni_new_string(JNIEnv *env, const char *s);
+// Frees a fresh string a native returned to the host. The shim's
+// DeleteLocalRef is a no-op, so host-owned results must be released here.
+void        jni_release_string(jstring s);
 
 // JNI call helpers (avoid needing struct definition)
 jstring     jni_NewStringUTF(JNIEnv *e, const char *s);
@@ -67,6 +70,9 @@ void        jni_SetIntArrayRegion(JNIEnv *e, jintArray a, jsize start, jsize len
 void       *jni_find_registered_native(const char *name_substring);
 void       *jni_find_registered_native_exact(const char *name);
 void       *jni_find_registered_native_by_sig(const char *name, const char *sig_substring);
+// Exact name/signature match; duplicate registrations must share one address.
+// Logs and returns NULL when missing, invalid, or ambiguous.
+void       *jni_find_registered_native_unique(const char *name, const char *sig);
 
 // Fake ScoredInput object for nativeAppend
 jobject     jni_create_scored_input(JNIEnv *env, const char *input, float score);

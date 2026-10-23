@@ -1,8 +1,9 @@
-// User dictionary (user_dict_3_3) automatic learning support.
+// User dictionary (user_dict_3_3 and user_dict_3_3_english) learning support.
 // Wraps MutableDictionaryAccessorImpl JNI calls for learning, persistence, and reload.
 #pragma once
 
 #include <stdbool.h>
+#include "hmm_engine.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -54,6 +55,8 @@ void hmm_user_dict_destroy(void);
 
 // Returns true if the user dictionary subsystem is initialized.
 bool hmm_user_dict_is_ready(void);
+bool hmm_user_dict_set_pinyin_scheme(HmmPinyinScheme scheme);
+bool hmm_user_dict_pinyin_settings_valid(void);
 
 // Apply a dictionary snapshot enrolled by persist after the decoder resets.
 void hmm_user_dict_refresh_decoder_if_needed(void);
@@ -61,7 +64,8 @@ void hmm_user_dict_refresh_decoder_if_needed(void);
 // Extract token information for the candidate at the given engine index.
 // Must be called after hmm_engine_get_candidates() fills the candidate list.
 // Writes syllable strings into tokens[] and type IDs into types[].
-// Returns the number of tokens extracted, or 0 on failure.
+// Returns the number of tokens extracted, or 0 on failure or when the
+// candidate has more than max_tokens tokens.
 int hmm_user_dict_extract_tokens(int candidate_index,
                                  char tokens[][16], int *types, int max_tokens);
 

@@ -24,7 +24,11 @@ func gboard_reset()
 class MockDelegate: PinyinSessionDelegate {
     var committedText = ""
     var markedText: String? = nil
+    var markedTextUpdateCount = 0
     var candidatePinyin: String? = nil
+    var candidateReading = PinyinReading.empty
+    var shownCandidates: [String] = []
+    var selectedIndex = -1
     var contextBeforeInput = ""
     var contextRequestCount = 0
 
@@ -37,19 +41,23 @@ class MockDelegate: PinyinSessionDelegate {
         committedText += text
     }
     func sessionSetMarkedText(_ text: String) {
+        markedTextUpdateCount += 1
         markedText = text.isEmpty ? nil : text
     }
     func sessionShowCandidates(
         _ candidates: [String],
-        pinyin: String,
+        pinyin: PinyinReading,
         selectedIndex: Int,
         canGoPrevious: Bool,
         canGoNext: Bool
     ) {
-        candidatePinyin = pinyin
+        candidatePinyin = pinyin.text
+        candidateReading = pinyin
+        shownCandidates = candidates
+        self.selectedIndex = selectedIndex
     }
     func sessionHideCandidates() {
-        // no-op for testing
+        shownCandidates = []
     }
 
     func clear() {
@@ -61,8 +69,12 @@ class MockDelegate: PinyinSessionDelegate {
 
 // ── Helper: create a fresh session with mock delegate ────────────────────────
 
-func makeSession() -> (PinyinSession, MockDelegate) {
-    let session = PinyinSession()
+private let baselinePreferences = Preferences(defaults: UserDefaults(
+    suiteName: "com.lennylxx.GboardIME.tests.baseline.\(UUID().uuidString)"
+)!)
+
+func makeSession(preferences: Preferences? = nil) -> (PinyinSession, MockDelegate) {
+    let session = PinyinSession(preferences: preferences ?? baselinePreferences)
     let mock = MockDelegate()
     session.delegate = mock
     return (session, mock)
@@ -683,6 +695,185 @@ func testVisualPinyinSegmentation() {
           d.candidatePinyin == "xi'an")
 }
 
+func testCorrectionSpans() {
+    print("[test_correction_spans]")
+    func render(
+        _ typed: String, _ corrected: String, alignment: CorrectionAlignment = .dl
+    ) -> String {
+        PinyinSession.correctionSpans(
+            typed: typed, corrected: corrected, alignment: alignment
+        ).map {
+            $0.isTypo ? "[-\($0.text)]" : $0.isCorrected ? "[+\($0.text)]" : $0.text
+        }.joined()
+    }
+    check("extra letter is struck", render("cuuo", "cuo") == "cu[-u]o")
+    check("missing letter is inserted", render("uo", "guo") == "[+g]uo")
+    check("transposition highlights both corrected letters", render("hoa", "hao") == "h[+ao]")
+    check("internal transposition keeps matching suffix", render("xain", "xian") == "x[+ia]n")
+    check("substitution strikes then inserts", render("hap", "hao") == "ha[-p][+o]")
+    check("empty strings have no spans", render("", "") == "")
+    check("empty input inserts all letters", render("", "hao") == "[+hao]")
+    check("empty target strikes all letters", render("hao", "") == "[-hao]")
+    check("unchanged spelling has no marks", render("hao", "hao") == "hao")
+    check("case-only differences are not corrections", render("HAO", "hao") == "hao")
+    check("transposition ignores case and preserves target case",
+          render("HoA", "hAO") == "h[+AO]")
+    check("leading transposition is highlighted", render("ah", "ha") == "[+ha]")
+    check("separate transpositions are both highlighted",
+          render("abxcd", "baxdc") == "[+ba]x[+dc]")
+    check("adjacent transpositions merge highlights",
+          render("abcd", "badc") == "[+badc]")
+    check("transposition can precede an insertion", render("ab", "bac") == "[+bac]")
+    check("transposition can follow a deletion", render("xab", "ba") == "[-x][+ba]")
+    check("repeated letter insertion keeps the earliest match",
+          render("cuo", "cuuo") == "cu[+u]o")
+    check("all repeated letters are handled deterministically",
+          render("aaaa", "aa") == "aa[-aa]")
+    check("OSA does not edit inside a transposition again",
+          render("ca", "abc") == "[-c]a[+bc]")
+    check("LCS preserves the previous transposition marks",
+          render("hoa", "hao", alignment: .lcs) == "h[-o]a[+o]")
+    check("LCS preserves the previous internal transposition marks",
+          render("xain", "xian", alignment: .lcs) == "x[-a]i[+a]n")
+    check("LCS preserves repeated-letter deletion placement",
+          render("cuuo", "cuo", alignment: .lcs) == "cu[-u]o")
+    check("LCS preserves substitutions", render("hap", "hao", alignment: .lcs) == "ha[-p][+o]")
+
+    for alignment in CorrectionAlignment.allCases {
+        let example = PinyinReading(spans:
+            PinyinSession.correctionSpans(typed: "nii", corrected: "ni", alignment: alignment) +
+            [.init(text: "'", isCorrected: false)] +
+            PinyinSession.correctionSpans(typed: "hoa", corrected: "hao", alignment: alignment))
+        for style in CorrectionStyle.allCases {
+            let styled = example.styled(style)
+            let rendered = styled.spans.map {
+                $0.isTypo ? "[-\($0.text)]" : $0.isCorrected ? "[+\($0.text)]" : $0.text
+            }.joined()
+            let expected: String
+            switch (alignment, style) {
+            case (.lcs, .edits): expected = "ni[-i]'h[-o]a[+o]"
+            case (.lcs, .color): expected = "ni'ha[+o]"
+            case (.dl, .edits): expected = "ni[-i]'h[+ao]"
+            case (.dl, .color): expected = "ni'h[+ao]"
+            case (_, .hidden): expected = "ni'hao"
+            }
+            check("\(alignment.rawValue)/\(style.rawValue) example shows the intended marks",
+                  rendered == expected && styled.text == "ni'hao")
+        }
+    }
+
+    for alignment in CorrectionAlignment.allCases {
+        for (typed, corrected) in [
+            ("hoa", "hao"), ("cuuo", "cuo"), ("uo", "guo"), ("hap", "hao"),
+            ("", ""), ("", "hao"), ("hao", ""), ("ab", "bac"), ("ca", "abc")
+        ] {
+            let reading = PinyinReading(spans: PinyinSession.correctionSpans(
+                typed: typed, corrected: corrected, alignment: alignment))
+            check("\(alignment.rawValue): \(typed) -> \(corrected) reads as the target",
+                  reading.text == corrected)
+            check("\(alignment.rawValue): \(typed) -> \(corrected) color style reads as the target",
+                  reading.styled(.color).displayText == corrected)
+            check("\(alignment.rawValue): \(typed) -> \(corrected) hidden style has no marks",
+                  reading.styled(.hidden) == .plain(corrected))
+            check("\(alignment.rawValue): \(typed) -> \(corrected) uses exclusive span styles",
+                  reading.spans.allSatisfy { !$0.text.isEmpty && !($0.isCorrected && $0.isTypo) })
+        }
+    }
+}
+
+func testCorrectedPinyinReading() {
+    print("[test_corrected_pinyin_reading]")
+    let (s, d) = makeSession()
+
+    for ch in "nihoa" { _ = s.appendLetter(String(ch)) }
+    check("nihoa corrects to 你好", s.candidates.first == "你好")
+    check("corrected reading shows ni'hao", d.candidatePinyin == "ni'hao")
+    check("only hao is highlighted",
+          d.candidateReading.hasCorrection)
+    check("default LCS strikes the extra o and inserts o",
+          d.candidateReading.displayText == "ni'hoao" &&
+          d.candidateReading.spans.filter(\.isTypo).map(\.text) == ["o"] &&
+          d.candidateReading.spans.filter(\.isCorrected).map(\.text) == ["o"])
+
+    s.cancel()
+    for ch in "zhonguo" { _ = s.appendLetter(String(ch)) }
+    check("zhonguo reading shows zhong'guo", d.candidatePinyin == "zhong'guo")
+    check("omitted g is highlighted with its syllable",
+          d.candidateReading.spans.filter(\.isCorrected).map(\.text) == ["g"])
+
+    s.cancel()
+    for ch in "nihoashijie" { _ = s.appendLetter(String(ch)) }
+    let partialIndex = s.candidates.firstIndex(of: "你好")
+    check("nihoashijie offers partial 你好", partialIndex != nil)
+    if let index = partialIndex {
+        while s.selectedIndex < index { _ = s.moveRight() }
+        check("partial corrected pick keeps remaining segmentation",
+              d.candidatePinyin == "ni'hao'shi'jie")
+    }
+
+    s.cancel()
+    for ch in "nihao" { _ = s.appendLetter(String(ch)) }
+    check("correct spelling has no highlight", !d.candidateReading.hasCorrection)
+    check("correct spelling keeps segmentation", d.candidatePinyin == "ni'hao")
+
+    s.cancel()
+    for ch in "nih" { _ = s.appendLetter(String(ch)) }
+    check("incomplete syllable is not a correction",
+          !d.candidateReading.hasCorrection && d.candidatePinyin == "ni'h")
+    s.cancel()
+
+    for ch in "nihoagithub" { _ = s.appendLetter(String(ch)) }
+    let mixedIndex = s.candidates.firstIndex { $0.hasPrefix("你好") && $0.count > 2 }
+    check("nihoagithub offers a mixed 你好 candidate", mixedIndex != nil)
+    if let index = mixedIndex {
+        while s.selectedIndex < index { _ = s.moveRight() }
+        check("corrected mixed reading joins English letters",
+              d.candidatePinyin == "ni'hao'github")
+        check("only the pinyin syllable is highlighted in mixed input",
+              d.candidateReading.hasCorrection)
+    }
+    s.cancel()
+
+    for ch in "ni" { _ = s.appendLetter(String(ch)) }
+    _ = s.handlePunctuation("'")
+    for ch in "hoa" { _ = s.appendLetter(String(ch)) }
+    check("user separator keeps corrected reading", d.candidatePinyin == "ni'hao")
+    _ = s.handlePunctuation("'")
+    check("trailing separator stays visible", d.candidatePinyin == "ni'hao'")
+    s.cancel()
+
+    d.contextBeforeInput = "我对这里很"
+    for ch in "nihoashijie" { _ = s.appendLetter(String(ch)) }
+    if let index = s.candidates.firstIndex(of: "你好") {
+        while s.selectedIndex < index { _ = s.moveRight() }
+        check("partial corrected pick with context keeps remainder",
+              d.candidatePinyin == "ni'hao'shi'jie")
+    } else {
+        check("nihoashijie with context offers partial 你好", false)
+    }
+    d.contextBeforeInput = ""
+    s.cancel()
+
+    // The engine caps corrected candidates (3 by default), and for nihoa they all
+    // rank on page 1, so page 2 must not reuse page 1's corrected readings
+    // (engine index = page * 9 + selection).
+    for ch in "nihoa" { _ = s.appendLetter(String(ch)) }
+    _ = s.nextPage()
+    check("nihoa has a second candidate page", s.candidatePage == 1)
+    for i in 0..<s.candidates.count {
+        while s.selectedIndex < i { _ = s.moveRight() }
+        let reading = d.candidateReading
+        if reading.hasCorrection {
+            check("page 2 corrected reading for \(s.candidates[i]) is ni'hao…",
+                  reading.text.hasPrefix("ni'hao"))
+        } else {
+            check("page 2 uncorrected reading for \(s.candidates[i]) is raw",
+                  reading.text == s.segmentedPinyin)
+        }
+    }
+    s.cancel()
+}
+
 func testContextLanguageScoring() {
     print("[test_context_language_scoring]")
     let (s, d) = makeSession()
@@ -723,201 +914,422 @@ func testContinuousPhraseLanguageScoring() {
     s.cancel()
 }
 
+func testNextWordPrediction() {
+    print("[test_next_word_prediction]")
+    let (s, d) = makeSession()
+
+    for ch in "nihao" { _ = s.appendLetter(String(ch)) }
+    _ = s.selectCurrent()
+    check("commit shows predictions", s.isPredicting)
+    check("predictions reach the window",
+          !d.shownCandidates.isEmpty && d.shownCandidates == s.visiblePredictions)
+    check("prediction window has no pinyin strip", d.candidatePinyin == "")
+    check("composition candidates stay empty", s.candidates.isEmpty)
+
+    let first = s.predictions.first ?? ""
+    let result = s.selectNumber(1)
+    check("number selects prediction", result == .handled)
+    check("prediction is committed", d.committedText == "你好" + first)
+    print("    你好 → \(first) → \(s.predictions.prefix(5))")
+
+    _ = s.appendLetter("w")
+    check("typing dismisses predictions", !s.isPredicting)
+    check("typing starts a composition", s.composition == "w")
+    s.cancel()
+
+    d.clear()
+    d.contextBeforeInput = ""
+    for ch in "kuai" { _ = s.appendLetter(String(ch)) }
+    _ = s.selectCurrent()
+    let bare = s.predictions
+    s.dismissPredictions()
+    d.clear()
+    d.contextBeforeInput = "生日"
+    for ch in "kuai" { _ = s.appendLetter(String(ch)) }
+    let picked = s.candidates.first ?? ""
+    _ = s.selectCurrent()
+    print("    \(picked) → \(bare.prefix(5)); 生日 + \(picked) → \(s.predictions.prefix(5))")
+    check("prediction commits 快", picked == "快")
+    check("prediction uses text before input",
+          s.predictions.first == "乐" && s.predictions != bare)
+
+    s.dismissPredictions()
+    check("dismiss clears predictions", !s.isPredicting)
+    check("dismiss hides window", d.shownCandidates.isEmpty)
+    check("number passes through without predictions",
+          s.selectNumber(1) == .passThrough)
+
+    d.contextBeforeInput = ""
+    for ch in "ni" { _ = s.appendLetter(String(ch)) }
+    _ = s.handlePunctuation(",")
+    check("punctuation leaves no predictions", !s.isPredicting)
+
+    d.contextBeforeInput = "生日"
+    for ch in "kuai" { _ = s.appendLetter(String(ch)) }
+    _ = s.selectCurrent()
+    check("fetches more than one page of predictions",
+          s.predictions.count > 9)
+    check("window shows one page", d.shownCandidates.count == 9)
+    let page2 = Array(s.predictions[9..<min(18, s.predictions.count)])
+    s.nextPredictionPage()
+    check("next prediction page", d.shownCandidates == page2)
+    let committedBefore = d.committedText
+    _ = s.selectNumber(1)
+    check("number selects on current page",
+          d.committedText == committedBefore + page2[0])
+    check("first prediction is highlighted", d.selectedIndex == 0)
+    let spaceBefore = d.committedText
+    let spaceExpected = s.visiblePredictions.first ?? ""
+    check("space selects first prediction",
+          s.selectCurrent() == .handled &&
+          d.committedText == spaceBefore + spaceExpected)
+    s.dismissPredictions()
+    check("space passes through without predictions",
+          s.selectCurrent() == .passThrough)
+
+    for ch in "kuai" { _ = s.appendLetter(String(ch)) }
+    _ = s.selectCurrent()
+    for _ in 0..<10 { s.nextPredictionPage() }
+    let shown = s.visiblePredictions.count
+    print("    last prediction page has \(shown) of \(s.predictions.count)")
+    check("last page is partial", shown > 0 && shown < 9)
+    check("unavailable number passes through",
+          s.selectNumber(shown + 1) == .passThrough)
+    check("unavailable number dismisses",
+          !s.isPredicting && d.shownCandidates.isEmpty)
+    s.dismissPredictions()
+
+    d.contextBeforeInput = ""
+    for ch in "github" { _ = s.appendLetter(String(ch)) }
+    _ = s.selectCurrent()
+    print("    GitHub → \(s.predictions.prefix(5))")
+    check("Latin commit has no predictions",
+          !s.isPredicting && d.shownCandidates.isEmpty)
+    s.dismissPredictions()
+}
+
+func testPredictionEdgeCases() {
+    print("[test_prediction_edge_cases]")
+    let (s, d) = makeSession()
+
+    // Chaining into a context with no predictions hides the stale window.
+    s.showPredictions(context: "生日快")
+    check("chain: predictions shown", s.isPredicting && !d.shownCandidates.isEmpty)
+    s.showPredictions(context: "生日快。")
+    check("chain: empty result clears predictions", !s.isPredicting)
+    check("chain: empty result hides window", d.shownCandidates.isEmpty)
+
+    // Client switch: the tracker flags a new client and reset drops state.
+    let first = NSObject(), second = NSObject()
+    var tracker = SessionClientTracker()
+    check("client: first client is not a switch", !tracker.update(to: first))
+    check("client: same client is not a switch", !tracker.update(to: first))
+    check("client: different client is a switch", tracker.update(to: second))
+    tracker.clear()
+    check("client: after clear is not a switch", !tracker.update(to: first))
+    s.showPredictions(context: "生日快")
+    if tracker.update(to: second) { s.handleClientSwitch() }
+    check("client: switch drops predictions",
+          !s.isPredicting && d.shownCandidates.isEmpty)
+    check("client: number no longer selects",
+          s.selectNumber(1) == .passThrough && d.committedText.isEmpty)
+    for ch in "ni" { _ = s.appendLetter(String(ch)) }
+    check("client: composing has marked text", d.markedText != nil)
+    if tracker.update(to: first) { s.handleClientSwitch() }
+    check("client: switch clears old marked text", d.markedText == nil)
+    check("client: switch drops composition",
+          !s.isComposing && d.committedText.isEmpty)
+
+    // Boundary keys finish a composition left active by a partial pick.
+    for ch in "nihao" { _ = s.appendLetter(String(ch)) }
+    check("partial: picks 你", selectCandidate("你", in: s))
+    check("partial: remainder composing", s.composition == "hao")
+    let rest = s.candidates.first ?? ""
+    _ = s.handlePunctuation(",")
+    check("partial: punctuation finishes composition",
+          !s.isComposing && d.committedText == "你" + rest + "，")
+    check("partial: punctuation leaves no predictions", !s.isPredicting)
+    d.clear()
+    for ch in "nihao" { _ = s.appendLetter(String(ch)) }
+    _ = selectCandidate("你", in: s)
+    let rest2 = s.candidates.first ?? ""
+    check("partial: pass-through key commits all",
+          s.commitAndPassThrough() == .commitAndPass &&
+          !s.isComposing && d.committedText == "你" + rest2)
+    check("partial: pass-through leaves no predictions", !s.isPredicting)
+    d.clear()
+
+    // A separator-only remainder is not committed as a stray apostrophe.
+    for ch in "woaini" { _ = s.appendLetter(String(ch)) }
+    _ = s.handlePunctuation("'")
+    let expected = s.candidates.first ?? ""
+    _ = s.selectCurrent()
+    check("remainder: commits candidate without apostrophe",
+          d.committedText == expected && !d.committedText.contains("'"))
+    check("remainder: composition finished", !s.isComposing)
+    check("remainder: predictions follow the commit", s.isPredicting)
+    s.dismissPredictions()
+
+    // Prediction windows anchor at the caret, compositions at marked text.
+    let caret = NSRect(x: 10, y: 20, width: 1, height: 16)
+    let marked = NSRect(x: 30, y: 40, width: 1, height: 16)
+    check("anchor: prediction uses caret",
+          CandidateWindowController.anchorRect(
+              isPrediction: true, caretRect: { caret },
+              markedTextRect: { marked }) == caret)
+    check("anchor: missing caret falls back",
+          CandidateWindowController.anchorRect(
+              isPrediction: true, caretRect: { nil },
+              markedTextRect: { marked }) == marked)
+    check("anchor: zero caret falls back",
+          CandidateWindowController.anchorRect(
+              isPrediction: true, caretRect: { .zero },
+              markedTextRect: { marked }) == marked)
+    check("anchor: composition uses marked text",
+          CandidateWindowController.anchorRect(
+              isPrediction: false, caretRect: { caret },
+              markedTextRect: { marked }) == marked)
+    let near = NSRect(x: 60, y: 40, width: 1, height: 16)
+    let far = NSRect(x: 0, y: 900, width: 1, height: 16)
+    check("anchor: caret near composition is used",
+          CandidateWindowController.anchorRect(
+              isPrediction: true, caretRect: { caret },
+              markedTextRect: { marked }, previousAnchor: near) == caret)
+    check("anchor: far caret falls back to composition",
+          CandidateWindowController.anchorRect(
+              isPrediction: true, caretRect: { far },
+              markedTextRect: { marked }, previousAnchor: near) == near)
+    check("anchor: missing caret prefers composition",
+          CandidateWindowController.anchorRect(
+              isPrediction: true, caretRect: { nil },
+              markedTextRect: { marked }, previousAnchor: near) == near)
+    let screens = [NSRect(x: 0, y: 0, width: 1440, height: 900),
+                   NSRect(x: 1440, y: 0, width: 2560, height: 1440)]
+    let other = NSRect(x: 2000, y: 900, width: 1, height: 16)
+    check("anchor: caret on another screen is trusted",
+          CandidateWindowController.anchorRect(
+              isPrediction: true, caretRect: { other },
+              markedTextRect: { marked }, previousAnchor: near,
+              screenFrames: screens) == other)
+    let wide = NSRect(x: 1400, y: 40, width: 1, height: 16)
+    check("anchor: far caret on the same line is trusted",
+          CandidateWindowController.anchorRect(
+              isPrediction: true, caretRect: { wide },
+              markedTextRect: { marked }, previousAnchor: near,
+              screenFrames: screens) == wide)
+    check("screen: point inside second screen",
+          CandidateWindowController.screenIndex(for: other, in: screens) == 1)
+    check("screen: offscreen point picks nearest",
+          CandidateWindowController.screenIndex(
+              for: NSRect(x: 5000, y: 100, width: 1, height: 1),
+              in: screens) == 1)
+    let size = NSSize(width: 300, height: 60)
+    let o = CandidateWindowController.windowOrigin(
+        size: size, below: NSRect(x: 3900, y: 300, width: 1, height: 16),
+        visible: screens[1])
+    check("origin: clamps to the anchor screen",
+          o.x == screens[1].maxX - size.width && o.y == 300 - 60 - 5)
+    let low = CandidateWindowController.windowOrigin(
+        size: size, below: NSRect(x: 100, y: 10, width: 1, height: 16),
+        visible: screens[0])
+    check("origin: flips above near the bottom", low.y == 10 + 16 + 4)
+    let below = CandidateWindowController.windowOrigin(
+        size: size, below: NSRect(x: 100, y: -200, width: 1, height: 16),
+        visible: screens[0])
+    check("origin: flipped window stays on screen", below.y == screens[0].minY)
+    let stacked = [NSRect(x: 0, y: 0, width: 1440, height: 900),
+                   NSRect(x: 0, y: 900, width: 1440, height: 900)]
+    check("screen: shared edge belongs to the upper screen",
+          CandidateWindowController.screenIndex(
+              for: NSRect(x: 100, y: 900, width: 1, height: 16),
+              in: stacked) == 1)
+    // A prediction chain advances the anchor, so a caret that drifts
+    // line by line is never treated as bogus.
+    var anchor = near
+    var drifted = true
+    for step in 1...6 {
+        let next = NSRect(x: 60, y: 40 - CGFloat(step) * 40, width: 1, height: 16)
+        let r = CandidateWindowController.anchorRect(
+            isPrediction: true, caretRect: { next },
+            markedTextRect: { marked }, previousAnchor: anchor,
+            screenFrames: [NSRect(x: 0, y: -1000, width: 1440, height: 2000)])
+        drifted = drifted && r == next
+        anchor = r
+    }
+    check("anchor: chain follows a drifting caret", drifted)
+}
+
 func testTraditionalConversion() {
     print("[test_traditional_conversion]")
-    let (s, m) = makeSession()
+    withTestPreferences { preferences, _ in
+        let (s, m) = makeSession(preferences: preferences)
 
-    // 1. Simplified baseline
-    s.isTraditional = false
-    for ch in "fazhan" { _ = s.appendLetter(String(ch)) }
-    check("simplified first candidate is 发展", s.candidates.first == "发展")
-    _ = s.selectCurrent()
-    check("commits 发展 in simplified mode", m.committedText == "发展")
-    m.clear()
+        // 1. Simplified baseline
+        s.isTraditional = false
+        for ch in "fazhan" { _ = s.appendLetter(String(ch)) }
+        check("simplified first candidate is 发展", s.candidates.first == "发展")
+        _ = s.selectCurrent()
+        check("commits 发展 in simplified mode", m.committedText == "发展")
+        s.dismissPredictions()
+        m.clear()
 
-    // 2. Switch to Traditional
-    s.isTraditional = true
-    for ch in "fazhan" { _ = s.appendLetter(String(ch)) }
-    check("traditional candidate converted to 發展", s.candidates.first == "發展")
-    _ = s.selectCurrent()
-    check("commits 發展 in traditional mode", m.committedText == "發展")
-    m.clear()
+        // 2. Switch to Traditional
+        s.isTraditional = true
+        for ch in "fazhan" { _ = s.appendLetter(String(ch)) }
+        check("traditional candidate converted to 發展", s.candidates.first == "發展")
+        _ = s.selectCurrent()
+        check("commits 發展 in traditional mode", m.committedText == "發展")
+        s.dismissPredictions()
+        m.clear()
 
-    // 3. Dynamic toggle while composing
-    s.isTraditional = false
-    for ch in "xuexi" { _ = s.appendLetter(String(ch)) }
-    check("pre-toggle is 学习", s.candidates.first == "学习")
-    s.isTraditional = true
-    check("mid-composition toggle updates to 學習", s.candidates.first == "學習")
-    _ = s.selectCurrent()
-    check("commits 學習", m.committedText == "學習")
-    s.isTraditional = false
-    s.cancel()
+        // 3. Dynamic toggle while composing
+        s.isTraditional = false
+        for ch in "xuexi" { _ = s.appendLetter(String(ch)) }
+        check("pre-toggle is 学习", s.candidates.first == "学习")
+        s.isTraditional = true
+        check("mid-composition toggle updates to 學習", s.candidates.first == "學習")
+        _ = s.selectCurrent()
+        check("commits 學習", m.committedText == "學習")
+        s.dismissPredictions()
+        s.isTraditional = false
+        s.cancel()
+    }
+}
+
+func testTraditionalContextNormalizedToSimplified() {
+    print("[test_traditional_context_normalized_to_simplified]")
+    withTestPreferences { preferences, _ in
+        preferences.isTraditional = true
+        let (s, d) = makeSession(preferences: preferences)
+        d.contextBeforeInput = "我對這裡很"
+
+        for ch in "bushu" { _ = s.appendLetter(String(ch)) }
+        check("Traditional context '我對這裡很' is normalized to Simplified so bushu ranks 不熟 first",
+              s.candidates.first == "不熟")
+        s.cancel()
+
+        // Also verify Traditional prediction context is normalized to Simplified for engine lookup
+        s.showPredictions(context: "中國共產")
+        check("Traditional prediction context returns Traditional predictions (黨)",
+              s.predictions.first == "黨")
+        s.dismissPredictions()
+    }
 }
 
 func testTraditionalLearningKeepsSimplifiedDictionary() {
     print("[test_traditional_learning_keeps_simplified_dictionary]")
-    let prefs = PreferencesManager.shared
-    let oldTrad = prefs.isTraditional
-    defer { prefs.isTraditional = oldTrad }
+    withTestPreferences { preferences, _ in
+        preferences.isTraditional = false
+        let (before, _) = makeSession(preferences: preferences)
+        for ch in "shiyan" { _ = before.appendLetter(String(ch)) }
+        let positionBefore = candidatePosition("试验", in: before)
+        before.cancel()
 
-    prefs.isTraditional = false
-    let (before, _) = makeSession()
-    for ch in "shiyan" { _ = before.appendLetter(String(ch)) }
-    let positionBefore = candidatePosition("试验", in: before)
-    before.cancel()
+        preferences.isTraditional = true
+        var allCommitted = true
+        for _ in 0..<20 {
+            let (s1, m1) = makeSession(preferences: preferences)
+            for ch in "fazhan" { _ = s1.appendLetter(String(ch)) }
+            if !selectCandidate("發展", in: s1) || m1.committedText != "發展" {
+                allCommitted = false
+                break
+            }
+            s1.dismissPredictions()
+            let (s2, m2) = makeSession(preferences: preferences)
+            for ch in "shiyan" { _ = s2.appendLetter(String(ch)) }
+            if !selectCandidate("試驗", in: s2) || m2.committedText != "試驗" {
+                allCommitted = false
+                break
+            }
+            s2.dismissPredictions()
+        }
+        check("traditional selections commit Traditional text", allCommitted)
 
-    prefs.isTraditional = true
-    var allCommitted = true
-    for _ in 0..<20 {
-        let (s1, m1) = makeSession()
-        for ch in "fazhan" { _ = s1.appendLetter(String(ch)) }
-        if !selectCandidate("發展", in: s1) || m1.committedText != "發展" {
-            allCommitted = false
-            break
-        }
-        let (s2, m2) = makeSession()
-        for ch in "shiyan" { _ = s2.appendLetter(String(ch)) }
-        if !selectCandidate("試驗", in: s2) || m2.committedText != "試驗" {
-            allCommitted = false
-            break
-        }
+        preferences.isTraditional = false
+        let (after, _) = makeSession(preferences: preferences)
+        for ch in "fazhan" { _ = after.appendLetter(String(ch)) }
+        check("simplified first candidate stays 发展 after Traditional learning",
+              after.candidates.first == "发展")
+        check("Traditional 發展 is not learned into Simplified candidates",
+              !after.candidates.contains("發展"))
+        after.cancel()
+
+        let (boosted, _) = makeSession(preferences: preferences)
+        for ch in "shiyan" { _ = boosted.appendLetter(String(ch)) }
+        let positionAfter = candidatePosition("试验", in: boosted)
+        print("    '试验' position before: \(positionBefore.map(String.init) ?? "none"), after: \(positionAfter.map(String.init) ?? "none")")
+        check("Traditional selections still boost the Simplified word",
+              positionAfter != nil &&
+              (positionBefore == nil || positionAfter! < positionBefore!))
+        boosted.cancel()
     }
-    check("traditional selections commit Traditional text", allCommitted)
-
-    prefs.isTraditional = false
-    let (after, _) = makeSession()
-    for ch in "fazhan" { _ = after.appendLetter(String(ch)) }
-    check("simplified first candidate stays 发展 after Traditional learning",
-          after.candidates.first == "发展")
-    check("Traditional 發展 is not learned into Simplified candidates",
-          !after.candidates.contains("發展"))
-    after.cancel()
-
-    let (boosted, _) = makeSession()
-    for ch in "shiyan" { _ = boosted.appendLetter(String(ch)) }
-    let positionAfter = candidatePosition("试验", in: boosted)
-    print("    '试验' position before: \(positionBefore.map(String.init) ?? "none"), after: \(positionAfter.map(String.init) ?? "none")")
-    check("Traditional selections still boost the Simplified word",
-          positionAfter != nil &&
-          (positionBefore == nil || positionAfter! < positionBefore!))
-    boosted.cancel()
 }
 
 func testSymbolsMode() {
     print("[test_symbols_mode]")
-    let (s, m) = makeSession()
+    withTestPreferences { preferences, _ in
+        let (s, m) = makeSession(preferences: preferences)
 
-    // 1. Enter symbols mode
-    s.enterSymbolsMode()
-    check("is in symbols mode", s.isSymbolsMode)
-    check("isComposing is true in symbols mode", s.isComposing)
-    check("first symbol is ，", s.candidates.first == "，")
-    check("symbols count is 9", s.candidates.count == 9)
+        // 1. Enter symbols mode
+        s.enterSymbolsMode()
+        check("is in symbols mode", s.isSymbolsMode)
+        check("isComposing is true in symbols mode", s.isComposing)
+        check("first symbol is ，", s.candidates.first == "，")
+        check("symbols count is 9", s.candidates.count == 9)
 
-    // 2. Paging
-    _ = s.nextPage()
-    check("page 2 first symbol is 《", s.candidates.first == "《")
-    _ = s.previousPage()
-    check("page 1 first symbol is back to ，", s.candidates.first == "，")
+        // 2. Paging
+        _ = s.nextPage()
+        check("page 2 first symbol is 《", s.candidates.first == "《")
+        _ = s.previousPage()
+        check("page 1 first symbol is back to ，", s.candidates.first == "，")
 
-    // 3. Selection commits and exits
-    _ = s.selectNumber(2)
-    check("select 2 commits 。", m.committedText == "。")
-    check("exits symbols mode after selection", !s.isSymbolsMode)
-    m.clear()
+        // 3. Selection commits and exits
+        _ = s.selectNumber(2)
+        check("select 2 commits 。", m.committedText == "。")
+        check("exits symbols mode after selection", !s.isSymbolsMode)
+        m.clear()
 
-    // 4. Toggle symbols mode
-    s.toggleSymbolsMode()
-    check("toggleSymbolsMode entered", s.isSymbolsMode)
-    s.toggleSymbolsMode()
-    check("toggleSymbolsMode exited", !s.isSymbolsMode)
+        // 4. Toggle symbols mode
+        s.toggleSymbolsMode()
+        check("toggleSymbolsMode entered", s.isSymbolsMode)
+        s.toggleSymbolsMode()
+        check("toggleSymbolsMode exited", !s.isSymbolsMode)
 
-    // 5. Letter key exits symbols mode and types pinyin
-    s.enterSymbolsMode()
-    check("re-entered symbols mode", s.isSymbolsMode)
-    _ = s.appendLetter("n")
-    check("appendLetter exits symbols mode", !s.isSymbolsMode)
-    check("composition has letter 'n'", s.composition == "n")
-    s.cancel()
-    m.clear()
+        // 5. Letter key exits symbols mode and types pinyin
+        s.enterSymbolsMode()
+        check("re-entered symbols mode", s.isSymbolsMode)
+        _ = s.appendLetter("n")
+        check("appendLetter exits symbols mode", !s.isSymbolsMode)
+        check("composition has letter 'n'", s.composition == "n")
+        s.cancel()
+        m.clear()
 
-    // 6. Direct punctuation in symbols mode does not double commit
-    s.enterSymbolsMode()
-    check("re-entered symbols mode for punct", s.isSymbolsMode)
-    m.clear()
-    let res = s.handlePunctuation(",")
-    check("handlePunctuation handled", res == .handled)
-    check("only one comma committed without duplicate", m.committedText == "，")
-    check("exited symbols mode after punctuation", !s.isSymbolsMode)
-    m.clear()
+        // 6. Direct punctuation in symbols mode does not double commit
+        s.enterSymbolsMode()
+        check("re-entered symbols mode for punct", s.isSymbolsMode)
+        m.clear()
+        let res = s.handlePunctuation(",")
+        check("handlePunctuation handled", res == .handled)
+        check("only one comma committed without duplicate", m.committedText == "，")
+        check("exited symbols mode after punctuation", !s.isSymbolsMode)
+        m.clear()
 
-    // 7. Entering symbols mode while composing pinyin commits raw pinyin, not candidate 1
-    for ch in "nihao" { _ = s.appendLetter(String(ch)) }
-    check("is composing nihao", s.isComposing && s.composition == "nihao")
-    m.clear()
-    s.enterSymbolsMode()
-    check("raw pinyin committed", m.committedText == "nihao")
-    check("now in symbols mode", s.isSymbolsMode)
-    s.exitSymbolsMode()
-    m.clear()
-}
-
-func testPreferencesManager() {
-    print("[test_preferences_manager]")
-    let prefs = PreferencesManager.shared
-
-    // Switch mode
-    let oldSwitch = prefs.switchMode
-    prefs.switchMode = .capsLock
-    check("switchMode updated to capsLock", prefs.switchMode == .capsLock)
-    prefs.switchMode = .disabled
-    check("switchMode updated to disabled", prefs.switchMode == .disabled)
-    prefs.switchMode = oldSwitch
-
-    // Theme mode
-    let oldTheme = prefs.themeMode
-    prefs.themeMode = .dark
-    check("themeMode updated to dark", prefs.themeMode == .dark)
-    prefs.themeMode = oldTheme
-
-    // Traditional mode
-    let oldTrad = prefs.isTraditional
-    prefs.isTraditional = true
-    check("isTraditional set to true", prefs.isTraditional)
-    prefs.toggleTraditional()
-    check("toggleTraditional toggles to false", !prefs.isTraditional)
-    prefs.isTraditional = oldTrad
-}
-
-func testShiftToggleTracker() {
-    print("[test_shift_toggle_tracker]")
-    let tracker = ShiftToggleTracker()
-
-    // 1. Bare Shift toggle
-    check("shift down does not toggle", tracker.handleFlagsChanged(keyCode: 56, modifierFlags: .shift) == .none)
-    check("shift release toggles", tracker.handleFlagsChanged(keyCode: 56, modifierFlags: []) == .shouldToggle)
-
-    // 2. Command + Shift + F (Command held first, then Shift pressed)
-    tracker.cancelTracking()
-    check("cmd down", tracker.handleFlagsChanged(keyCode: 55, modifierFlags: .command) == .none)
-    check("shift down with cmd held does not track", tracker.handleFlagsChanged(keyCode: 56, modifierFlags: [.command, .shift]) == .none)
-    tracker.handleKeyDown(keyCode: 3, modifierFlags: [.command, .shift]) // F
-    check("shift release with cmd held does not toggle", tracker.handleFlagsChanged(keyCode: 56, modifierFlags: .command) == .none)
-    check("cmd release does not toggle", tracker.handleFlagsChanged(keyCode: 55, modifierFlags: []) == .none)
-
-    // 3. Shift pressed first, then Command pressed
-    tracker.cancelTracking()
-    check("shift down alone", tracker.handleFlagsChanged(keyCode: 56, modifierFlags: .shift) == .none)
-    check("cmd down cancels tracking", tracker.handleFlagsChanged(keyCode: 55, modifierFlags: [.shift, .command]) == .none)
-    tracker.handleKeyDown(keyCode: 3, modifierFlags: [.command, .shift]) // F
-    check("shift release does not toggle", tracker.handleFlagsChanged(keyCode: 56, modifierFlags: .command) == .none)
-
-    // 4. Shift used with letter (Shift + A)
-    tracker.cancelTracking()
-    _ = tracker.handleFlagsChanged(keyCode: 56, modifierFlags: .shift)
-    tracker.handleKeyDown(keyCode: 0, modifierFlags: .shift) // 'a'
-    check("shift + letter release does not toggle", tracker.handleFlagsChanged(keyCode: 56, modifierFlags: []) == .none)
+        // 7. Entering symbols mode while composing preserves composition without committing raw pinyin
+        for ch in "nihao" { _ = s.appendLetter(String(ch)) }
+        check("is composing nihao", s.isComposing && s.composition == "nihao")
+        m.clear()
+        s.enterSymbolsMode()
+        check("nothing committed when opening symbols mode mid-composition", m.committedText.isEmpty)
+        check("now in symbols mode with composition preserved", s.isSymbolsMode && s.composition == "nihao")
+        s.exitSymbolsMode()
+        check("exiting symbols mode restores pinyin candidates",
+              !s.isSymbolsMode && s.composition == "nihao" && s.candidates.first == "你好")
+        s.enterSymbolsMode()
+        _ = s.selectNumber(5) // ！
+        check("selecting symbol mid-composition commits Chinese candidate then symbol",
+              m.committedText == "你好！" && !s.isComposing)
+        m.clear()
+    }
 }
 
 // ── Main ─────────────────────────────────────────────────────────────────────
@@ -936,6 +1348,13 @@ func testShiftToggleTracker() {
         let initOk = gboard_init(args[1], args[2])
         check("engine initializes", initOk)
         guard initOk else { print("Engine init failed."); exit(1) }
+
+        if args.dropFirst(3).contains("--shuangpin-only") {
+            testPinyinSchemePreference()
+            testPinyinSchemeRestoreFailure()
+            print("Results: \(gPass) passed, \(gFail) failed")
+            exit(gFail > 0 ? 1 : 0)
+        }
 
         testBasicTyping()
         testNumberSelection()
@@ -958,15 +1377,37 @@ func testShiftToggleTracker() {
         testChinesePunctuation()
         testPunctuationWhileComposing()
         testVisualPinyinSegmentation()
+        testCorrectionSpans()
+testCorrectedPinyinReading()
         testSessionContextRetriever()
         testSessionContextFallback()
         testContextLanguageScoring()
         testContinuousPhraseLanguageScoring()
         testTraditionalConversion()
+        testTraditionalContextNormalizedToSimplified()
         testTraditionalLearningKeepsSimplifiedDictionary()
         testSymbolsMode()
-        testPreferencesManager()
-        testShiftToggleTracker()
+        testNextWordPrediction()
+        testPredictionEdgeCases()
+        testPreferencesStorage()
+        testFuzzyPinyinPreference()
+        testFuzzyPinyinRestoreFailure()
+        testPinyinSchemePreference()
+        testPinyinSchemeRestoreFailure()
+        testPreferenceSessionUpdates()
+        testContextPreference()
+        testCandidatePageSizePreference()
+        testCorrectionStylePreference()
+        testCorrectionAlignmentPreference()
+        testShiftTogglePreference()
+        testPinyinTextAttributes()
+        testPinyinDisplayModePreference()
+        testPinyinDisplayModeMigration()
+        testNativeMarkedTextPresentation()
+        testLearningPreference()
+        testUserDictionarySettings()
+        testClearLearningSessionUpdates()
+        testThemeAndTraditionalPreferences()
 
         print("\n══════════════════════════════════")
         print("Results: \(gPass) passed, \(gFail) failed")

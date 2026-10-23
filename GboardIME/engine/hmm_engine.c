@@ -70,6 +70,11 @@ static bool s_has_external_context;
 static uint64_t s_session_id;
 static uint64_t s_last_session_id;
 static bool s_session_active;
+static uint32_t s_fuzzy_groups;
+static HmmPinyinScheme s_pinyin_scheme;
+static bool s_decoder_settings_valid = true;
+static bool s_personalized_settings_dirty;
+static bool s_context_settings_dirty;
 
 static size_t put_varint(uint8_t *out, uint64_t value) {
     size_t written = 0;
@@ -144,15 +149,24 @@ static void finish_native_session(jlong engine) {
 }
 
 static jlong create_decoder(const char *const *etypes) {
-    jlong engine = 0;
+    volatile jlong engine = 0;
     for (int ei = 0; etypes[ei] && !engine; ei++) {
         jstring engine_type = jni_NewStringUTF(g_env, etypes[ei]);
         jstring user_id = jni_NewStringUTF(g_env, "");
+        volatile int finished = 0;
         CRASH_PROTECT_BEGIN()
         engine = g_createEngine(g_env, NULL, g_factory, engine_type, user_id);
+        finished = 1;
         LOGERR("nativeCreateEngine('%s') → %lld",
                etypes[ei], (long long)engine);
         CRASH_PROTECT_END("nativeCreateEngine")
+        if (!finished) {
+            // The crash may have left .so locks held; another attempt
+            // could deadlock instead of failing cleanly.
+            LOGERR("nativeCreateEngine('%s') crashed; not retrying",
+                   etypes[ei]);
+            return 0;
+        }
     }
     if (!engine) return 0;
 
@@ -194,6 +208,101 @@ static bool create_decoders(void) {
     if (!s_context_engine) return false;
     g_engine = s_personalized_engine;
     g_end_vertex = 0;
+    return true;
+}
+
+uint32_t hmm_engine_get_fuzzy_pinyin(void) {
+    return s_fuzzy_groups;
+}
+
+bool hmm_engine_set_fuzzy_pinyin(uint32_t groups) {
+    if ((groups & ~HMM_FUZZY_ALL) || !g_engine || !g_refreshData) {
+        LOGERR("Cannot set fuzzy pinyin (mask=%u, engine=%lld)",
+               groups, (long long)g_engine);
+        return false;
+    }
+    if (!hmm_user_dict_pinyin_settings_valid()) {
+        LOGERR("Cannot set fuzzy pinyin: retry the pinyin scheme to restore accessor settings");
+        return false;
+    }
+    if (groups == s_fuzzy_groups && s_decoder_settings_valid) return true;
+
+    if (!hmm_enroll_decoder_settings(s_pack_dir, groups, s_pinyin_scheme)) {
+        s_decoder_settings_valid = hmm_enroll_decoder_settings(
+            s_pack_dir, s_fuzzy_groups, s_pinyin_scheme);
+        if (!s_decoder_settings_valid) {
+            LOGERR("Failed to restore fuzzy settings; decoder refresh blocked until retry");
+        }
+        LOGERR("Fuzzy pinyin update failed; previous selection retained");
+        return false;
+    }
+    s_decoder_settings_valid = true;
+    s_fuzzy_groups = groups;
+    s_personalized_settings_dirty = true;
+    s_context_settings_dirty = true;
+    LOGERR("Fuzzy pinyin configured: mask=%u; refresh after reset", groups);
+    return true;
+}
+
+HmmPinyinScheme hmm_engine_get_pinyin_scheme(void) {
+    return s_pinyin_scheme;
+}
+
+bool hmm_engine_set_pinyin_scheme(HmmPinyinScheme scheme) {
+    if (scheme < HMM_PINYIN_FULL || scheme > HMM_PINYIN_SHUANGPIN_ZIRANMA ||
+        !g_engine || !g_refreshData) {
+        LOGERR("Cannot set pinyin scheme: %d", scheme);
+        return false;
+    }
+    if (scheme == s_pinyin_scheme && s_decoder_settings_valid &&
+        hmm_user_dict_pinyin_settings_valid()) return true;
+    if (!hmm_enroll_decoder_settings(s_pack_dir, s_fuzzy_groups, scheme) ||
+        !hmm_user_dict_set_pinyin_scheme(scheme)) {
+        s_decoder_settings_valid = hmm_enroll_decoder_settings(
+            s_pack_dir, s_fuzzy_groups, s_pinyin_scheme);
+        if (!s_decoder_settings_valid) {
+            LOGERR("Failed to restore pinyin settings; decoder refresh blocked until retry");
+        }
+        LOGERR("Pinyin scheme update failed; previous selection retained");
+        return false;
+    }
+    s_decoder_settings_valid = true;
+    s_pinyin_scheme = scheme;
+    s_personalized_settings_dirty = true;
+    s_context_settings_dirty = true;
+    LOGERR("Pinyin scheme configured: %d; refresh after reset", scheme);
+    return true;
+}
+
+static bool settings_pending(void) {
+    return g_engine == s_context_engine
+        ? s_context_settings_dirty : s_personalized_settings_dirty;
+}
+
+static bool settings_valid(void) {
+    return s_decoder_settings_valid && hmm_user_dict_pinyin_settings_valid();
+}
+
+bool hmm_engine_refresh_settings_after_reset(void) {
+    if (!settings_valid()) {
+        LOGERR("Decoder refresh blocked: configuration rollback failed; retry settings");
+        return false;
+    }
+    if (!settings_pending()) return true;
+    volatile bool refreshed = false;
+    CRASH_PROTECT_BEGIN()
+    g_refreshData(g_env, NULL, g_engine);
+    refreshed = true;
+    CRASH_PROTECT_END("nativeRefreshData(decoder settings)")
+    if (!refreshed) {
+        LOGERR("Unable to refresh decoder configuration");
+        return false;
+    }
+    if (g_engine == s_context_engine) {
+        s_context_settings_dirty = false;
+    } else {
+        s_personalized_settings_dirty = false;
+    }
     return true;
 }
 
@@ -274,6 +383,10 @@ bool hmm_engine_update_input_context(const char *before_selection,
 
 bool hmm_engine_refresh_user_dictionary(void) {
     if (!g_engine || !g_refreshData) return false;
+    if (!settings_valid()) {
+        LOGERR("User dictionary refresh blocked: configuration requires a successful retry");
+        return false;
+    }
     CRASH_PROTECT_BEGIN()
     g_refreshData(g_env, NULL, g_engine);
     CRASH_PROTECT_END("HmmEngine nativeRefreshData")
@@ -289,7 +402,12 @@ fn_GetSegmentRange  g_getSegmentRange  = NULL;
 fn_GetSegmentTokenCount g_getSegmentTokenCount = NULL;
 fn_GetSegmentToken  g_getSegmentToken  = NULL;
 fn_GetTokenString   g_getTokenString   = NULL;
+fn_GetTokenString   g_getTokenNormalizedString = NULL;
+fn_IsCandidateCorrected g_isCandidateCorrected = NULL;
 fn_RefreshData      g_refreshData      = NULL;
+fn_FillPredictionCandList  g_fillPredictionCandList  = NULL;
+fn_GetPredictionCandCount  g_getPredictionCandCount  = NULL;
+fn_GetPredictionCandString g_getPredictionCandString = NULL;
 
 // ── Public API ──────────────────────────────────────────────────────────────
 
@@ -404,6 +522,11 @@ void hmm_engine_destroy(void) {
     s_has_external_context = false;
     s_session_id = 0;
     s_session_active = false;
+    s_fuzzy_groups = 0;
+    s_pinyin_scheme = HMM_PINYIN_FULL;
+    s_decoder_settings_valid = true;
+    s_personalized_settings_dirty = false;
+    s_context_settings_dirty = false;
     s_pack_dir[0] = '\0';
 
     elf_unload(g_elf);

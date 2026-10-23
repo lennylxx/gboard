@@ -13,7 +13,7 @@ let bundleId = Bundle.main.bundleIdentifier!
 
 final class ApplicationDelegate: NSObject, NSApplicationDelegate {
     func applicationWillTerminate(_ notification: Notification) {
-        GboardInputController.persistUserDictionary(wait: true)
+        UserDictionary.shared.persist()
     }
 }
 

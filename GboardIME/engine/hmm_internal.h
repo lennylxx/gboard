@@ -6,6 +6,7 @@
 #include "hmm_engine.h"
 #include "elf_loader.h"
 #include "android_stubs.h"
+#include "linux_abi.h"
 #include "jni_env.h"
 
 #include <stdio.h>
@@ -68,7 +69,8 @@ void hmm_alrm_handler(int sig);
       } else { \
         const char *_kind = (_sig == SIGALRM) ? "hung" : "crashed"; \
         char _b[256]; int _n=snprintf(_b,sizeof(_b),"[hmm_engine] %s %s (sig=%d addr=%p)\n",label,_kind,_sig,(void*)s_crash_addr); \
-        write(STDERR_FILENO,_b,_n>0?(size_t)_n:0); } \
+        write(STDERR_FILENO,_b,_n>0?(size_t)_n:0); \
+        linux_abi_crash_recovered(); } \
       { struct itimerval _zero = {{0,0},{0,0}}; setitimer(ITIMER_REAL, &_zero, NULL); } \
       sigaction(SIGSEGV, &_old_segv, NULL); sigaction(SIGBUS, &_old_bus, NULL); \
       sigaction(SIGILL, &_old_ill, NULL); sigaction(SIGABRT, &_old_abrt, NULL); \
@@ -123,6 +125,7 @@ typedef jobject  (*fn_GetSegmentRange)(JNIEnv *, jobject, jlong, jlong);
 typedef jint     (*fn_GetSegmentTokenCount)(JNIEnv *, jobject, jlong, jlong);
 typedef jlong    (*fn_GetSegmentToken)(JNIEnv *, jobject, jlong, jlong, jint);
 typedef jstring  (*fn_GetTokenString)(JNIEnv *, jobject, jlong, jlong);
+typedef jboolean (*fn_IsCandidateCorrected)(JNIEnv *, jobject, jlong, jint);
 typedef jlong    (*fn_CreateMutableDictionaryAccessor)(JNIEnv *, jclass, jlong, jstring, jstring, jstring);
 typedef jboolean (*fn_AddDictionaryCount)(JNIEnv *, jclass, jlong, jobject, jintArray, jstring, jint, jboolean);
 typedef jboolean (*fn_DecreaseDictionaryCount)(JNIEnv *, jclass, jlong, jobject, jintArray, jstring, jint);
@@ -135,6 +138,9 @@ typedef jboolean (*fn_EnrollMutableDictFd)(JNIEnv *, jclass, jlong, jstring, jin
 typedef jint     (*fn_GetCandidateTokenCount)(JNIEnv *, jobject, jlong, jint);
 typedef jlong    (*fn_GetCandidateToken)(JNIEnv *, jobject, jlong, jint, jint);
 typedef jint     (*fn_GetTokenLanguage)(JNIEnv *, jobject, jlong, jlong);
+typedef jboolean (*fn_FillPredictionCandList)(JNIEnv *, jobject, jlong);
+typedef jint     (*fn_GetPredictionCandCount)(JNIEnv *, jobject, jlong);
+typedef jstring  (*fn_GetPredictionCandString)(JNIEnv *, jobject, jlong, jint);
 
 typedef struct {
     fn_CreateMutableDictionaryAccessor createAccessor;
@@ -200,10 +206,16 @@ extern fn_GetSegmentRange  g_getSegmentRange;
 extern fn_GetSegmentTokenCount g_getSegmentTokenCount;
 extern fn_GetSegmentToken  g_getSegmentToken;
 extern fn_GetTokenString   g_getTokenString;
+extern fn_GetTokenString   g_getTokenNormalizedString;
+extern fn_IsCandidateCorrected g_isCandidateCorrected;
 extern fn_RefreshData      g_refreshData;
+extern fn_FillPredictionCandList   g_fillPredictionCandList;
+extern fn_GetPredictionCandCount   g_getPredictionCandCount;
+extern fn_GetPredictionCandString  g_getPredictionCandString;
 
 // Refresh the decoder after a mutable dictionary snapshot is re-enrolled.
 bool hmm_engine_refresh_user_dictionary(void);
+bool hmm_engine_refresh_settings_after_reset(void);
 void hmm_engine_set_external_context(bool has_context);
 
 // ── Symbol helper ───────────────────────────────────────────────────────────
@@ -217,3 +229,7 @@ static inline void *hmm_sym(ElfHandle *h, const char *name) {
 void hmm_resolve_natives(void);
 const HmmUserDictNatives *hmm_get_user_dict_natives(void);
 bool hmm_enroll_all(const char *pack_dir);
+bool hmm_enroll_decoder_settings(const char *pack_dir, uint32_t fuzzy_groups,
+                                 HmmPinyinScheme scheme);
+bool hmm_enroll_pinyin_accessor_settings(const char *pack_dir,
+                                         HmmPinyinScheme scheme);

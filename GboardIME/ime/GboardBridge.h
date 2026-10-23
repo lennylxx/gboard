@@ -1,9 +1,14 @@
 #pragma once
 #include <stdbool.h>
+#include "../engine/hmm_engine.h"
 
 bool  gboard_init(const char *so_path, const char *pack_dir);
 bool  gboard_init_with_user_data(const char *so_path, const char *pack_dir,
                                   const char *user_data_dir);
+bool  gboard_set_fuzzy_pinyin(uint32_t groups);
+uint32_t gboard_get_fuzzy_pinyin(void);
+bool  gboard_set_pinyin_scheme(HmmPinyinScheme scheme);
+HmmPinyinScheme gboard_get_pinyin_scheme(void);
 bool  gboard_set_context(const char *text_before_cursor);
 bool  gboard_update_input_context(const char *before_selection,
                                   const char *selected_text,
@@ -12,11 +17,15 @@ void  gboard_prepare_input(const char *pinyin);
 bool  gboard_append(const char *pinyin);
 int   gboard_get_candidates(char **out, int max);
 int   gboard_get_candidates_page(char **out, int offset, int max);
+int   gboard_get_predictions(char **out, int max);
 bool  gboard_select(int index);
 int   gboard_get_candidate_consumed(int index);
 int   gboard_get_separator(int vertex_index);
 bool  gboard_set_separator(int vertex_index, int type);
 int   gboard_get_segmented_pinyin(char *text, int max_bytes);
+int   gboard_get_corrected_candidate_reading(int index,
+                                             HmmTokenReading *tokens,
+                                             int max_tokens);
 void  gboard_reset(void);
 void  gboard_destroy(void);
 

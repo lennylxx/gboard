@@ -3,6 +3,11 @@
 #include "../engine/hmm_user_dict.h"
 #include <string.h>
 
+static char s_cached_tokens[32][16];
+static int  s_cached_types[32];
+static int  s_cached_count = 0;
+static int  s_cached_cand_idx = -1;
+
 bool gboard_init(const char *so_path, const char *pack_dir) {
     return hmm_engine_init(so_path, pack_dir);
 }
@@ -10,6 +15,26 @@ bool gboard_init(const char *so_path, const char *pack_dir) {
 bool gboard_init_with_user_data(const char *so_path, const char *pack_dir,
                                  const char *user_data_dir) {
     return hmm_engine_init_with_user_data(so_path, pack_dir, user_data_dir);
+}
+
+bool gboard_set_fuzzy_pinyin(uint32_t groups) {
+    bool ok = hmm_engine_set_fuzzy_pinyin(groups);
+    if (ok) {
+        s_cached_cand_idx = -1;
+    }
+    return ok;
+}
+
+uint32_t gboard_get_fuzzy_pinyin(void) { return hmm_engine_get_fuzzy_pinyin(); }
+
+bool gboard_set_pinyin_scheme(HmmPinyinScheme scheme) {
+    bool ok = hmm_engine_set_pinyin_scheme(scheme);
+    if (ok) s_cached_cand_idx = -1;
+    return ok;
+}
+
+HmmPinyinScheme gboard_get_pinyin_scheme(void) {
+    return hmm_engine_get_pinyin_scheme();
 }
 
 bool gboard_set_context(const char *text)          { return hmm_engine_set_context(text); }
@@ -23,11 +48,16 @@ int  gboard_get_candidates(char **out, int max)     { return hmm_engine_get_cand
 int  gboard_get_candidates_page(char **out, int offset, int max) {
     return hmm_engine_get_candidates_page(out, offset, max);
 }
+int  gboard_get_predictions(char **out, int max)   { return hmm_engine_get_predictions(out, max); }
 bool gboard_select(int index)                       { return hmm_engine_select(index); }
 int  gboard_get_candidate_consumed(int index)       { return hmm_engine_get_candidate_consumed(index); }
 int  gboard_get_separator(int i)                    { return hmm_engine_get_separator(i); }
 bool gboard_set_separator(int i, int t)             { return hmm_engine_set_separator(i, t); }
 int  gboard_get_segmented_pinyin(char *text, int max) { return hmm_engine_get_segmented_pinyin(text, max); }
+int  gboard_get_corrected_candidate_reading(int index, HmmTokenReading *tokens,
+                                            int max_tokens) {
+    return hmm_engine_get_corrected_candidate_reading(index, tokens, max_tokens);
+}
 void gboard_reset(void)                             { hmm_engine_reset(); }
 void gboard_destroy(void)                           { hmm_engine_destroy(); }
 
@@ -56,11 +86,6 @@ int gboard_user_dict_extract_tokens(int candidate_index,
 }
 
 // Cache for simplified per-token access from Swift
-static char s_cached_tokens[32][16];
-static int  s_cached_types[32];
-static int  s_cached_count = 0;
-static int  s_cached_cand_idx = -1;
-
 int gboard_user_dict_extract_token_count(int candidate_index) {
     s_cached_cand_idx = candidate_index;
     s_cached_count = hmm_user_dict_extract_tokens(candidate_index,

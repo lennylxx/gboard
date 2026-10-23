@@ -7,6 +7,7 @@
 #include <unistd.h>
 #include "engine/hmm_engine.h"
 #include "engine/hmm_user_dict.h"
+#include "engine/hmm_internal.h"
 
 static int g_pass = 0, g_fail = 0;
 
@@ -50,6 +51,382 @@ static bool has_candidate(char **cands, int count, const char *expected) {
 }
 
 // ── Tests ────────────────────────────────────────────────────────────────────
+
+static void test_native_stub_a(void) {}
+static void test_native_stub_b(void) {}
+
+static void test_jni_native_lookup(void) {
+    printf("[test_jni_native_lookup]\n");
+    JNIEnv *env = jni_env_create();
+    typedef struct { const char *name; const char *sig; void *fn; } TestNativeMethod;
+    typedef jint (*RegisterNatives)(JNIEnv *, jclass, const void *, jint);
+    RegisterNatives register_natives = (RegisterNatives)((void **)*env)[215];
+    const TestNativeMethod methods[] = {
+        {"testSingle", "(J)V", test_native_stub_a},
+        {"testShared", "(J)V", test_native_stub_a},
+        {"testShared", "(J)V", test_native_stub_a},
+        {"testShared", "(I)V", test_native_stub_b},
+        {"testSharedPrefix", "(J)V", test_native_stub_b},
+        {"testConflict", "(J)V", test_native_stub_a},
+        {"testConflict", "(J)V", test_native_stub_b},
+        {"testInvalid", "(J)V", NULL},
+    };
+    check("test natives register", register_natives(env, NULL, methods, 8) == JNI_OK);
+    check("single exact match resolves",
+          jni_find_registered_native_unique("testSingle", "(J)V") == test_native_stub_a);
+    check("same-address duplicates resolve",
+          jni_find_registered_native_unique("testShared", "(J)V") == test_native_stub_a);
+    check("overloads match their full signature",
+          jni_find_registered_native_unique("testShared", "(I)V") == test_native_stub_b);
+    check("signature substrings do not match",
+          !jni_find_registered_native_unique("testSingle", "(J)"));
+    check("name substrings do not match",
+          !jni_find_registered_native_unique("testShare", "(J)V"));
+    check("conflicting addresses are rejected",
+          !jni_find_registered_native_unique("testConflict", "(J)V"));
+    check("null native addresses are rejected",
+          !jni_find_registered_native_unique("testInvalid", "(J)V"));
+    check("missing native is rejected",
+          !jni_find_registered_native_unique("testMissing", "(J)V"));
+    jni_env_destroy(env);
+    env = jni_env_create();
+    check("new JNI environment clears stale registrations",
+          !jni_find_registered_native_unique("testSingle", "(J)V"));
+    jni_env_destroy(env);
+}
+
+static fn_EnrollSettingScheme s_real_enroll_setting;
+static bool s_fail_enrollment;
+static bool s_fail_accessor_enrollment;
+static bool s_fail_decoder_rollback;
+static fn_RefreshData s_real_refresh_data;
+static int s_refresh_failures_remaining;
+static int s_refresh_calls;
+
+static void fail_settings_refresh(JNIEnv *env, jclass cls, jlong handle) {
+    s_refresh_calls++;
+    if (s_refresh_failures_remaining > 0) {
+        s_refresh_failures_remaining--;
+        raise(SIGSEGV);
+        return;
+    }
+    s_real_refresh_data(env, cls, handle);
+}
+
+static jboolean fail_context_setting(JNIEnv *env, jclass cls, jlong manager,
+                                       jstring type, jstring locale, jbyteArray bytes) {
+    if (s_fail_enrollment && strstr(jni_get_string(type), "-context")) {
+        s_fail_enrollment = false;
+        return JNI_FALSE;
+    }
+    if (s_fail_accessor_enrollment &&
+        strcmp(jni_get_string(type), "user_dictionary_accessor_for_ime") == 0) {
+        s_fail_accessor_enrollment = false;
+        if (s_fail_decoder_rollback) {
+            s_fail_decoder_rollback = false;
+            s_fail_enrollment = true;
+        }
+        return JNI_FALSE;
+    }
+    return s_real_enroll_setting(env, cls, manager, type, locale, bytes);
+}
+
+static void test_fuzzy_pinyin(void) {
+    printf("[test_fuzzy_pinyin]\n");
+    static const struct {
+        uint32_t group;
+        const char *pinyin;
+        const char *expected;
+    } cases[] = {
+        {HMM_FUZZY_Z_ZH, "zidao", "知道"},
+        {HMM_FUZZY_C_CH, "cifan", "吃饭"},
+        {HMM_FUZZY_S_SH, "sijie", "世界"},
+        {HMM_FUZZY_AN_ANG, "shanhai", "上海"},
+        {HMM_FUZZY_EN_ENG, "penyou", "朋友"},
+        {HMM_FUZZY_IN_ING, "beijin", "北京"},
+        {HMM_FUZZY_L_N, "hulan", "湖南"},
+        {HMM_FUZZY_F_H, "feise", "黑色"},
+        {HMM_FUZZY_R_L, "lenmin", "人民"},
+        {HMM_FUZZY_K_G, "kaoxin", "高兴"},
+        {HMM_FUZZY_IAN_IANG, "xianfa", "想法"},
+        {HMM_FUZZY_UAN_UANG, "huanjin", "黄金"},
+    };
+    set_editor_context("");
+    check("fuzzy pinyin defaults to disabled", hmm_engine_get_fuzzy_pinyin() == 0);
+    check("shared decoder refresh resolves without a class name",
+          g_refreshData && g_refreshData == hmm_get_user_dict_natives()->refreshData &&
+          g_refreshData == jni_find_registered_native_unique("nativeRefreshData", "(J)V"));
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+        char *baseline[9] = {0};
+        int baseline_count = get_candidates_bulk(cases[i].pinyin, baseline, 9);
+        jlong original_engine = g_engine;
+        check("enable one fuzzy group", hmm_engine_set_fuzzy_pinyin(cases[i].group));
+        check("fuzzy setting does not rebuild the decoder", g_engine == original_engine);
+        char *unchanged[9] = {0};
+        int unchanged_count = hmm_engine_get_candidates(unchanged, 9);
+        bool deferred = unchanged_count == baseline_count;
+        for (int j = 0; j < unchanged_count && j < baseline_count; j++) {
+            if (strcmp(unchanged[j], baseline[j]) != 0) deferred = false;
+        }
+        check("enrollment preserves candidates until the next reset", deferred);
+        free_cands(unchanged, unchanged_count);
+        check("active fuzzy mask matches", hmm_engine_get_fuzzy_pinyin() == cases[i].group);
+        char *cands[50] = {0};
+        int count = get_candidates_bulk(cases[i].pinyin, cands, 50);
+        printf("    fuzzy %s ->", cases[i].pinyin);
+        for (int j = 0; j < count && j < 10; j++) printf(" %s", cands[j]);
+        printf("\n");
+        check(cases[i].expected, has_candidate(cands, count, cases[i].expected));
+        bool changed = count < baseline_count;
+        for (int j = 0; j < baseline_count && j < count; j++) {
+            if (strcmp(baseline[j], cands[j]) != 0) changed = true;
+        }
+        check("enabled group changes candidate ranking", changed);
+        free_cands(cands, count);
+        set_editor_context("我在");
+        count = get_candidates_bulk(cases[i].pinyin, cands, 50);
+        check("context decoder also uses fuzzy group",
+              has_candidate(cands, count, cases[i].expected));
+        free_cands(cands, count);
+        set_editor_context("");
+        check("disable individual fuzzy group", hmm_engine_set_fuzzy_pinyin(0));
+        count = get_candidates_bulk(cases[i].pinyin, cands, 9);
+        bool restored = count == baseline_count;
+        for (int j = 0; j < baseline_count && j < count; j++) {
+            if (strcmp(baseline[j], cands[j]) != 0) restored = false;
+        }
+        check("disabling restores original candidates", restored);
+        free_cands(cands, count);
+        free_cands(baseline, baseline_count);
+    }
+    check("all fuzzy groups can be combined", hmm_engine_set_fuzzy_pinyin(HMM_FUZZY_ALL));
+    check("disable all fuzzy groups", hmm_engine_set_fuzzy_pinyin(0));
+
+    char *cands[9] = {0};
+    int count = get_candidates_bulk("nihao", cands, 9);
+    free_cands(cands, count);
+    jlong original = g_engine;
+    check("unchanged settings preserve the decoder",
+          hmm_engine_set_fuzzy_pinyin(0) && g_engine == original);
+    check("invalid fuzzy mask is rejected",
+          !hmm_engine_set_fuzzy_pinyin(1u << 12) && g_engine == original &&
+          hmm_engine_get_fuzzy_pinyin() == 0);
+    s_real_enroll_setting = g_enrollSettingScheme;
+    s_fail_enrollment = true;
+    g_enrollSettingScheme = fail_context_setting;
+    bool switched = hmm_engine_set_fuzzy_pinyin(HMM_FUZZY_L_N);
+    g_enrollSettingScheme = s_real_enroll_setting;
+    check("failed enrollment keeps previous decoder and mask",
+          !switched && g_engine == original && hmm_engine_get_fuzzy_pinyin() == 0);
+    count = hmm_engine_get_candidates(cands, 9);
+    check("failed enrollment preserves active composition",
+          count > 0 && strcmp(cands[0], "你好") == 0);
+    free_cands(cands, count);
+    check("retry after enrollment failure succeeds",
+          hmm_engine_set_fuzzy_pinyin(HMM_FUZZY_L_N));
+    check("final fuzzy reset succeeds", hmm_engine_set_fuzzy_pinyin(0));
+}
+
+static void test_shuangpin(void) {
+    printf("[test_shuangpin]\n");
+    static const struct {
+        HmmPinyinScheme scheme;
+        const char *input;
+        const char *reading;
+    } cases[] = {
+        {HMM_PINYIN_SHUANGPIN_ABC, "nihk", "ni'hk"},
+        {HMM_PINYIN_SHUANGPIN_FLYPY, "nihc", "ni'hc"},
+        {HMM_PINYIN_SHUANGPIN_JIAJIA, "nihd", "ni'hd"},
+        {HMM_PINYIN_SHUANGPIN_MS, "nihk", "ni'hk"},
+        {HMM_PINYIN_SHUANGPIN_ZIGUANG, "nihq", "ni'hq"},
+        {HMM_PINYIN_SHUANGPIN_ZIRANMA, "nihk", "ni'hk"},
+    };
+    set_editor_context("");
+    check("default scheme is full pinyin",
+          hmm_engine_get_pinyin_scheme() == HMM_PINYIN_FULL);
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+        check("enable native shuangpin scheme",
+              hmm_engine_set_pinyin_scheme(cases[i].scheme) &&
+              hmm_engine_get_pinyin_scheme() == cases[i].scheme);
+        char *cands[50] = {0};
+        int count = get_candidates_bulk(cases[i].input, cands, 50);
+        check("native shuangpin phrase is first without correction",
+              count > 0 && strcmp(cands[0], "你好") == 0);
+        HmmTokenReading corrected[32];
+        check("scheme keys are not mistaken for spelling corrections",
+              hmm_engine_get_corrected_candidate_reading(0, corrected, 32) == 0);
+        char reading[256];
+        hmm_engine_get_segmented_pinyin(reading, sizeof(reading));
+        check("reading displays native shuangpin keys",
+              strcmp(reading, cases[i].reading) == 0);
+        check("full phrase consumes four original keys",
+              hmm_engine_get_candidate_consumed(0) == 4);
+        for (int j = 0; j < count; j++) {
+            if (strcmp(cands[j], "你") == 0) {
+                check("partial phrase consumes two original keys",
+                      hmm_engine_get_candidate_consumed(j) == 2);
+                break;
+            }
+        }
+        char tokens[32][16];
+        int types[32];
+        int token_count = hmm_user_dict_extract_tokens(0, tokens, types, 32);
+        const char *token_ptrs[32];
+        for (int t = 0; t < token_count; t++) token_ptrs[t] = tokens[t];
+        check("learn using the scheme-matched accessor",
+              token_count == 2 &&
+              hmm_user_dict_learn(token_ptrs, types, token_count, "你好", true));
+        check("learned entries survive accessor changes", hmm_user_dict_get_size() > 0);
+        free_cands(cands, count);
+        set_editor_context("我说");
+        count = get_candidates_bulk(cases[i].input, cands, 50);
+        check("context decoder also uses the selected scheme",
+              has_candidate(cands, count, "你好") &&
+              hmm_engine_get_candidate_consumed(0) == 4);
+        free_cands(cands, count);
+        set_editor_context("");
+        if (cases[i].scheme == HMM_PINYIN_SHUANGPIN_MS ||
+            cases[i].scheme == HMM_PINYIN_SHUANGPIN_ZIGUANG) {
+            count = get_candidates_bulk("b;", cands, 50);
+            check("semicolon final is decoded natively",
+                  has_candidate(cands, count, "冰"));
+            free_cands(cands, count);
+        }
+    }
+    check("enable flypy for edge cases",
+          hmm_engine_set_pinyin_scheme(HMM_PINYIN_SHUANGPIN_FLYPY));
+    char *cands[50] = {0};
+    int count = get_candidates_bulk("aa", cands, 50);
+    check("zero-initial syllable is native", has_candidate(cands, count, "啊"));
+    free_cands(cands, count);
+    count = get_candidates_bulk("n", cands, 50);
+    check("half syllable retains candidates", has_candidate(cands, count, "你"));
+    free_cands(cands, count);
+    count = get_candidates_bulk("github", cands, 50);
+    check("English mixed-input dictionary remains available",
+          has_candidate(cands, count, "GitHub"));
+    free_cands(cands, count);
+    check("fuzzy setting can coexist with shuangpin",
+          hmm_engine_set_fuzzy_pinyin(HMM_FUZZY_L_N));
+    count = get_candidates_bulk("hulj", cands, 50);
+    check("shuangpin uses enabled fuzzy expansions",
+          has_candidate(cands, count, "湖南"));
+    free_cands(cands, count);
+    check("reset fuzzy pinyin after shuangpin test", hmm_engine_set_fuzzy_pinyin(0));
+
+    count = get_candidates_bulk("nihc", cands, 50);
+    free_cands(cands, count);
+    jlong original = g_engine;
+    check("invalid pinyin scheme is rejected",
+          !hmm_engine_set_pinyin_scheme((HmmPinyinScheme)-1) &&
+          !hmm_engine_set_pinyin_scheme((HmmPinyinScheme)7) &&
+          hmm_engine_get_pinyin_scheme() == HMM_PINYIN_SHUANGPIN_FLYPY);
+    s_real_enroll_setting = g_enrollSettingScheme;
+    g_enrollSettingScheme = fail_context_setting;
+    s_fail_enrollment = true;
+    bool switched = hmm_engine_set_pinyin_scheme(HMM_PINYIN_SHUANGPIN_MS);
+    check("failed decoder enrollment retains the old scheme",
+          !switched && g_engine == original &&
+          hmm_engine_get_pinyin_scheme() == HMM_PINYIN_SHUANGPIN_FLYPY);
+    s_fail_accessor_enrollment = true;
+    switched = hmm_engine_set_pinyin_scheme(HMM_PINYIN_SHUANGPIN_MS);
+    g_enrollSettingScheme = s_real_enroll_setting;
+    check("failed accessor enrollment retains the old scheme",
+          !switched && hmm_engine_get_pinyin_scheme() == HMM_PINYIN_SHUANGPIN_FLYPY);
+    count = hmm_engine_get_candidates(cands, 50);
+    check("failed switch preserves active composition",
+          count > 0 && strcmp(cands[0], "你好") == 0);
+    free_cands(cands, count);
+    count = get_candidates_bulk("nihc", cands, 50);
+    check("rollback also survives the next decoder refresh",
+          count > 0 && strcmp(cands[0], "你好") == 0);
+    free_cands(cands, count);
+
+    s_real_refresh_data = g_refreshData;
+    g_refreshData = fail_settings_refresh;
+    s_refresh_failures_remaining = 1;
+    s_refresh_calls = 0;
+    switched = hmm_engine_set_pinyin_scheme(HMM_PINYIN_SHUANGPIN_MS);
+    check("accessor rollback refreshes the restored settings after a crash",
+          !switched && s_refresh_calls == 2 &&
+          hmm_user_dict_pinyin_settings_valid());
+    g_refreshData = s_real_refresh_data;
+    count = get_candidates_bulk("nihc", cands, 50);
+    check("accessor refresh recovery preserves the previous scheme",
+          count > 0 && strcmp(cands[0], "你好") == 0);
+    free_cands(cands, count);
+
+    g_refreshData = fail_settings_refresh;
+    s_refresh_failures_remaining = 2;
+    s_refresh_calls = 0;
+    switched = hmm_engine_set_pinyin_scheme(HMM_PINYIN_SHUANGPIN_MS);
+    check("failed accessor rollback is recorded explicitly",
+          !switched && s_refresh_calls == 2 &&
+          !hmm_user_dict_pinyin_settings_valid());
+    g_refreshData = s_real_refresh_data;
+    hmm_engine_prepare_input("nihc");
+    hmm_engine_reset();
+    check("failed accessor rollback blocks further input",
+          !hmm_engine_append("nihc"));
+    const char *blocked_tokens[] = {"ni", "hc"};
+    int blocked_types[] = {16, 16};
+    check("failed accessor rollback blocks learning with uncertain tokens",
+          !hmm_user_dict_learn(blocked_tokens, blocked_types, 2, "你好", true));
+    check("fuzzy settings cannot bypass failed accessor rollback",
+          !hmm_engine_set_fuzzy_pinyin(0));
+    check("retrying the current scheme repairs the accessor",
+          hmm_engine_set_pinyin_scheme(HMM_PINYIN_SHUANGPIN_FLYPY) &&
+          hmm_user_dict_pinyin_settings_valid());
+
+    g_enrollSettingScheme = fail_context_setting;
+    s_fail_accessor_enrollment = true;
+    s_fail_decoder_rollback = true;
+    switched = hmm_engine_set_pinyin_scheme(HMM_PINYIN_SHUANGPIN_MS);
+    g_enrollSettingScheme = s_real_enroll_setting;
+    check("failed decoder rollback retains the previous scheme selection",
+          !switched &&
+          hmm_engine_get_pinyin_scheme() == HMM_PINYIN_SHUANGPIN_FLYPY);
+    g_refreshData = fail_settings_refresh;
+    s_refresh_calls = 0;
+    hmm_engine_prepare_input("nihc");
+    hmm_engine_reset();
+    check("failed rollback blocks personalized decoder refresh and input",
+          s_refresh_calls == 0 && !hmm_engine_append("nihc"));
+    set_editor_context("我说");
+    hmm_engine_prepare_input("nihc");
+    hmm_engine_reset();
+    check("failed rollback also blocks context decoder refresh and input",
+          s_refresh_calls == 0 && !hmm_engine_append("nihc"));
+    check("dictionary snapshots cannot bypass inconsistent settings",
+          !hmm_engine_refresh_user_dictionary() && s_refresh_calls == 0);
+    g_refreshData = s_real_refresh_data;
+    check("unchanged fuzzy selection reenrolls a complete configuration to recover",
+          hmm_engine_set_fuzzy_pinyin(0));
+    count = get_candidates_bulk("nihc", cands, 50);
+    check("recovered context decoder uses the old scheme",
+          count > 0 && strcmp(cands[0], "你好") == 0);
+    free_cands(cands, count);
+    set_editor_context("");
+    count = get_candidates_bulk("nihc", cands, 50);
+    check("recovered personalized decoder uses the old scheme",
+          count > 0 && strcmp(cands[0], "你好") == 0);
+    free_cands(cands, count);
+
+    const char *learn_tokens[] = {"ce", "ui"};
+    int learn_types[] = {16, 16};
+    check("learn a distinctive shuangpin phrase",
+          hmm_user_dict_learn(learn_tokens, learn_types, 2, "侧试", true));
+    check("restore full pinyin", hmm_engine_set_pinyin_scheme(HMM_PINYIN_FULL));
+    count = get_candidates_bulk("nihao", cands, 50);
+    check("full pinyin works after switching back",
+          count > 0 && strcmp(cands[0], "你好") == 0);
+    free_cands(cands, count);
+    char *learned[500] = {0};
+    count = get_candidates_bulk("ceshi", learned, 500);
+    check("shuangpin learning remains usable after switching to full pinyin",
+          has_candidate(learned, count, "侧试"));
+    free_cands(learned, count);
+}
 
 static void test_init(const char *so, const char *pack) {
     printf("[test_init]\n");
@@ -645,6 +1022,9 @@ static void test_segmented_pinyin(void) {
         { "fangan",             "fang'an" },
         { "jintiantianqihenhao","jin'tian'tian'qi'hen'hao" },
         { "woshizhongguoren",   "wo'shi'zhong'guo'ren" },
+        { "github",             "github" },
+        { "woyaogithub",        "wo'yao'github" },
+        { "yongpythonxie",      "yong'python'xie" },
     };
     int total = sizeof(cases) / sizeof(cases[0]);
     int ok = 0;
@@ -665,6 +1045,60 @@ static void test_segmented_pinyin(void) {
     }
     printf("    %d/%d segmented readings correct\n", ok, total);
     check("segmented pinyin matches engine tokens", ok == total);
+}
+
+static void test_english_mixed_input(void) {
+    printf("[test_english_mixed_input]\n");
+    static const struct { const char *input; const char *expected; } cases[] = {
+        { "github",        "GitHub" },
+        { "woyaogithub",   "我要GitHub" },
+        { "yongpythonxie", "用Python写" },
+        { "zhongwen",      "中文" },
+        { "women",         "我们" },
+    };
+    for (size_t c = 0; c < sizeof(cases) / sizeof(cases[0]); c++) {
+        char *cands[9] = {0};
+        int n = get_candidates_bulk(cases[c].input, cands, 9);
+        char label[128];
+        snprintf(label, sizeof(label), "'%s' first candidate is %s",
+                 cases[c].input, cases[c].expected);
+        check(label, n > 0 && strcmp(cands[0], cases[c].expected) == 0);
+        if (n > 0 && strcmp(cands[0], cases[c].expected) != 0)
+            printf("    got '%s'\n", cands[0]);
+        free_cands(cands, n);
+    }
+
+    char *cands[9] = {0};
+    int n = get_candidates_bulk("github", cands, 9);
+    char tokens[16][16];
+    int types[16];
+    int tc = n > 0 ? hmm_user_dict_extract_tokens(0, tokens, types, 16) : 0;
+    bool all_english = tc == 6;
+    for (int i = 0; i < tc; i++) all_english = all_english && types[i] == 0;
+    check("'GitHub' tokens are six English letters", all_english);
+    if (n > 0) {
+        check("token extraction refuses truncated token lists",
+              hmm_user_dict_extract_tokens(0, tokens, types, 3) == 0);
+    }
+    free_cands(cands, n);
+
+    // Context-bearing input switches to the context engine, which must keep
+    // the same English setting.
+    set_editor_context("我觉得");
+    for (size_t c = 0; c < sizeof(cases) / sizeof(cases[0]); c++) {
+        char *ctx_cands[9] = {0};
+        int ctx_n = get_candidates_bulk(cases[c].input, ctx_cands, 9);
+        char label[160];
+        snprintf(label, sizeof(label),
+                 "with context, '%s' first candidate is %s",
+                 cases[c].input, cases[c].expected);
+        check(label, ctx_n > 0 &&
+                     strcmp(ctx_cands[0], cases[c].expected) == 0);
+        if (ctx_n > 0 && strcmp(ctx_cands[0], cases[c].expected) != 0)
+            printf("    got '%s'\n", ctx_cands[0]);
+        free_cands(ctx_cands, ctx_n);
+    }
+    set_editor_context("");
 }
 
 // ── User dictionary tests ────────────────────────────────────────────────────
@@ -698,6 +1132,11 @@ static void test_user_dict_token_extraction(void) {
             check("token[0] is 'ni'", strcmp(tokens[0], "ni") == 0);
             check("token[1] is 'hao'", strcmp(tokens[1], "hao") == 0);
         }
+        // Learning routes language-0 selections to the English dictionary.
+        bool pinyin_language = tc > 0;
+        for (int i = 0; i < tc; i++)
+            pinyin_language = pinyin_language && types[i] != 0;
+        check("Pinyin tokens are not English language", pinyin_language);
     }
     free_cands(cands, n);
 }
@@ -848,6 +1287,11 @@ static void test_user_dict_persist_and_reload(const char *executable,
     for (int i = 0; i < 20; i++) {
         hmm_user_dict_learn(tokens, types, 2, "车时", true);
     }
+    const char *english_tokens[] = {"g", "i", "t", "h", "u", "b"};
+    int english_types[] = {0, 0, 0, 0, 0, 0};
+    for (int i = 0; i < 20; i++) {
+        hmm_user_dict_learn(english_tokens, english_types, 6, "GITHUB", true);
+    }
     int size_before = hmm_user_dict_get_size();
     printf("    size before persist: %d\n", size_before);
 
@@ -875,6 +1319,71 @@ static void test_user_dict_persist_and_reload(const char *executable,
     bool child_ok = pid > 0 && waitpid(pid, &status, 0) == pid &&
                     WIFEXITED(status) && WEXITSTATUS(status) == 0;
     check("fresh process reloads learned ranking", child_ok);
+
+    char english_path[4096];
+    snprintf(english_path, sizeof(english_path),
+             "tests/test_user_data/user_dict_3_3_english");
+    check("English selection persisted to user_dict_3_3_english",
+          stat(english_path, &st) == 0 && st.st_size > 0);
+
+    pid = fork();
+    if (pid == 0) {
+        execl(executable, executable, "--verify-user-dict", so, pack,
+              "tests/test_user_data", "github", "GITHUB", "1", NULL);
+        _exit(127);
+    }
+    status = 0;
+    child_ok = pid > 0 && waitpid(pid, &status, 0) == pid &&
+               WIFEXITED(status) && WEXITSTATUS(status) == 0;
+    check("fresh process reloads learned English ranking", child_ok);
+    // Clearing removes both dictionaries' data and stale copies on disk.
+    for (int i = 0; i < 5; i++) {
+        hmm_user_dict_learn(tokens, types, 2, "车时", true);
+        hmm_user_dict_learn(english_tokens, english_types, 6, "GITHUB", true);
+    }
+    FILE *stale = fopen("tests/test_user_data/user_dict_3_3_bak", "wb");
+    if (stale) { fputs("stale", stale); fclose(stale); }
+    stale = fopen("tests/test_user_data/user_dict_3_3_english_tmp", "wb");
+    if (stale) { fputs("stale", stale); fclose(stale); }
+    check("clear after reload succeeds", hmm_user_dict_clear());
+    check("clear empties Chinese and English dictionaries",
+          hmm_user_dict_get_size() == 0);
+    check("clear removes Chinese backup",
+          access("tests/test_user_data/user_dict_3_3_bak", F_OK) != 0);
+    check("clear removes Chinese temp",
+          access("tests/test_user_data/user_dict_3_3_tmp", F_OK) != 0);
+    check("clear removes English backup",
+          access("tests/test_user_data/user_dict_3_3_english_bak", F_OK) != 0);
+    check("clear removes English temp",
+          access("tests/test_user_data/user_dict_3_3_english_tmp", F_OK) != 0);
+
+    pid = fork();
+    if (pid == 0) {
+        execl(executable, executable, "--verify-user-dict-empty", so, pack,
+              "tests/test_user_data", NULL);
+        _exit(127);
+    }
+    status = 0;
+    child_ok = pid > 0 && waitpid(pid, &status, 0) == pid &&
+               WIFEXITED(status) && WEXITSTATUS(status) == 0;
+    check("fresh process reloads empty dictionaries after clear", child_ok);
+
+    // Saving after clear must keep the dictionaries empty across reloads.
+    check("persist after clear succeeds", hmm_user_dict_persist());
+    pid = fork();
+    if (pid == 0) {
+        execl(executable, executable, "--verify-user-dict-empty", so, pack,
+              "tests/test_user_data", NULL);
+        _exit(127);
+    }
+    status = 0;
+    child_ok = pid > 0 && waitpid(pid, &status, 0) == pid &&
+               WIFEXITED(status) && WEXITSTATUS(status) == 0;
+    check("fresh process stays empty after clear and persist", child_ok);
+
+    unlink(english_path);
+    unlink("tests/test_user_data/user_dict_3_3_english_bak");
+    unlink("tests/test_user_data/user_dict_3_3_english_tmp");
 
     // Cleanup test data
     unlink(dict_path);
@@ -917,11 +1426,112 @@ static void test_user_dict_clear(void) {
     free_cands(cands, count);
 }
 
+static void test_next_word_prediction(void) {
+    printf("[test_next_word_prediction]\n");
+    char *cands[20] = {0};
+
+    set_editor_context("");
+    int count = hmm_engine_get_predictions(cands, 20);
+    check("prediction: empty context yields none", count == 0);
+    free_cands(cands, count);
+
+    set_editor_context("你好");
+    char *many[100] = {0};
+    count = hmm_engine_get_predictions(many, 100);
+    check("prediction: capped at 50", count > 0 && count <= 50);
+    free_cands(many, count);
+    count = hmm_engine_get_predictions(cands, 20);
+    printf("    你好 →");
+    for (int i = 0; i < count && i < 9; i++) printf(" %s", cands[i]);
+    printf("\n");
+    check("prediction: '你好' yields predictions", count > 0);
+    bool unique = true;
+    for (int i = 0; i < count; i++)
+        for (int j = i + 1; j < count; j++)
+            if (strcmp(cands[i], cands[j]) == 0) unique = false;
+    check("prediction: results are unique", unique);
+    free_cands(cands, count);
+
+    set_editor_context("生日快");
+    count = hmm_engine_get_predictions(cands, 20);
+    printf("    生日快 →");
+    for (int i = 0; i < count && i < 9; i++) printf(" %s", cands[i]);
+    printf("\n");
+    check("prediction: '生日快' predicts '乐'",
+          has_candidate(cands, count, "乐"));
+    free_cands(cands, count);
+
+    set_editor_context("你好。");
+    count = hmm_engine_get_predictions(cands, 20);
+    check("prediction: trailing punctuation yields none", count == 0);
+    free_cands(cands, count);
+
+    // Empty context still discards an active composition.
+    set_editor_context("");
+    count = get_candidates_bulk("nihao", cands, 9);
+    free_cands(cands, count);
+    count = hmm_engine_get_predictions(cands, 20);
+    free_cands(cands, count);
+    count = hmm_engine_get_candidates(cands, 9);
+    check("prediction: empty context resets composition", count == 0);
+    free_cands(cands, count);
+
+    // Decoding still works after prediction.
+    set_editor_context("");
+    count = get_candidates_bulk("nihao", cands, 9);
+    check("prediction: decoding works afterwards",
+          count > 0 && strcmp(cands[0], "你好") == 0);
+    free_cands(cands, count);
+}
+
 // ── Main ─────────────────────────────────────────────────────────────────────
 
 int main(int argc, char **argv) {
     const char *so = "../source/resources/lib/arm64-v8a/libintegrated_shared_object.so";
     const char *pack = "../hmmoemdata/current";
+    if (argc == 4 && strcmp(argv[1], "--shuangpin-only") == 0) {
+        char user_dir[] = "/tmp/gboard-shuangpin-XXXXXX";
+        if (!mkdtemp(user_dir)) {
+            perror("mkdtemp(shuangpin)");
+            return 2;
+        }
+        if (!hmm_engine_init_with_user_data(argv[2], argv[3], user_dir)) return 2;
+        test_shuangpin();
+        check("persist shuangpin learning", hmm_user_dict_persist());
+        pid_t pid = fork();
+        if (pid == 0) {
+            execl(argv[0], argv[0], "--verify-user-dict", argv[2], argv[3],
+                  user_dir, "ceshi", "侧试", "500", NULL);
+            _exit(127);
+        }
+        int status = 0;
+        check("fresh process reloads shuangpin learning as full pinyin",
+              pid > 0 && waitpid(pid, &status, 0) == pid &&
+              WIFEXITED(status) && WEXITSTATUS(status) == 0);
+        check("clear entries learned by shuangpin test", hmm_user_dict_clear());
+        hmm_engine_destroy();
+        const char *files[] = {
+            "user_dict_3_3", "user_dict_3_3_bak", "user_dict_3_3_tmp",
+            "user_dict_3_3_english", "user_dict_3_3_english_bak",
+            "user_dict_3_3_english_tmp"
+        };
+        for (size_t i = 0; i < sizeof(files) / sizeof(files[0]); i++) {
+            char path[4096];
+            snprintf(path, sizeof(path), "%s/%s", user_dir, files[i]);
+            unlink(path);
+        }
+        rmdir(user_dir);
+        printf("Results: %d passed, %d failed\n", g_pass, g_fail);
+        return g_fail > 0 ? 1 : 0;
+    }
+    if (argc == 4 && strcmp(argv[1], "--fuzzy-only") == 0) {
+        test_jni_native_lookup();
+        if (!hmm_engine_init(argv[2], argv[3])) return 2;
+        test_fuzzy_pinyin();
+        hmm_engine_destroy();
+        printf("Results: %d passed, %d failed\n", g_pass, g_fail);
+        return g_fail > 0 ? 1 : 0;
+    }
     if (argc == 5 && strcmp(argv[1], "--verify-ranking-policy") == 0) {
         if (!hmm_engine_init_with_user_data(argv[2], argv[3], argv[4]))
             return 2;
@@ -972,6 +1582,13 @@ int main(int argc, char **argv) {
         hmm_engine_destroy();
         return position >= 0 && position <= max_position ? 0 : 3;
     }
+    if (argc == 5 && strcmp(argv[1], "--verify-user-dict-empty") == 0) {
+        if (!hmm_engine_init_with_user_data(argv[2], argv[3], argv[4]))
+            return 2;
+        int size = hmm_user_dict_get_size();
+        hmm_engine_destroy();
+        return size == 0 ? 0 : 3;
+    }
     if (argc == 8 && strcmp(argv[1], "--verify-user-dict") == 0) {
         if (!hmm_engine_init_with_user_data(argv[2], argv[3], argv[4]))
             return 2;
@@ -996,7 +1613,11 @@ int main(int argc, char **argv) {
     unlink("tests/test_user_data/user_dict_3_3");
     unlink("tests/test_user_data/user_dict_3_3_tmp");
     unlink("tests/test_user_data/user_dict_3_3_bak");
+    unlink("tests/test_user_data/user_dict_3_3_english");
+    unlink("tests/test_user_data/user_dict_3_3_english_tmp");
+    unlink("tests/test_user_data/user_dict_3_3_english_bak");
 
+    test_jni_native_lookup();
     test_init(so, pack);
     if (g_fail > 0) { printf("\nEngine init failed — cannot continue.\n"); return 1; }
 
@@ -1023,6 +1644,19 @@ int main(int argc, char **argv) {
     test_brute_force_random();
     test_brute_force_incremental();
     test_segmented_pinyin();
+    test_english_mixed_input();
+    test_next_word_prediction();
+    test_fuzzy_pinyin();
+    pid_t shuangpin_pid = fork();
+    if (shuangpin_pid == 0) {
+        execl(argv[0], argv[0], "--shuangpin-only", so, pack, NULL);
+        _exit(127);
+    }
+    int shuangpin_status = 0;
+    check("native shuangpin integration passes in an isolated process",
+          shuangpin_pid > 0 &&
+          waitpid(shuangpin_pid, &shuangpin_status, 0) == shuangpin_pid &&
+          WIFEXITED(shuangpin_status) && WEXITSTATUS(shuangpin_status) == 0);
 
     // User dictionary tests
     test_user_dict_init();

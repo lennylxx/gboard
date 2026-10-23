@@ -8,7 +8,8 @@ enum {
     SEPARATOR_TOKEN = 1,
     SEPARATOR_SEGMENT = 2,
     END_VERTEX_SENTINEL = 32767,
-    CONTEXT_MAX_UTF8_BYTES = 256
+    CONTEXT_MAX_UTF8_BYTES = 256,
+    PREDICTION_MAX_CANDIDATES = 50
 };
 
 typedef struct {
@@ -21,6 +22,7 @@ static char s_context[CONTEXT_MAX_UTF8_BYTES];
 static bool s_context_ends_latin;
 static bool s_context_injected;
 static int s_context_end_vertex;
+static bool s_settings_ready = true;
 
 static size_t utf8_codepoint_length(const unsigned char *s,
                                     size_t remaining) {
@@ -220,6 +222,10 @@ static bool append_context(void) {
 bool hmm_engine_append(const char *pinyin_input) {
     LOG("append: input='%s' g_append=%p g_engine=%lld", pinyin_input, (void*)g_append, (long long)g_engine);
     if (!g_append || !g_engine) { LOG("append: SKIP (null)"); return false; }
+    if (!s_settings_ready) {
+        LOGERR("Cannot append: decoder settings failed to refresh");
+        return false;
+    }
     if (!append_context()) return false;
 
     size_t len = strlen(pinyin_input);
@@ -292,6 +298,55 @@ int hmm_engine_get_candidates(char **candidates, int max_count) {
     return hmm_engine_get_candidates_page(candidates, 0, max_count);
 }
 
+int hmm_engine_get_predictions(char **candidates, int max_count) {
+    if (!candidates || max_count < 1 || !g_fillPredictionCandList ||
+        !g_getPredictionCandCount || !g_getPredictionCandString) {
+        hmm_engine_reset();
+        return 0;
+    }
+    // Mirrors Gboard hbe.g(): inject context as TARGET_TOKEN input, fill
+    // predictions, then reset so the next composition starts clean.
+    hmm_engine_prepare_input("");
+    hmm_engine_reset();
+    if (!s_context[0] || !g_engine || !s_settings_ready) return 0;
+    append_context();
+
+    int filled = 0;
+    if (s_context_end_vertex > 0) {
+        jboolean ok = JNI_FALSE;
+        CRASH_PROTECT_BEGIN()
+        ok = g_fillPredictionCandList(g_env, NULL, g_engine);
+        CRASH_PROTECT_END("nativeFillPredictionCandidateList")
+
+        jint count = 0;
+        if (ok) {
+            CRASH_PROTECT_BEGIN()
+            count = g_getPredictionCandCount(g_env, NULL, g_engine);
+            CRASH_PROTECT_END("nativeGetPredictionCandidateCount")
+        }
+        if (count > PREDICTION_MAX_CANDIDATES) {
+            count = PREDICTION_MAX_CANDIDATES;
+        }
+        for (jint i = 0; i < count && filled < max_count; i++) {
+            jstring js = NULL;
+            CRASH_PROTECT_BEGIN()
+            js = g_getPredictionCandString(g_env, NULL, g_engine, i);
+            CRASH_PROTECT_END("nativeGetPredictionCandidateString")
+            const char *s = js ? jni_get_string(js) : NULL;
+            if (!s || !*s) continue;
+            bool duplicate = false;
+            for (int j = 0; j < filled && !duplicate; j++) {
+                duplicate = strcmp(candidates[j], s) == 0;
+            }
+            if (!duplicate) candidates[filled++] = strdup(s);
+        }
+        LOG("predictions for '%s' → %d", s_context, filled);
+    }
+
+    hmm_engine_reset();
+    return filled;
+}
+
 int hmm_engine_get_candidate_consumed(int index) {
     if (!g_getCandRange || !g_engine) return -1;
     jobject range = NULL;
@@ -342,6 +397,8 @@ int hmm_engine_get_segmented_pinyin(char *text, int max_bytes) {
 
     int written = 0;
     bool has_token = false;
+    int prev_language = -1;
+    const HmmUserDictNatives *lang_natives = hmm_get_user_dict_natives();
     for (jint s = 0; s < segCount && written < max_bytes - 1; s++) {
         jlong seg = 0;
         CRASH_PROTECT_BEGIN()
@@ -376,9 +433,22 @@ int hmm_engine_get_segmented_pinyin(char *text, int max_bytes) {
             js = g_getTokenString(g_env, NULL, g_engine, token);
             CRASH_PROTECT_END("nativeGetTokenString")
             const char *token_text = js ? jni_get_string(js) : NULL;
-            if (!token_text || !token_text[0]) continue;
+            if (!token_text || !token_text[0]) {
+                jni_release_string(js);
+                continue;
+            }
 
-            if (has_token && written < max_bytes - 1) {
+            /* English tokens are single letters; keep a word contiguous. */
+            int language = -1;
+            if (lang_natives && lang_natives->getTokenLanguage) {
+                CRASH_PROTECT_BEGIN()
+                language = lang_natives->getTokenLanguage(g_env, NULL, g_engine, token);
+                CRASH_PROTECT_END("nativeGetTokenLanguage")
+            }
+            bool join = has_token && language == 0 && prev_language == 0;
+            prev_language = language;
+
+            if (has_token && !join && written < max_bytes - 1) {
                 text[written++] = '\'';
                 text[written] = '\0';
             }
@@ -386,12 +456,71 @@ int hmm_engine_get_segmented_pinyin(char *text, int max_bytes) {
             int length = (int)strlen(token_text);
             if (length > available) length = available;
             memcpy(text + written, token_text, (size_t)length);
+            jni_release_string(js);
             written += length;
             text[written] = '\0';
             has_token = true;
         }
     }
     return written;
+}
+
+static void copy_token_text(char *dst, size_t max, jstring js) {
+    const char *src = js ? jni_get_string(js) : "";
+    size_t length = strlen(src);
+    if (length >= max) length = max - 1;
+    memcpy(dst, src, length);
+    dst[length] = '\0';
+    jni_release_string(js);
+}
+
+int hmm_engine_get_corrected_candidate_reading(int index,
+                                               HmmTokenReading *tokens,
+                                               int max_tokens) {
+    const HmmUserDictNatives *natives = hmm_get_user_dict_natives();
+    if (!tokens || max_tokens < 1 || !g_engine || !g_isCandidateCorrected ||
+        !g_getTokenString || !natives || !natives->getCandidateTokenCount ||
+        !natives->getCandidateToken) {
+        return 0;
+    }
+
+    volatile int filled = 0;
+    CRASH_PROTECT_BEGIN()
+    jint count = 0;
+    if (g_isCandidateCorrected(g_env, NULL, g_engine, (jint)index)) {
+        count = natives->getCandidateTokenCount(g_env, NULL, g_engine,
+                                                (jint)index);
+    }
+    if (count > 0 && count <= max_tokens) {
+        int i = 0;
+        for (; i < count; i++) {
+            jlong token = natives->getCandidateToken(g_env, NULL, g_engine,
+                                                     (jint)index, (jint)i);
+            if (!token) break;
+            HmmTokenReading *reading = &tokens[i];
+            copy_token_text(reading->raw, sizeof(reading->raw),
+                            g_getTokenString(g_env, NULL, g_engine, token));
+            if (!reading->raw[0]) break;
+            if (g_getTokenNormalizedString) {
+                copy_token_text(reading->normalized,
+                                sizeof(reading->normalized),
+                                g_getTokenNormalizedString(g_env, NULL,
+                                                           g_engine, token));
+            } else {
+                reading->normalized[0] = '\0';
+            }
+            if (!reading->normalized[0]) {
+                memcpy(reading->normalized, reading->raw,
+                       sizeof(reading->normalized));
+            }
+            reading->language = natives->getTokenLanguage
+                ? natives->getTokenLanguage(g_env, NULL, g_engine, token)
+                : -1;
+        }
+        if (i == count) filled = (int)count;
+    }
+    CRASH_PROTECT_END("corrected candidate reading")
+    return filled;
 }
 
 bool hmm_engine_select(int index) {
@@ -407,10 +536,13 @@ void hmm_engine_reset(void) {
     g_end_vertex = 0;
     s_context_injected = false;
     s_context_end_vertex = 0;
+    volatile bool reset_ok = false;
     if (g_reset && g_engine) {
         CRASH_PROTECT_BEGIN()
         g_reset(g_env, NULL, g_engine);
+        reset_ok = true;
         CRASH_PROTECT_END("nativeReset")
     }
+    s_settings_ready = reset_ok && hmm_engine_refresh_settings_after_reset();
     hmm_user_dict_refresh_decoder_if_needed();
 }

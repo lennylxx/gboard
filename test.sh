@@ -18,16 +18,19 @@ ENGINE_SRCS=(
     "$ENGINE_DIR/elf_loader.c"
     "$ENGINE_DIR/jni_env.c"
     "$ENGINE_DIR/android_stubs.c"
+    "$ENGINE_DIR/linux_abi.c"
 )
 
-echo "═══ Building test_android_stubs (C) ═══"
-clang -g -O0 -DDEBUG=1 -o "$TEST_DIR/test_android_stubs" \
-    "$TEST_DIR/test_android_stubs.c" \
+echo "═══ Building test_linux_abi (C) ═══"
+clang -g -O0 -DDEBUG=1 -o "$TEST_DIR/test_linux_abi" \
+    "$TEST_DIR/test_linux_abi.c" \
     "$ENGINE_DIR/android_stubs.c" \
+    "$ENGINE_DIR/linux_abi.c" \
+    "$ENGINE_DIR/elf_loader.c" \
     -IGboardIME -lpthread
 
-echo "Running test_android_stubs..."
-"$TEST_DIR/test_android_stubs"
+echo "Running test_linux_abi..."
+"$TEST_DIR/test_linux_abi"
 
 echo ""
 echo "═══ Building test_engine (C) ═══"
@@ -42,13 +45,16 @@ ENGINE_RC=$?
 
 echo ""
 echo "═══ Building test_ime (Swift) ═══"
-mkdir -p .swift-module-cache
-swiftc -module-cache-path .swift-module-cache -g -parse-as-library -o "$TEST_DIR/test_ime" \
+swiftc -g -parse-as-library -o "$TEST_DIR/test_ime" \
     "$TEST_DIR/test_ime.swift" \
-    "GboardIME/ime/PreferencesManager.swift" \
+    "$TEST_DIR/test_preferences.swift" \
     "GboardIME/ime/PinyinSession.swift" \
-    "GboardIME/ime/SessionContextRetriever.swift" \
+    "GboardIME/ime/PinyinReading.swift" \
+    "GboardIME/ime/Preferences.swift" \
+    "GboardIME/ime/UserDictionary.swift" \
     "GboardIME/ime/ShiftToggleTracker.swift" \
+    "GboardIME/ime/SessionContextRetriever.swift" \
+    "GboardIME/ime/CandidateWindow.swift" \
     "GboardIME/ime/GboardBridge.c" \
     "${ENGINE_SRCS[@]}" \
     -IGboardIME -import-objc-header GboardIME/ime/GboardBridge.h \

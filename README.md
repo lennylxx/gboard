@@ -27,20 +27,50 @@ A macOS input method that runs Gboard's native HMM Pinyin engine via a custom AR
   composition.
 - **Pinyin segmentation display** — Shows the engine's segment/token split,
   such as `fang'an`, and explicit apostrophe separators such as `xi'an`.
-- **Automatic user-dictionary learning** — Stores selected Chinese phrases in
-  `user_dict_3_3` under `~/Library/Application Support/GboardIME/` and
-  persists the dictionary every four hours and on app teardown.
+- **Pinyin typo correction** — Uses Gboard's built-in corrector for swapped,
+  missing, or extra letters. For example, `nihoa` yields `你好` and
+  `zhonguo` yields `中国`. The Pinyin strip marks the fix: extra letters are
+  struck out and inserted letters are shown in orange. Settings offers
+  independent correction alignment: insert/delete marks (default, LCS) or
+  swap-aware marks (restricted Damerau-Levenshtein, DL/OSA). Swap-aware marks
+  highlight adjacent swapped letters together in corrected order:
+  `nihoa` shows `ni'hao`, with `ao` in orange.
+  Alignment changes take effect immediately and are saved; they work with
+  all three marking styles and do not affect native candidate generation.
+- **Fuzzy Pinyin** — Independently enable 12 pronunciation pairs in Settings:
+  z/zh, c/ch, s/sh, an/ang, en/eng, in/ing, l/n, f/h, r/l, k/g, ian/iang,
+  and uan/uang. All are off by default. Changes are saved and take effect
+  immediately without restarting, preserving active Pinyin, explicit
+  separators, and learned data. For example, enabling l/n lets `hulan`
+  produce `湖南`.
+- **Chinese-English mixed input** — Offers English words inside Pinyin
+  input using Gboard's English token and system dictionaries. For example,
+  `woyaogithub` yields `我要GitHub` and `yongpythonxie` yields `用Python写`.
+- **Double Pinyin (Shuangpin)** — Choose Flypy, Ziranma, Microsoft, Smart ABC,
+  Ziguang, or Pinyin Jiajia in Settings. Full Pinyin remains the default.
+  Uses Gboard's native token dictionaries, with raw scheme keys shown in the
+  Pinyin strip (for example, Flypy `nihc` → `你好`). Changes are saved and
+  take effect after the current composition ends, preserving partial
+  selections and learning. Microsoft and Ziguang accept `;` while composing.
+- **Chinese next-word prediction** — After a candidate is committed, shows
+  the engine's next-word predictions for the last committed Chinese text.
+  Press `Space` for the first one, `1-9` or click to insert one and continue
+  the chain, and `-`/`=` to page; any other key dismisses them and is
+  handled normally. For example, committing `生日快` predicts `乐`.
+- **Automatic user-dictionary learning** — Stores selected Chinese and mixed
+  phrases in `user_dict_3_3` and pure English words in
+  `user_dict_3_3_english` under `~/Library/Application Support/GboardIME/`,
+  persisting both every four hours and on app teardown.
 - **Complete keyboard workflow** — Supports candidate paging, keyboard
-  selection, and configurable Chinese/English mode switching (Shift, Caps Lock, or disabled).
-- **Simplified and Traditional Chinese** — Real-time candidate and commit
-  conversion via `Cmd+Shift+F`, candidate bar status badge, and settings toggle.
-- **Symbols and punctuation mode (?123)** — Quick symbol picker with `Ctrl+1`
-  or `Option+?` covering punctuation, brackets, math, and currency.
-- **Modern frosted glass UI & Preferences** — Native `NSVisualEffectView`
-  candidate panel with automatic dark/light theme adaptation and a dedicated
-  settings window.
-- **Native macOS interface** — Uses InputMethodKit and SwiftUI for the input
-  method and candidate window.
+  selection, and Chinese/English mode switching.
+- **Simplified / Traditional Chinese toggle** — Convert candidates and
+  next-word predictions to Traditional Chinese in real time while keeping
+  user-dictionary learning and context scoring in Simplified Chinese.
+- **?123 symbols panel** — Open a 4-page symbol picker (`Ctrl+1` or
+  `Option+?` in Chinese mode, or from the input menu) and select symbols
+  with `1-9`.
+- **Native macOS interface** — Uses InputMethodKit, a non-activating
+  frosted-glass `NSPanel`, and Gboard Google Blue light/dark themes.
 
 **Learning limitation:** Undo of a just-committed learned entry is not
 supported. InputMethodKit does not reliably expose the context needed to
@@ -57,8 +87,9 @@ Three layers make this possible:
 ## Prerequisites
 
 - macOS 13.0+ on Apple Silicon
-- Xcode (command line tools)
-- `brew install jadx jq`
+- Xcode or the Xcode Command Line Tools (`build.sh` falls back to `swiftc`
+  when `xcodebuild` is unavailable)
+- `brew install jq`
 
 ## Quick start
 
@@ -81,6 +112,8 @@ Three layers make this possible:
 --locale CODE   zh_CN (default), zh_TW, zh_HK, ko
 ```
 
+Optional: `./decompile.sh` decompiles the Java sources into `gboard_apk_source/jadx/` for reverse-engineering (requires `brew install jadx`; not needed to build).
+
 ### build.sh commands
 
 ```
@@ -94,18 +127,24 @@ clean       Remove build artifacts
 
 Switch to GboardIME from the menu bar input source picker, then type pinyin.
 
+Choose **设置…** (Settings) in the input method menu to open the settings
+window; changes are saved automatically.
+
 | Key | Action |
 |-----|--------|
 | a-z | Append to pinyin composition |
-| 1-9 | Select nth candidate |
-| - | Show previous candidate page |
-| = | Show next candidate page |
-| Space | Commit highlighted candidate |
+| ; | Append a Shuangpin key in Microsoft/Ziguang while composing; otherwise Chinese punctuation |
+| 1-9 | Select nth candidate or next-word prediction |
+| - | Show previous candidate or prediction page |
+| = | Show next candidate or prediction page |
+| Space | Commit highlighted candidate or first prediction |
 | ← → | Move candidate selection, crossing page boundaries |
 | Backspace | Delete last pinyin character |
-| Escape | Cancel composition |
+| Escape | Cancel composition or dismiss predictions |
 | Return | Commit raw pinyin |
 | Shift | Switch between Chinese and English; commit active composition as raw pinyin |
+| Cmd+Shift+F | Toggle Simplified / Traditional Chinese (in Chinese mode) |
+| Ctrl+1 / Option+? | Toggle ?123 punctuation & symbols panel (in Chinese mode) |
 | Caps Lock | Switch between GboardIME and ABC when enabled in macOS Text Input settings; commit active composition as raw pinyin |
 
 ## Test
@@ -119,3 +158,6 @@ Runs both C engine tests and Swift IME tests.
 ## Legal
 
 This is an independent research project. Google, Gboard, and Android are trademarks of Google LLC. Not affiliated with or endorsed by Google. See [NOTICE](NOTICE).
+
+Contributions must follow the copyright and legal principles in
+[CONTRIBUTING](CONTRIBUTING.md).
