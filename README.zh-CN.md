@@ -57,8 +57,11 @@ GboardIME 是一款适用于 macOS 的中文输入法。本项目通过自定义
   同时确保用户词典学习与上下文排序始终使用简体原词。
 - **`?123` 标点与符号面板**：中文模式下可通过 `Ctrl+1`、`Option+?` 或菜单栏
   唤出 6 页中文与全角符号面板，按 `1-9` 快速选词上屏。
-- **原生 macOS 界面**：基于 InputMethodKit、不抢占焦点的毛玻璃 `NSPanel`
-  以及 Gboard 官方 Google Blue 浅色／深色主题实现。
+- **原生 macOS 界面**：基于 InputMethodKit 与不抢占焦点的 `NSPanel`。
+  macOS 26 及以上的候选窗口采用 Liquid Glass（`NSGlassEffectView`），
+  遵循苹果设计规范：无着色常规玻璃、系统文字颜色、强调色选中项，透明度
+  跟随系统"外观"与"降低透明度"设置。更早的 macOS 回退为毛玻璃面板，
+  使用 Gboard 官方 Google Blue 浅色／深色主题，不透明度可调。
 
 **自动学习限制：** 当前不支持撤销某次上屏操作产生的学习记录。
 InputMethodKit 无法可靠区分“撤销已上屏文本”和普通文本编辑。

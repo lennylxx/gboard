@@ -69,8 +69,13 @@ A macOS input method that runs Gboard's native HMM Pinyin engine via a custom AR
 - **?123 symbols panel** — Open a 6-page symbol picker (`Ctrl+1` or
   `Option+?` in Chinese mode, or from the input menu) and select symbols
   with `1-9`.
-- **Native macOS interface** — Uses InputMethodKit, a non-activating
-  frosted-glass `NSPanel`, and Gboard Google Blue light/dark themes.
+- **Native macOS interface** — Uses InputMethodKit and a non-activating
+  `NSPanel`. On macOS 26 and later, the candidate window uses Liquid Glass
+  (`NSGlassEffectView`) following Apple's guidelines: untinted regular
+  glass, system label colors, and an accent-colored selection. Transparency
+  follows the system Appearance and Reduce Transparency settings. Earlier
+  macOS versions fall back to a frosted-glass panel with Gboard Google Blue
+  light/dark themes and an adjustable opacity.
 
 **Learning limitation:** Undo of a just-committed learned entry is not
 supported. InputMethodKit does not reliably expose the context needed to

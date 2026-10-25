@@ -163,6 +163,16 @@ final class Preferences: NSObject, ObservableObject {
         static let pinyinScheme = "pinyinScheme"
         static let isTraditional = "traditionalChineseEnabled"
         static let themeMode = "themeMode"
+        static let windowOpacity = "candidateWindowOpacity"
+    }
+
+    static let candidateWindowOpacityRange: ClosedRange<Double> = 0.0...1.0
+    static let defaultCandidateWindowOpacity = 0.7
+
+    static func clampedOpacity(_ value: Double) -> Double {
+        guard value.isFinite else { return defaultCandidateWindowOpacity }
+        let range = candidateWindowOpacityRange
+        return min(max(value, range.lowerBound), range.upperBound)
     }
 
     @Published var isTraditional: Bool {
@@ -171,6 +181,19 @@ final class Preferences: NSObject, ObservableObject {
 
     @Published var themeMode: ThemeMode {
         didSet { save(themeMode.rawValue, forKey: Key.themeMode) }
+    }
+
+    /// Opacity of the candidate window colors over the frosted background
+    /// (macOS < 26; Liquid Glass follows the system appearance instead).
+    @Published var candidateWindowOpacity: Double {
+        didSet {
+            let clamped = Self.clampedOpacity(candidateWindowOpacity)
+            guard clamped == candidateWindowOpacity else {
+                candidateWindowOpacity = clamped
+                return
+            }
+            save(candidateWindowOpacity, forKey: Key.windowOpacity)
+        }
     }
 
     func toggleTraditional() {
@@ -307,6 +330,7 @@ final class Preferences: NSObject, ObservableObject {
             Key.shift: true,
             Key.isTraditional: false,
             Key.themeMode: ThemeMode.system.rawValue,
+            Key.windowOpacity: Self.defaultCandidateWindowOpacity,
             Key.correction: CorrectionStyle.edits.rawValue,
             Key.correctionAlignment: CorrectionAlignment.lcs.rawValue,
             Key.pageSize: CandidatePageSize.nine.rawValue,
@@ -321,6 +345,10 @@ final class Preferences: NSObject, ObservableObject {
         themeMode = ThemeMode(
             rawValue: defaults.string(forKey: Key.themeMode) ?? ""
         ) ?? .system
+        candidateWindowOpacity = Self.clampedOpacity(
+            (defaults.object(forKey: Key.windowOpacity) as? NSNumber)?.doubleValue
+                ?? Self.defaultCandidateWindowOpacity
+        )
         correctionStyle = CorrectionStyle(
             rawValue: defaults.string(forKey: Key.correction) ?? ""
         ) ?? .edits

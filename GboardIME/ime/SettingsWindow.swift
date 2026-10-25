@@ -120,6 +120,21 @@ private struct SettingsView: View {
                             .pickerStyle(.segmented)
                             .frame(width: 270)
                         }
+                        if CandidateWindowController.systemGlassEffectClass == nil {
+                            HStack {
+                                Text("候选窗口不透明度")
+                                Spacer()
+                                Slider(value: $preferences.candidateWindowOpacity,
+                                       in: Preferences.candidateWindowOpacityRange)
+                                    .frame(width: 220)
+                                Text("\(Int((preferences.candidateWindowOpacity * 100).rounded()))%")
+                                    .monospacedDigit()
+                                    .frame(width: 42, alignment: .trailing)
+                            }
+                            note("调低后透出更多毛玻璃效果。")
+                        } else {
+                            note("候选窗口使用 Liquid Glass，透明度跟随系统“外观”与“降低透明度”设置。")
+                        }
                         HStack {
                             Text("拼音显示位置")
                             Spacer()

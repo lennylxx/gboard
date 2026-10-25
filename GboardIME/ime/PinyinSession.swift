@@ -39,6 +39,8 @@ class PinyinSession {
     private var fuzzyPinyinMask: UInt32
     private var requestedPinyinScheme: PinyinScheme
     private var traditionalEnabled: Bool
+    private var correctionStyle: CorrectionStyle
+    private var correctionAlignment: CorrectionAlignment
 
     var isTraditional: Bool {
         get { preferences.isTraditional }
@@ -56,6 +58,8 @@ class PinyinSession {
         fuzzyPinyinMask = gboard_get_fuzzy_pinyin()
         requestedPinyinScheme = preferences.pinyinScheme
         traditionalEnabled = preferences.isTraditional
+        correctionStyle = preferences.correctionStyle
+        correctionAlignment = preferences.correctionAlignment
         preferencesObserver = NotificationCenter.default.addObserver(
             forName: Preferences.didChangeNotification, object: preferences, queue: nil
         ) { [weak self] _ in
@@ -100,6 +104,10 @@ class PinyinSession {
         contextEnabled = preferences.contextEnabled
         let traditionalChanged = traditionalEnabled != preferences.isTraditional
         traditionalEnabled = preferences.isTraditional
+        let readingChanged = correctionStyle != preferences.correctionStyle ||
+            correctionAlignment != preferences.correctionAlignment
+        correctionStyle = preferences.correctionStyle
+        correctionAlignment = preferences.correctionAlignment
         let fuzzyChanged = !preferences.fuzzyPinyinApplyFailed &&
             fuzzyPinyinMask != preferences.fuzzyPinyinMask
         if fuzzyChanged {
@@ -135,7 +143,7 @@ class PinyinSession {
             } else if pageSizeChanged {
                 candidatePage = 0
                 fillCandidatePage()
-            } else {
+            } else if traditionalChanged || displayModeChanged || readingChanged {
                 notifyCandidates()
             }
         } else if isPredicting {

@@ -1012,7 +1012,8 @@ func testCandidateWindowFollowsTheme() {
     _ = NSApplication.shared
     withTestPreferences { preferences, _ in
         preferences.themeMode = .light
-        let controller = CandidateWindowController(preferences: preferences)
+        let controller = CandidateWindowController(
+            preferences: preferences, glassEffectClass: nil)
         controller.update(
             candidates: ["你好"], pinyin: .plain("nihao"),
             canGoPrevious: false, canGoNext: false,
@@ -1040,12 +1041,156 @@ func testCandidateWindowFollowsTheme() {
     }
 }
 
+/// Stand-in for `NSGlassEffectView` so the glass path is covered on any OS.
+final class FakeGlassEffectView: NSView {
+    @objc dynamic var cornerRadius: CGFloat = 0
+    @objc dynamic var tintColor: NSColor?
+    @objc dynamic var contentView: NSView? {
+        didSet {
+            oldValue?.removeFromSuperview()
+            if let contentView {
+                contentView.frame = bounds
+                addSubview(contentView)
+            }
+        }
+    }
+}
+
+func checkGlassPanel(_ glassClass: NSView.Type, label: String) {
+    withTestPreferences { preferences, _ in
+        preferences.themeMode = .dark
+        let controller = CandidateWindowController(
+            preferences: preferences, glassEffectClass: glassClass)
+        controller.update(
+            candidates: ["你好", "拟好"], pinyin: .plain("nihao"),
+            canGoPrevious: false, canGoNext: false,
+            onSelect: { _ in }, onPrevious: {}, onNext: {}
+        )
+        let glass = controller.backgroundView
+        let hosted = glass?.value(forKey: "contentView") as? FirstMouseHostingView<CandidateView>
+        check("\(label): glass backs the panel",
+              glass.map { type(of: $0) == glassClass } == true &&
+              controller.window?.contentView === glass &&
+              controller.visualEffectView == nil)
+        check("\(label): candidates are the glass content view", hosted != nil)
+        check("\(label): candidates sit directly on glass",
+              hosted?.rootView.glassBacked == true)
+        check("\(label): glass uses the panel corner radius",
+              (glass?.value(forKey: "cornerRadius") as? CGFloat) ==
+                  CandidateWindowController.glassCornerRadius)
+        if glass?.responds(to: NSSelectorFromString("tintColor")) == true {
+            check("\(label): glass is untinted",
+                  glass?.value(forKey: "tintColor") == nil)
+        }
+        check("\(label): window server shadows the glass panel",
+              controller.window?.hasShadow == true)
+        check("\(label): theme still pins the glass panel appearance",
+              controller.window?.appearance?.name == .darkAqua)
+        let many = ["一", "二", "三", "四", "五", "六", "七", "八", "九"]
+        controller.update(
+            candidates: many, pinyin: .empty,
+            canGoPrevious: false, canGoNext: true,
+            onSelect: { _ in }, onPrevious: {}, onNext: {}
+        )
+        let row = NSHostingView(rootView: CandidateView(
+            candidates: many, pinyin: .empty, selectedIndex: 0,
+            canGoPrevious: false, canGoNext: true,
+            onSelect: { _ in }, onPrevious: {}, onNext: {},
+            glassBacked: true, preferences: preferences
+        ).fixedSize())
+        check("\(label): glass window fits every candidate and the page arrows",
+              row.fittingSize.width <= (controller.window?.contentLayoutRect.width ?? 0))
+        controller.update(
+            candidates: ["你好"], pinyin: .empty,
+            canGoPrevious: false, canGoNext: false,
+            onSelect: { _ in }, onPrevious: {}, onNext: {}
+        )
+        hosted?.superview?.layoutSubtreeIfNeeded()
+        check("\(label): glass panel keeps the requested height",
+              controller.backgroundView === glass &&
+              controller.window?.contentLayoutRect.size.height == 40 &&
+              hosted?.frame.size.height == 40)
+        controller.close()
+    }
+}
+
+func testCandidateWindowUsesLiquidGlass() {
+    print("[test_candidate_window_uses_liquid_glass]")
+    _ = NSApplication.shared
+    checkGlassPanel(FakeGlassEffectView.self, label: "fake glass")
+    if let glassClass = CandidateWindowController.systemGlassEffectClass {
+        checkGlassPanel(glassClass, label: "Liquid Glass")
+    } else {
+        check("frosted fallback without NSGlassEffectView",
+              NSClassFromString("NSGlassEffectView") == nil)
+    }
+    withTestPreferences { preferences, _ in
+        let controller = CandidateWindowController(
+            preferences: preferences, glassEffectClass: nil)
+        controller.update(
+            candidates: ["你好"], pinyin: .plain("nihao"),
+            canGoPrevious: false, canGoNext: false,
+            onSelect: { _ in }, onPrevious: {}, onNext: {}
+        )
+        let hosted = controller.visualEffectView?.subviews.first
+            as? FirstMouseHostingView<CandidateView>
+        check("frosted fallback keeps themed fills and the window shadow",
+              controller.visualEffectView != nil &&
+              hosted?.rootView.glassBacked == false &&
+              controller.window?.hasShadow == true)
+        controller.close()
+    }
+}
+
 func testLegacyTraditionalKeyIgnored() {
     print("[test_legacy_traditional_key_ignored]")
     withTestPreferences { _, defaults in
         defaults.set(true, forKey: "GboardIME_isTraditional")
         check("unreleased legacy key does not enable Traditional",
               !Preferences(defaults: defaults).isTraditional)
+    }
+}
+
+func testCandidateWindowOpacity() {
+    print("[test_candidate_window_opacity]")
+    withTestPreferences { preferences, defaults in
+        check("window opacity defaults to 70%",
+              preferences.candidateWindowOpacity == 0.7)
+        var notified = false
+        let observer = NotificationCenter.default.addObserver(
+            forName: Preferences.didChangeNotification, object: preferences, queue: nil
+        ) { _ in notified = true }
+        preferences.candidateWindowOpacity = 0.6
+        NotificationCenter.default.removeObserver(observer)
+        check("window opacity change is announced", notified)
+        check("window opacity persists",
+              Preferences(defaults: defaults).candidateWindowOpacity == 0.6)
+        defaults.set(-0.5, forKey: "candidateWindowOpacity")
+        check("negative stored opacity is raised to 0%",
+              Preferences(defaults: defaults).candidateWindowOpacity == 0)
+        defaults.set(3.0, forKey: "candidateWindowOpacity")
+        check("too-high stored opacity is limited to 100%",
+              Preferences(defaults: defaults).candidateWindowOpacity == 1.0)
+        defaults.set(Double.nan, forKey: "candidateWindowOpacity")
+        check("non-finite stored opacity falls back to 70%",
+              Preferences(defaults: defaults).candidateWindowOpacity == 0.7)
+        defaults.set("dim", forKey: "candidateWindowOpacity")
+        check("non-numeric stored opacity falls back to 70%",
+              Preferences(defaults: defaults).candidateWindowOpacity == 0.7)
+        var clampNotifications = 0
+        let clampObserver = NotificationCenter.default.addObserver(
+            forName: Preferences.didChangeNotification, object: preferences, queue: nil
+        ) { _ in clampNotifications += 1 }
+        preferences.candidateWindowOpacity = -0.2
+        NotificationCenter.default.removeObserver(clampObserver)
+        check("assigned opacity is limited to 0%",
+              preferences.candidateWindowOpacity == 0)
+        check("clamped opacity is announced once", clampNotifications == 1)
+        check("clamped opacity persists",
+              Preferences(defaults: defaults).candidateWindowOpacity == 0)
+        preferences.candidateWindowOpacity = .nan
+        check("assigned non-finite opacity falls back to 70%",
+              preferences.candidateWindowOpacity == 0.7)
     }
 }
 

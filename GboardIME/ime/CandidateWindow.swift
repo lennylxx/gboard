@@ -40,6 +40,9 @@ struct CandidateView: View {
     let onPrevious: () -> Void
     let onNext: () -> Void
     var onOpenSettings: (() -> Void)? = nil
+    /// Hosted in Liquid Glass: content sits directly on the glass with
+    /// system label colors and an accent selection, per Apple's HIG.
+    var glassBacked = false
 
     @Environment(\.colorScheme) private var systemColorScheme
     @ObservedObject var preferences: Preferences = .shared
@@ -54,32 +57,41 @@ struct CandidateView: View {
 
     // Gboard official Google Blue light (`style_sheet_google_blue_light`) &
     // dark (`style_sheet_google_blue_dark`) theme colors.
+    // Each area draws a single layer so the preference is the opacity
+    // actually seen over the glass or frosted background.
     private var bgColor: Color {
-        isDark
-            ? Color(red: 0.161, green: 0.180, blue: 0.200).opacity(0.92) // #292E33
-            : Color(red: 0.945, green: 0.953, blue: 0.957).opacity(0.92) // #F1F3F4
+        if glassBacked { return .clear }
+        return (isDark
+            ? Color(red: 0.161, green: 0.180, blue: 0.200) // #292E33
+            : Color(red: 0.945, green: 0.953, blue: 0.957)) // #F1F3F4
+            .opacity(preferences.candidateWindowOpacity)
     }
 
     private var keyColor: Color {
-        isDark
-            ? Color(red: 0.212, green: 0.231, blue: 0.251).opacity(0.92) // #363B40
-            : Color.white.opacity(0.92)
+        if glassBacked { return .clear }
+        return (isDark
+            ? Color(red: 0.212, green: 0.231, blue: 0.251) // #363B40
+            : Color.white)
+            .opacity(preferences.candidateWindowOpacity)
     }
 
     private var labelColor: Color {
-        isDark
+        if glassBacked { return Color(nsColor: .labelColor) }
+        return isDark
             ? Color.white.opacity(0.8) // color_state_label_candidate (80% white)
             : Color(red: 0.259, green: 0.259, blue: 0.259) // #424242
     }
 
     private var selectedLabelColor: Color {
-        isDark
+        if glassBacked { return Color(nsColor: .alternateSelectedControlTextColor) }
+        return isDark
             ? Color.white // color_state_label_candidate_selected
             : Color(red: 0.259, green: 0.259, blue: 0.259) // #424242
     }
 
     private var accentColor: Color {
-        isDark
+        if glassBacked { return Color(nsColor: .controlAccentColor) }
+        return isDark
             ? Color(red: 0.369, green: 0.592, blue: 0.965) // #5E97F6
             : Color(red: 0.102, green: 0.451, blue: 0.910) // #1A73E8
     }
@@ -91,17 +103,37 @@ struct CandidateView: View {
     }
 
     private var hintColor: Color {
-        accentColor.opacity(0.7)
+        glassBacked ? Color(nsColor: .secondaryLabelColor) : accentColor.opacity(0.7)
     }
 
-    private let cornerRadius: CGFloat = 8
+    private func indexColor(selected: Bool) -> Color {
+        glassBacked && selected ? selectedLabelColor.opacity(0.75) : hintColor
+    }
+
+    private var cornerRadius: CGFloat {
+        glassBacked ? CandidateWindowController.glassCornerRadius : 8
+    }
+
+    /// Concentric with the panel corner across the candidate row inset.
+    private var selectionCornerRadius: CGFloat {
+        glassBacked ? cornerRadius - 4 : 6
+    }
+
+    private var selectionFill: Color {
+        glassBacked ? accentColor : accentColor.opacity(0.08)
+    }
 
     var body: some View {
         VStack(spacing: 0) {
             // Pinyin preedit strip (absent for next-word predictions)
             if !pinyin.isEmpty {
                 HStack(spacing: 6) {
-                    Text(pinyin.attributedText(accent: accentColor))
+                    Text(glassBacked
+                        ? pinyin.attributedText(
+                            accent: labelColor,
+                            correction: Color(nsColor: .systemOrange),
+                            typo: Color(nsColor: .secondaryLabelColor))
+                        : pinyin.attributedText(accent: accentColor))
 
                     if preferences.isTraditional {
                         Text("繁")
@@ -143,7 +175,11 @@ struct CandidateView: View {
                 .padding(.vertical, 6)
                 .background(bgColor)
 
-                Divider().background(divColor)
+                if glassBacked {
+                    Divider().padding(.horizontal, 8)
+                } else {
+                    Divider().background(divColor).background(bgColor)
+                }
             }
 
             // Candidate row
@@ -157,32 +193,42 @@ struct CandidateView: View {
                                 HStack(alignment: .firstTextBaseline, spacing: 2) {
                                     Text("\(i + 1).")
                                         .font(.system(size: 11))
-                                        .foregroundColor(hintColor)
+                                        .foregroundColor(indexColor(selected: i == selectedIndex))
                                     Text(cand)
                                         .font(.system(size: 18, weight: .regular))
                                         .foregroundColor(i == selectedIndex ? selectedLabelColor : labelColor)
                                 }
-                                .frame(minWidth: 36, minHeight: 36)
+                                // On glass the pill is 4pt inset from the 38pt row,
+                                // concentric with the panel; the inset and the gap
+                                // after it stay clickable.
+                                .frame(minWidth: 36, minHeight: glassBacked ? 30 : 36)
                                 .padding(.horizontal, 4)
-                                .padding(.vertical, 2)
+                                .padding(.vertical, glassBacked ? 0 : 2)
+                                .background(
+                                    RoundedRectangle(cornerRadius: selectionCornerRadius,
+                                                     style: glassBacked ? .continuous : .circular)
+                                        .fill(i == selectedIndex ? selectionFill : Color.clear)
+                                )
+                                .padding(.vertical, glassBacked ? 4 : 0)
+                                .padding(.trailing, glassBacked
+                                    ? CandidateWindowController.glassCandidateGap : 0)
+                                .contentShape(Rectangle())
                             }
                             .buttonStyle(.plain)
-                            .background(
-                                RoundedRectangle(cornerRadius: 6)
-                                    .fill(i == selectedIndex ? accentColor.opacity(0.08) : Color.clear)
-                            )
                             .id(i)
 
-                            if i < candidates.count - 1 {
+                            if !glassBacked && i < candidates.count - 1 {
                                 Divider()
                                     .frame(height: 28)
                                     .background(divColor)
                             }
                         }
 
-                        Divider()
-                            .frame(height: 28)
-                            .background(divColor)
+                        if !glassBacked {
+                            Divider()
+                                .frame(height: 28)
+                                .background(divColor)
+                        }
 
                         VStack(spacing: 0) {
                             pageButton(
@@ -210,11 +256,10 @@ struct CandidateView: View {
             .frame(height: 38)
             .background(keyColor)
         }
-        .background(bgColor)
         .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
         .overlay(
             RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                .strokeBorder(divColor, lineWidth: 1)
+                .strokeBorder(glassBacked ? Color.clear : divColor, lineWidth: 1)
         )
     }
 
@@ -227,7 +272,9 @@ struct CandidateView: View {
         Button(action: action) {
             Image(systemName: systemName)
                 .font(.system(size: 9, weight: .semibold))
-                .foregroundColor(enabled ? hintColor : Color.gray.opacity(0.35))
+                .foregroundColor(enabled ? hintColor
+                    : glassBacked ? Color(nsColor: .tertiaryLabelColor)
+                    : Color.gray.opacity(0.35))
                 .frame(width: 30, height: 14)
                 .contentShape(Rectangle())
         }
@@ -241,14 +288,33 @@ struct CandidateView: View {
 
 class CandidateWindowController: NSObject {
     private(set) var window: CandidatePanel?
-    private(set) var visualEffectView: ThemedEffectView?
+    /// Liquid Glass (`NSGlassEffectView`, macOS 26+) when the running
+    /// system provides it; looked up at runtime so older SDKs still build.
+    static let systemGlassEffectClass: NSView.Type? = {
+        guard let cls = NSClassFromString("NSGlassEffectView") as? NSView.Type,
+              cls.instancesRespond(to: NSSelectorFromString("setContentView:")),
+              cls.instancesRespond(to: NSSelectorFromString("setCornerRadius:"))
+        else { return nil }
+        return cls
+    }()
+    static let glassCornerRadius: CGFloat = 12
+    /// Space after each glass candidate, in place of the fallback's 1pt divider.
+    static let glassCandidateGap: CGFloat = 2
+
+    private let glassEffectClass: NSView.Type?
+    private(set) var backgroundView: NSView?
+    var visualEffectView: ThemedEffectView? { backgroundView as? ThemedEffectView }
     private var hostingView: FirstMouseHostingView<CandidateView>?
     private var onSelect: ((Int) -> Void)?
     private let preferences: Preferences
     private var preferencesObserver: NSObjectProtocol?
 
-    init(preferences: Preferences = .shared) {
+    init(
+        preferences: Preferences = .shared,
+        glassEffectClass: NSView.Type? = CandidateWindowController.systemGlassEffectClass
+    ) {
         self.preferences = preferences
+        self.glassEffectClass = glassEffectClass
         super.init()
         preferencesObserver = NotificationCenter.default.addObserver(
             forName: Preferences.didChangeNotification,
@@ -303,6 +369,7 @@ class CandidateWindowController: NSObject {
             onPrevious: onPrevious,
             onNext: onNext,
             onOpenSettings: onOpenSettings,
+            glassBacked: glassEffectClass != nil,
             preferences: preferences
         )
         let width = candidateWindowWidth(candidates: candidates, pinyin: pinyin.displayText)
@@ -321,30 +388,42 @@ class CandidateWindowController: NSObject {
             w.isFloatingPanel = true
             w.becomesKeyOnlyIfNeeded = false
 
-            let vfx = ThemedEffectView(frame: NSRect(x: 0, y: 0, width: width, height: height))
-            vfx.blendingMode = .behindWindow
-            vfx.state = .active
-            vfx.wantsLayer = true
-            vfx.layer?.cornerRadius = 8
-            vfx.layer?.masksToBounds = true
-            w.contentView = vfx
-            visualEffectView = vfx
-
+            let frame = NSRect(x: 0, y: 0, width: width, height: height)
             let hv = FirstMouseHostingView(rootView: view)
-            hv.frame = vfx.bounds
+            hv.frame = frame
             hv.autoresizingMask = [.width, .height]
+            // The glass view pins its content with constraints; keep SwiftUI's
+            // ideal size from overriding the fixed panel size.
+            hv.sizingOptions = []
             hv.wantsLayer = true
             hv.layer?.backgroundColor = NSColor.clear.cgColor
-            vfx.addSubview(hv)
+
+            let background: NSView
+            if let glassEffectClass {
+                background = glassEffectClass.init(frame: frame)
+                background.setValue(Self.glassCornerRadius, forKey: "cornerRadius")
+                background.setValue(hv, forKey: "contentView")
+            } else {
+                let vfx = ThemedEffectView(frame: frame)
+                vfx.blendingMode = .behindWindow
+                vfx.state = .active
+                vfx.wantsLayer = true
+                vfx.layer?.cornerRadius = 8
+                vfx.layer?.masksToBounds = true
+                vfx.addSubview(hv)
+                background = vfx
+            }
+            w.contentView = background
+            backgroundView = background
 
             window = w
             hostingView = hv
             w.appearance = Self.appearance(for: preferences.themeMode)
-            vfx.updateMaterial()
+            visualEffectView?.updateMaterial()
         } else {
             hostingView?.rootView = view
             window?.setContentSize(NSSize(width: width, height: height))
-            visualEffectView?.frame = NSRect(x: 0, y: 0, width: width, height: height)
+            backgroundView?.frame = NSRect(x: 0, y: 0, width: width, height: height)
         }
     }
 
@@ -363,6 +442,7 @@ class CandidateWindowController: NSObject {
 
         let rowWidth = candidateWidths.reduce(0, +)
             + CGFloat(candidates.count)
+                * (glassEffectClass != nil ? Self.glassCandidateGap : 1)
             + 38
         let pinyinWidth = (pinyin as NSString).size(withAttributes: [
             .font: PinyinReading.displayNSFont

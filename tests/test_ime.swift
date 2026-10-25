@@ -1598,6 +1598,8 @@ testCorrectedPinyinReading()
         testThemeAndTraditionalPreferences()
         testCandidateWindowFollowsTheme()
         testLegacyTraditionalKeyIgnored()
+        testCandidateWindowOpacity()
+        testCandidateWindowUsesLiquidGlass()
 
         print("\n══════════════════════════════════")
         print("Results: \(gPass) passed, \(gFail) failed")
