@@ -8,6 +8,7 @@ class GboardInputController: IMKInputController, PinyinSessionDelegate {
 
     private static var engineReady = false
     private let session = PinyinSession()
+    private lazy var symbolPanel = SymbolPanel(session: session)
     private var candidateWindow: CandidateWindowController?
 
     /// true = Chinese input, false = English passthrough
@@ -17,7 +18,7 @@ class GboardInputController: IMKInputController, PinyinSessionDelegate {
 
     override init!(server: IMKServer!, delegate: Any!, client: Any!) {
         super.init(server: server, delegate: delegate, client: client)
-        session.delegate = self
+        symbolPanel.delegate = self
         Self.initEngineOnce()
         shiftTracker.isEnabled = Preferences.shared.shiftToggleEnabled
         preferencesObserver = NotificationCenter.default.addObserver(
@@ -120,8 +121,16 @@ class GboardInputController: IMKInputController, PinyinSessionDelegate {
         if (flags == .control && (keyCode == 18 || charsIgnoring == "1")) ||
            isOptionSlashOrQuestion {
             shiftTracker.cancelTracking()
-            session.toggleSymbolsMode()
+            symbolPanel.toggle()
             return true
+        }
+
+        if symbolPanel.isOpen {
+            // Arrows carry .numericPad/.function, keypad digits .numericPad.
+            let modifiers = flags.subtracting([.capsLock, .numericPad, .function])
+            let key = SymbolPanelKey(
+                keyCode: keyCode, characters: chars, plain: modifiers.isEmpty)
+            if symbolPanel.handle(key) { return true }
         }
 
         let result: KeyResult
@@ -216,6 +225,7 @@ class GboardInputController: IMKInputController, PinyinSessionDelegate {
     /// so it can never be committed into the wrong document.
     private func switchClient(to sender: Any?) {
         if clientTracker.update(to: sender as AnyObject?) {
+            symbolPanel.dismiss()
             session.handleClientSwitch()
             contextTracker.invalidate()
             windowAnchor = nil
@@ -224,6 +234,7 @@ class GboardInputController: IMKInputController, PinyinSessionDelegate {
     }
 
     private func toggleChineseMode() {
+        symbolPanel.dismiss()
         session.dismissPredictions()
         if session.isComposing {
             _ = session.commitRawPinyin()
@@ -303,9 +314,13 @@ class GboardInputController: IMKInputController, PinyinSessionDelegate {
     }
 
     private func updateNativeInputContext(_ context: SessionInputContext) {
-        let beforeText = PinyinSession.toSimplified(context.beforeSelection)
-        let selectedText = PinyinSession.toSimplified(context.selectedText)
-        let afterText = PinyinSession.toSimplified(context.afterSelection)
+        let traditional = Preferences.shared.isTraditional
+        let beforeText = PinyinSession.engineContext(
+            context.beforeSelection, traditional: traditional)
+        let selectedText = PinyinSession.engineContext(
+            context.selectedText, traditional: traditional)
+        let afterText = PinyinSession.engineContext(
+            context.afterSelection, traditional: traditional)
         beforeText.withCString { before in
             selectedText.withCString { selected in
                 afterText.withCString { after in
@@ -317,7 +332,7 @@ class GboardInputController: IMKInputController, PinyinSessionDelegate {
 
     func sessionSetMarkedText(_ text: String) {
         guard let client = currentClient as? IMKTextInput else { return }
-        let markedText = text == "?123"
+        let markedText = text == SymbolPanel.placeholder
             ? "\u{200B}"
             : Preferences.shared.pinyinDisplayMode.markedText(for: text)
         if markedText.isEmpty {
@@ -352,30 +367,40 @@ class GboardInputController: IMKInputController, PinyinSessionDelegate {
             canGoPrevious: canGoPrevious,
             canGoNext: canGoNext,
             onSelect: { [weak self] idx in
-                guard let session = self?.session else { return }
-                if session.isPredicting {
+                guard let self = self else { return }
+                let session = self.session
+                if self.symbolPanel.isOpen {
+                    self.symbolPanel.select(index: idx)
+                } else if session.isPredicting {
                     session.selectPrediction(index: idx)
                 } else {
                     session.selectCandidate(index: idx)
                 }
             },
             onPrevious: { [weak self] in
-                guard let session = self?.session else { return }
-                if session.isPredicting {
+                guard let self = self else { return }
+                let session = self.session
+                if self.symbolPanel.isOpen {
+                    self.symbolPanel.previousPage()
+                } else if session.isPredicting {
                     session.previousPredictionPage()
                 } else {
                     _ = session.previousPage()
                 }
             },
             onNext: { [weak self] in
-                guard let session = self?.session else { return }
-                if session.isPredicting {
+                guard let self = self else { return }
+                let session = self.session
+                if self.symbolPanel.isOpen {
+                    self.symbolPanel.nextPage()
+                } else if session.isPredicting {
                     session.nextPredictionPage()
                 } else {
                     _ = session.nextPage()
                 }
             },
             onOpenSettings: { [weak self] in
+                self?.symbolPanel.dismiss()
                 self?.session.dismissPredictions()
                 self?.session.cancel()
                 SettingsWindowController.shared.show()
@@ -429,7 +454,7 @@ class GboardInputController: IMKInputController, PinyinSessionDelegate {
             keyEquivalent: ""
         )
         symItem.target = self
-        symItem.state = session.isSymbolsMode ? .on : .off
+        symItem.state = symbolPanel.isOpen ? .on : .off
         menu.addItem(symItem)
 
         menu.addItem(NSMenuItem.separator())
@@ -457,10 +482,17 @@ class GboardInputController: IMKInputController, PinyinSessionDelegate {
 
     @objc private func toggleSymbolsMenuAction(_ sender: Any!) {
         shiftTracker.cancelTracking()
+        if !symbolPanel.isOpen && currentClient == nil {
+            // Menu actions can arrive before any key event names a client;
+            // without one the panel would be invisible yet capture keys.
+            // A known client is kept so its composition is not cancelled.
+            guard let client = client() else { return }
+            switchClient(to: client)
+        }
         if !chineseMode {
             chineseMode = true
         }
-        session.toggleSymbolsMode()
+        symbolPanel.toggle()
     }
 
     override func showPreferences(_ sender: Any!) {
@@ -469,11 +501,13 @@ class GboardInputController: IMKInputController, PinyinSessionDelegate {
 
     override func commitComposition(_ sender: Any!) {
         switchClient(to: sender)
+        symbolPanel.dismiss()
         session.dismissPredictions()
         _ = session.commitRawPinyin()
     }
 
     override func deactivateServer(_ sender: Any!) {
+        symbolPanel.dismiss()
         session.dismissPredictions()
         _ = session.commitRawPinyin()
         contextTracker.invalidate()

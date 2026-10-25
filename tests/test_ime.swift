@@ -1208,11 +1208,54 @@ func testTraditionalContextNormalizedToSimplified() {
               s.candidates.first == "不熟")
         s.cancel()
 
-        // Also verify Traditional prediction context is normalized to Simplified for engine lookup
-        s.showPredictions(context: "中國共產")
-        check("Traditional prediction context returns Traditional predictions (黨)",
-              s.predictions.first == "黨")
+        // Client context is normalized once; the committed segment
+        // contributes its engine (Simplified) text to the prediction context.
+        d.contextBeforeInput = "後天"
+        for ch in "tianqi" { _ = s.appendLetter(String(ch)) }
+        check("Traditional candidate 天氣 is selectable",
+              selectCandidate("天氣", in: s) && d.committedText == "天氣")
+        check("Traditional context predicts 預報 after 後天天氣",
+              s.predictions.first == "預報")
         s.dismissPredictions()
+    }
+}
+
+func testEngineContextOnlyNormalizesTraditional() {
+    print("[test_engine_context_only_normalizes_traditional]")
+    withTestPreferences { preferences, _ in
+        let (s, _) = makeSession(preferences: preferences)
+        preferences.isTraditional = false
+        let simplified = ["乾隆皇帝", "显著", "瞭望", "姓於"]
+        check("Simplified mode passes client context through unchanged",
+              simplified.allSatisfy { s.engineContext($0) == $0 })
+        preferences.isTraditional = true
+        check("Traditional mode normalizes client context",
+              s.engineContext("顯著的後來") == "显著的后来")
+        check("static helper follows the traditional flag",
+              PinyinSession.engineContext("後來", traditional: false) == "後來" &&
+              PinyinSession.engineContext("後來", traditional: true) == "后来")
+    }
+}
+
+func testTraditionalPredictionChainUsesEngineText() {
+    print("[test_traditional_prediction_chain_uses_engine_text]")
+    withTestPreferences { preferences, _ in
+        preferences.isTraditional = true
+        let (s, d) = makeSession(preferences: preferences)
+        s.showPredictions(context: "后天天气")
+        check("Traditional prediction displayed", s.predictions.first == "預報")
+        d.clear()
+        _ = s.selectPrediction(index: 0)
+        check("Traditional prediction committed", d.committedText == "預報")
+        let simplifiedChain = s.predictions
+        s.dismissPredictions()
+
+        preferences.isTraditional = false
+        s.showPredictions(context: "后天天气预报")
+        let expected = s.predictions.map(PinyinSession.toTraditional)
+        s.dismissPredictions()
+        check("chained predictions come from the Simplified engine context",
+              !simplifiedChain.isEmpty && simplifiedChain == expected)
     }
 }
 
@@ -1265,70 +1308,213 @@ func testTraditionalLearningKeepsSimplifiedDictionary() {
     }
 }
 
-func testSymbolsMode() {
-    print("[test_symbols_mode]")
+func makeSymbolPanel(preferences: Preferences) -> (SymbolPanel, PinyinSession, MockDelegate) {
+    let session = PinyinSession(preferences: preferences)
+    let panel = SymbolPanel(session: session)
+    let mock = MockDelegate()
+    panel.delegate = mock
+    return (panel, session, mock)
+}
+
+func testSymbolPanel() {
+    print("[test_symbol_panel]")
+
+    // Symbol set: merged PR pages and Gboard's Chinese ?123 keys.
+    let symbols = SymbolPanel.pages.flatMap { $0 }
+    check("symbol pages hold 50 symbols", symbols.count == 50)
+    check("symbols are unique", Set(symbols).count == symbols.count)
+    check("each page fits 1-9 selection",
+          SymbolPanel.pages.allSatisfy { (1...9).contains($0.count) })
+    check("Gboard symbols are included",
+          ["＃", "＊", "／", "＠", "＿", "｀", "｛", "｜", "｝", "「", "『"]
+            .allSatisfy(symbols.contains))
+
+    // Key mapping.
+    check("Esc maps to escape",
+          SymbolPanelKey(keyCode: 53, characters: "\u{1B}", plain: true) == .escape)
+    check("Enter maps to return",
+          SymbolPanelKey(keyCode: 76, characters: "\r", plain: true) == .returnKey)
+    check("- pages back",
+          SymbolPanelKey(keyCode: 27, characters: "-", plain: true) == .previousPage)
+    check("Option - is not paging",
+          SymbolPanelKey(keyCode: 27, characters: "–", plain: false) == .other)
+    check("3 selects",
+          SymbolPanelKey(keyCode: 20, characters: "3", plain: true) == .number(3))
+    check("0 is not a selection",
+          SymbolPanelKey(keyCode: 29, characters: "0", plain: true) == .other)
+    check("plain arrows move the highlight",
+          SymbolPanelKey(keyCode: 123, characters: "", plain: true) == .left)
+    check("Cmd/Option arrows fall through",
+          SymbolPanelKey(keyCode: 124, characters: "", plain: false) == .other)
+    check("letters fall through",
+          SymbolPanelKey(keyCode: 0, characters: "a", plain: true) == .other)
+
     withTestPreferences { preferences, _ in
-        let (s, m) = makeSession(preferences: preferences)
+        let (panel, s, m) = makeSymbolPanel(preferences: preferences)
 
-        // 1. Enter symbols mode
-        s.enterSymbolsMode()
-        check("is in symbols mode", s.isSymbolsMode)
-        check("isComposing is true in symbols mode", s.isComposing)
-        check("first symbol is ，", s.candidates.first == "，")
-        check("symbols count is 9", s.candidates.count == 9)
+        // 1. Opening without pinyin
+        panel.open()
+        check("panel opens", panel.isOpen)
+        check("session is not composing", !s.isComposing)
+        check("placeholder keeps the client composing",
+              m.markedText == SymbolPanel.placeholder)
+        check("first page is shown",
+              m.shownCandidates == SymbolPanel.pages[0])
+        check("title shows the page", m.candidatePinyin == "?123 (1/6)")
 
-        // 2. Paging
-        _ = s.nextPage()
-        check("page 2 first symbol is 《", s.candidates.first == "《")
-        _ = s.previousPage()
-        check("page 1 first symbol is back to ，", s.candidates.first == "，")
+        // 2. Paging and selection movement
+        check("- on the first page is consumed", panel.handle(.previousPage))
+        check("first page stays", m.shownCandidates == SymbolPanel.pages[0])
+        _ = panel.handle(.nextPage)
+        check("= shows page 2", m.shownCandidates == SymbolPanel.pages[1] &&
+              m.candidatePinyin == "?123 (2/6)")
+        _ = panel.handle(.left)
+        check("left from a page start moves to the previous page's end",
+              m.shownCandidates == SymbolPanel.pages[0] &&
+              m.selectedIndex == SymbolPanel.pages[0].count - 1)
+        _ = panel.handle(.right)
+        check("right from a page end moves to the next page",
+              m.shownCandidates == SymbolPanel.pages[1] && m.selectedIndex == 0)
+        check("number beyond a short page is ignored",
+              panel.handle(.number(9)) && panel.isOpen && m.committedText.isEmpty)
+        _ = panel.handle(.previousPage)
 
-        // 3. Selection commits and exits
-        _ = s.selectNumber(2)
-        check("select 2 commits 。", m.committedText == "。")
-        check("exits symbols mode after selection", !s.isSymbolsMode)
+        // 3. Selecting commits the symbol and closes
+        _ = panel.handle(.number(2))
+        check("2 commits 。", m.committedText == "。")
+        check("selection closes the panel", !panel.isOpen)
+        check("selection clears the placeholder", m.markedText == nil)
+        check("selection hides the window", m.shownCandidates.isEmpty)
         m.clear()
 
-        // 4. Toggle symbols mode
-        s.toggleSymbolsMode()
-        check("toggleSymbolsMode entered", s.isSymbolsMode)
-        s.toggleSymbolsMode()
-        check("toggleSymbolsMode exited", !s.isSymbolsMode)
+        panel.open()
+        _ = panel.handle(.right)
+        _ = panel.handle(.space)
+        check("Space commits the highlighted symbol", m.committedText == "。")
+        m.clear()
 
-        // 5. Letter key exits symbols mode and types pinyin
-        s.enterSymbolsMode()
-        check("re-entered symbols mode", s.isSymbolsMode)
+        // 4. Toggle and close without pinyin
+        panel.toggle()
+        check("toggle opens", panel.isOpen)
+        panel.toggle()
+        check("toggle closes", !panel.isOpen)
+        check("closing an empty panel clears the placeholder",
+              m.markedText == nil && m.shownCandidates.isEmpty)
+        check("no stray commit", m.committedText.isEmpty)
+
+        // 5. A letter closes the panel and starts pinyin
+        panel.open()
+        check("letter falls through", !panel.handle(.other))
+        check("letter closes the panel", !panel.isOpen && m.markedText == nil)
         _ = s.appendLetter("n")
-        check("appendLetter exits symbols mode", !s.isSymbolsMode)
-        check("composition has letter 'n'", s.composition == "n")
+        check("letter starts pinyin", s.composition == "n")
+        check("pinyin candidates reach the window",
+              !m.shownCandidates.isEmpty && m.candidatePinyin != nil &&
+              !m.candidatePinyin!.hasPrefix(SymbolPanel.placeholder))
         s.cancel()
         m.clear()
 
-        // 6. Direct punctuation in symbols mode does not double commit
-        s.enterSymbolsMode()
-        check("re-entered symbols mode for punct", s.isSymbolsMode)
-        m.clear()
-        let res = s.handlePunctuation(",")
-        check("handlePunctuation handled", res == .handled)
-        check("only one comma committed without duplicate", m.committedText == "，")
-        check("exited symbols mode after punctuation", !s.isSymbolsMode)
+        // 6. Punctuation closes the panel and commits once
+        panel.open()
+        check("punctuation falls through", !panel.handle(.other))
+        check("punctuation commits once",
+              s.handlePunctuation(",") == .handled && m.committedText == "，")
         m.clear()
 
-        // 7. Entering symbols mode while composing preserves composition without committing raw pinyin
+        // 7. Opening mid-composition keeps the pinyin
         for ch in "nihao" { _ = s.appendLetter(String(ch)) }
-        check("is composing nihao", s.isComposing && s.composition == "nihao")
         m.clear()
-        s.enterSymbolsMode()
-        check("nothing committed when opening symbols mode mid-composition", m.committedText.isEmpty)
-        check("now in symbols mode with composition preserved", s.isSymbolsMode && s.composition == "nihao")
-        s.exitSymbolsMode()
-        check("exiting symbols mode restores pinyin candidates",
-              !s.isSymbolsMode && s.composition == "nihao" && s.candidates.first == "你好")
-        s.enterSymbolsMode()
-        _ = s.selectNumber(5) // ！
-        check("selecting symbol mid-composition commits Chinese candidate then symbol",
-              m.committedText == "你好！" && !s.isComposing)
+        let markedUpdates = m.markedTextUpdateCount
+        panel.open()
+        check("opening commits nothing", m.committedText.isEmpty)
+        check("composition is preserved", s.composition == "nihao")
+        check("marked pinyin is not replaced by the placeholder",
+              m.markedTextUpdateCount == markedUpdates)
+        check("symbols replace the candidates",
+              m.shownCandidates == SymbolPanel.pages[0])
+        for key: SymbolPanelKey in [.escape, .returnKey, .delete] {
+            panel.open()
+            check("\(key) is consumed", panel.handle(key))
+            check("\(key) returns to the pinyin candidates",
+                  !panel.isOpen && s.composition == "nihao" &&
+                  m.shownCandidates.first == "你好" &&
+                  m.candidatePinyin?.hasPrefix(SymbolPanel.placeholder) == false &&
+                  m.committedText.isEmpty)
+        }
+
+        // 8. Selecting mid-composition commits the candidate, then the symbol
+        panel.open()
+        _ = panel.handle(.number(5))
+        check("candidate then symbol", m.committedText == "你好！")
+        check("nothing left composing", !s.isComposing && !s.isPredicting)
+        check("window hidden after selection",
+              m.shownCandidates.isEmpty && m.markedText == nil)
         m.clear()
+
+        // 9. Boundaries (Shift toggle, deactivation) commit raw pinyin
+        for ch in "nihao" { _ = s.appendLetter(String(ch)) }
+        panel.open()
+        m.clear()
+        panel.dismiss()
+        _ = s.commitRawPinyin()
+        check("boundary commits raw pinyin", m.committedText == "nihao")
+        check("boundary leaves nothing open",
+              !panel.isOpen && !s.isComposing && m.shownCandidates.isEmpty)
+        m.clear()
+
+        panel.open()
+        panel.dismiss()
+        check("dismissing an empty panel clears it",
+              !panel.isOpen && m.markedText == nil && m.shownCandidates.isEmpty)
+        check("then nothing is committed",
+              s.commitRawPinyin() == .passThrough && m.committedText.isEmpty)
+
+        // 10. Client switch discards the pinyin
+        for ch in "nihao" { _ = s.appendLetter(String(ch)) }
+        panel.open()
+        m.clear()
+        panel.dismiss()
+        s.handleClientSwitch()
+        check("client switch discards pending pinyin",
+              !s.isComposing && m.committedText.isEmpty &&
+              m.markedText == nil && m.shownCandidates.isEmpty)
+        check("nothing from the old client is committed later",
+              s.commitRawPinyin() == .passThrough && m.committedText.isEmpty)
+
+        // 11. Other non-letter keys commit the pinyin candidate
+        for ch in "nihao" { _ = s.appendLetter(String(ch)) }
+        panel.open()
+        m.clear()
+        check("Tab falls through", !panel.handle(.other))
+        check("Tab commits the candidate, not a symbol",
+              s.commitAndPassThrough() == .commitAndPass &&
+              m.committedText == "你好")
+        s.dismissPredictions()
+        m.clear()
+
+        // 12. Session updates while open stay behind the panel
+        for ch in "tianqi" { _ = s.appendLetter(String(ch)) }
+        panel.open()
+        preferences.isTraditional = true
+        check("preference change keeps the symbols shown",
+              panel.isOpen && m.shownCandidates == SymbolPanel.pages[0])
+        _ = panel.handle(.escape)
+        check("closing shows the updated candidates",
+              m.shownCandidates.first == "天氣")
+        preferences.isTraditional = false
+        s.cancel()
+        m.clear()
+
+        // 13. Opening dismisses predictions
+        for ch in "nihao" { _ = s.appendLetter(String(ch)) }
+        _ = s.selectCurrent()
+        check("predictions follow the commit", s.isPredicting)
+        panel.open()
+        check("opening dismisses predictions",
+              !s.isPredicting && m.shownCandidates == SymbolPanel.pages[0])
+        panel.close()
+        check("closing after predictions hides the window",
+              m.shownCandidates.isEmpty && m.markedText == nil)
     }
 }
 
@@ -1385,8 +1571,10 @@ testCorrectedPinyinReading()
         testContinuousPhraseLanguageScoring()
         testTraditionalConversion()
         testTraditionalContextNormalizedToSimplified()
+        testEngineContextOnlyNormalizesTraditional()
+        testTraditionalPredictionChainUsesEngineText()
         testTraditionalLearningKeepsSimplifiedDictionary()
-        testSymbolsMode()
+        testSymbolPanel()
         testNextWordPrediction()
         testPredictionEdgeCases()
         testPreferencesStorage()
@@ -1408,6 +1596,8 @@ testCorrectedPinyinReading()
         testUserDictionarySettings()
         testClearLearningSessionUpdates()
         testThemeAndTraditionalPreferences()
+        testCandidateWindowFollowsTheme()
+        testLegacyTraditionalKeyIgnored()
 
         print("\n══════════════════════════════════")
         print("Results: \(gPass) passed, \(gFail) failed")

@@ -1007,6 +1007,48 @@ func testThemeAndTraditionalPreferences() {
     }
 }
 
+func testCandidateWindowFollowsTheme() {
+    print("[test_candidate_window_follows_theme]")
+    _ = NSApplication.shared
+    withTestPreferences { preferences, _ in
+        preferences.themeMode = .light
+        let controller = CandidateWindowController(preferences: preferences)
+        controller.update(
+            candidates: ["你好"], pinyin: .plain("nihao"),
+            canGoPrevious: false, canGoNext: false,
+            onSelect: { _ in }, onPrevious: {}, onNext: {}
+        )
+        check("light theme pins the panel to Aqua",
+              controller.window?.appearance?.name == .aqua)
+        check("light theme uses the light material",
+              controller.visualEffectView?.material == .popover)
+
+        preferences.themeMode = .dark
+        check("theme change applies without a candidate update",
+              controller.window?.appearance?.name == .darkAqua)
+        check("dark theme uses the dark material",
+              controller.visualEffectView?.material == .hudWindow)
+
+        preferences.themeMode = .system
+        let systemDark = controller.window?.effectiveAppearance
+            .bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+        check("system theme follows the system appearance",
+              controller.window?.appearance == nil &&
+              controller.visualEffectView?.material ==
+                  (systemDark ? .hudWindow : .popover))
+        controller.close()
+    }
+}
+
+func testLegacyTraditionalKeyIgnored() {
+    print("[test_legacy_traditional_key_ignored]")
+    withTestPreferences { _, defaults in
+        defaults.set(true, forKey: "GboardIME_isTraditional")
+        check("unreleased legacy key does not enable Traditional",
+              !Preferences(defaults: defaults).isTraditional)
+    }
+}
+
 func testPinyinTextAttributes() {
     print("[test_pinyin_text_attributes]")
     let reading = PinyinReading(spans: [

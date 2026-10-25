@@ -8,6 +8,20 @@ final class CandidatePanel: NSPanel {
     override var canBecomeMain: Bool { false }
 }
 
+/// Frosted background whose material follows the panel's effective
+/// appearance, including live system appearance changes.
+final class ThemedEffectView: NSVisualEffectView {
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        updateMaterial()
+    }
+
+    func updateMaterial() {
+        let dark = effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+        material = dark ? .hudWindow : .popover
+    }
+}
+
 final class FirstMouseHostingView<Content: View>: NSHostingView<Content> {
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool {
         true
@@ -28,7 +42,7 @@ struct CandidateView: View {
     var onOpenSettings: (() -> Void)? = nil
 
     @Environment(\.colorScheme) private var systemColorScheme
-    @ObservedObject private var preferences = Preferences.shared
+    @ObservedObject var preferences: Preferences = .shared
 
     private var isDark: Bool {
         switch preferences.themeMode {
@@ -99,7 +113,7 @@ struct CandidateView: View {
                             .clipShape(RoundedRectangle(cornerRadius: 3))
                     }
 
-                    if pinyin.displayText.hasPrefix("?123") {
+                    if pinyin.displayText.hasPrefix(SymbolPanel.placeholder) {
                         Text("符号")
                             .font(.system(size: 9, weight: .regular))
                             .foregroundColor(accentColor)
@@ -226,10 +240,46 @@ struct CandidateView: View {
 // MARK: - Window controller
 
 class CandidateWindowController: NSObject {
-    private var window: CandidatePanel?
-    private var visualEffectView: NSVisualEffectView?
+    private(set) var window: CandidatePanel?
+    private(set) var visualEffectView: ThemedEffectView?
     private var hostingView: FirstMouseHostingView<CandidateView>?
     private var onSelect: ((Int) -> Void)?
+    private let preferences: Preferences
+    private var preferencesObserver: NSObjectProtocol?
+
+    init(preferences: Preferences = .shared) {
+        self.preferences = preferences
+        super.init()
+        preferencesObserver = NotificationCenter.default.addObserver(
+            forName: Preferences.didChangeNotification,
+            object: preferences, queue: nil
+        ) { [weak self] _ in
+            self?.applyTheme()
+        }
+    }
+
+    deinit {
+        if let preferencesObserver {
+            NotificationCenter.default.removeObserver(preferencesObserver)
+        }
+    }
+
+    /// A fixed theme pins the panel's appearance so the system-adaptive
+    /// material and SwiftUI colors agree; `nil` follows the system.
+    static func appearance(for mode: ThemeMode) -> NSAppearance? {
+        switch mode {
+        case .system: return nil
+        case .light: return NSAppearance(named: .aqua)
+        case .dark: return NSAppearance(named: .darkAqua)
+        }
+    }
+
+    private func applyTheme() {
+        let appearance = Self.appearance(for: preferences.themeMode)
+        guard window?.appearance?.name != appearance?.name else { return }
+        window?.appearance = appearance
+        visualEffectView?.updateMaterial()
+    }
 
     func update(
         candidates: [String],
@@ -252,7 +302,8 @@ class CandidateWindowController: NSObject {
             onSelect: { [weak self] idx in self?.onSelect?(idx) },
             onPrevious: onPrevious,
             onNext: onNext,
-            onOpenSettings: onOpenSettings
+            onOpenSettings: onOpenSettings,
+            preferences: preferences
         )
         let width = candidateWindowWidth(candidates: candidates, pinyin: pinyin.displayText)
         let height: CGFloat = pinyin.isEmpty ? 40 : 68
@@ -270,8 +321,7 @@ class CandidateWindowController: NSObject {
             w.isFloatingPanel = true
             w.becomesKeyOnlyIfNeeded = false
 
-            let vfx = NSVisualEffectView(frame: NSRect(x: 0, y: 0, width: width, height: height))
-            vfx.material = .popover
+            let vfx = ThemedEffectView(frame: NSRect(x: 0, y: 0, width: width, height: height))
             vfx.blendingMode = .behindWindow
             vfx.state = .active
             vfx.wantsLayer = true
@@ -289,22 +339,13 @@ class CandidateWindowController: NSObject {
 
             window = w
             hostingView = hv
+            w.appearance = Self.appearance(for: preferences.themeMode)
+            vfx.updateMaterial()
         } else {
             hostingView?.rootView = view
             window?.setContentSize(NSSize(width: width, height: height))
             visualEffectView?.frame = NSRect(x: 0, y: 0, width: width, height: height)
         }
-
-        let isDark: Bool
-        switch Preferences.shared.themeMode {
-        case .system:
-            isDark = NSApp?.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
-        case .dark:
-            isDark = true
-        case .light:
-            isDark = false
-        }
-        visualEffectView?.material = isDark ? .hudWindow : .popover
     }
 
     private func candidateWindowWidth(candidates: [String], pinyin: String) -> CGFloat {

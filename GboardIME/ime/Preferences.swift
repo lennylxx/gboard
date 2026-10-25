@@ -162,7 +162,6 @@ final class Preferences: NSObject, ObservableObject {
         static let fuzzyPinyin = "fuzzyPinyinGroups"
         static let pinyinScheme = "pinyinScheme"
         static let isTraditional = "traditionalChineseEnabled"
-        static let legacyIsTraditional = "GboardIME_isTraditional"
         static let themeMode = "themeMode"
     }
 
@@ -302,13 +301,11 @@ final class Preferences: NSObject, ObservableObject {
         let defaultDisplayMode: PinyinDisplayMode =
             defaults.object(forKey: Key.legacyPinyinBar) as? Bool == false
                 ? .hidden : .candidateWindow
-        let defaultTraditional =
-            defaults.object(forKey: Key.legacyIsTraditional) as? Bool ?? false
         defaults.register(defaults: [
             Key.predictions: true,
             Key.context: true,
             Key.shift: true,
-            Key.isTraditional: defaultTraditional,
+            Key.isTraditional: false,
             Key.themeMode: ThemeMode.system.rawValue,
             Key.correction: CorrectionStyle.edits.rawValue,
             Key.correctionAlignment: CorrectionAlignment.lcs.rawValue,

@@ -66,7 +66,7 @@ A macOS input method that runs Gboard's native HMM Pinyin engine via a custom AR
 - **Simplified / Traditional Chinese toggle** — Convert candidates and
   next-word predictions to Traditional Chinese in real time while keeping
   user-dictionary learning and context scoring in Simplified Chinese.
-- **?123 symbols panel** — Open a 4-page symbol picker (`Ctrl+1` or
+- **?123 symbols panel** — Open a 6-page symbol picker (`Ctrl+1` or
   `Option+?` in Chinese mode, or from the input menu) and select symbols
   with `1-9`.
 - **Native macOS interface** — Uses InputMethodKit, a non-activating
