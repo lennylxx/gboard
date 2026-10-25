@@ -1,7 +1,7 @@
 import Cocoa
 import SwiftUI
 
-private func withTestPreferences(_ body: (Preferences, UserDefaults) -> Void) {
+func withTestPreferences(_ body: (Preferences, UserDefaults) -> Void) {
     let name = "com.lennylxx.GboardIME.tests.preferences.\(UUID().uuidString)"
     guard let defaults = UserDefaults(suiteName: name) else {
         fatalError("Unable to create isolated test preferences")
@@ -980,6 +980,31 @@ func testShiftTogglePreference() {
     tracker.handleKeyDown(keyCode: 0, modifierFlags: .shift)
     check("Shift combinations still do not toggle",
           tracker.handleFlagsChanged(keyCode: 56, modifierFlags: []) == .none)
+
+    // Command + Shift + F does not trigger bare-Shift toggle
+    tracker.cancelTracking()
+    _ = tracker.handleFlagsChanged(keyCode: 55, modifierFlags: .command)
+    check("Shift down with Command held does not track",
+          tracker.handleFlagsChanged(keyCode: 56, modifierFlags: [.command, .shift]) == .none)
+    tracker.handleKeyDown(keyCode: 3, modifierFlags: [.command, .shift])
+    check("Shift release with Command held does not toggle",
+          tracker.handleFlagsChanged(keyCode: 56, modifierFlags: .command) == .none)
+    check("Command release does not toggle",
+          tracker.handleFlagsChanged(keyCode: 55, modifierFlags: []) == .none)
+}
+
+func testThemeAndTraditionalPreferences() {
+    print("[test_theme_and_traditional_preferences]")
+    withTestPreferences { preferences, defaults in
+        check("Traditional defaults to false", !preferences.isTraditional)
+        check("Theme defaults to system", preferences.themeMode == .system)
+
+        preferences.toggleTraditional()
+        preferences.themeMode = .dark
+        let reloaded = Preferences(defaults: defaults)
+        check("Traditional and theme persist",
+              reloaded.isTraditional && reloaded.themeMode == .dark)
+    }
 }
 
 func testPinyinTextAttributes() {

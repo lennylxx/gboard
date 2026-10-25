@@ -36,7 +36,10 @@ struct PinyinReading: Equatable {
     }
 
     var attributedText: AttributedString {
-        let accent = Color(red: 0.102, green: 0.451, blue: 0.910)
+        attributedText(accent: Color(red: 0.102, green: 0.451, blue: 0.910))
+    }
+
+    func attributedText(accent: Color) -> AttributedString {
         let correction = Color(red: 0.910, green: 0.443, blue: 0.039)
         let typo = Color(red: 0.604, green: 0.627, blue: 0.651)
         var result = AttributedString()

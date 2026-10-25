@@ -1,14 +1,20 @@
 import Cocoa
 import SwiftUI
 
-// MARK: - Helper to load bundled PNGs as NSImage
+// MARK: - Non-activating panel & first-mouse hosting view
 
-private func bundledImage(_ name: String) -> NSImage? {
-    guard let path = Bundle.main.path(forResource: name, ofType: "png") else { return nil }
-    return NSImage(contentsOfFile: path)
+final class CandidatePanel: NSPanel {
+    override var canBecomeKey: Bool { false }
+    override var canBecomeMain: Bool { false }
 }
 
-// MARK: - SwiftUI candidate panel (Gboard-inspired design)
+final class FirstMouseHostingView<Content: View>: NSHostingView<Content> {
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool {
+        true
+    }
+}
+
+// MARK: - SwiftUI candidate panel (Gboard Google Blue light & dark themes)
 
 struct CandidateView: View {
     let candidates: [String]
@@ -19,14 +25,61 @@ struct CandidateView: View {
     let onSelect: (Int) -> Void
     let onPrevious: () -> Void
     let onNext: () -> Void
+    var onOpenSettings: (() -> Void)? = nil
 
-    // Gboard light theme colors
-    private let bgColor     = Color(red: 0.945, green: 0.953, blue: 0.957) // #F1F3F4
-    private let keyColor    = Color.white
-    private let labelColor  = Color(red: 0.259, green: 0.259, blue: 0.259) // #424242
-    private let accentColor = Color(red: 0.102, green: 0.451, blue: 0.910) // #1A73E8
-    private let divColor    = Color(red: 0.878, green: 0.878, blue: 0.878) // #E0E0E0
-    private let hintColor   = Color(red: 0.102, green: 0.451, blue: 0.910).opacity(0.7) // accent blue
+    @Environment(\.colorScheme) private var systemColorScheme
+    @ObservedObject private var preferences = Preferences.shared
+
+    private var isDark: Bool {
+        switch preferences.themeMode {
+        case .system: return systemColorScheme == .dark
+        case .light: return false
+        case .dark: return true
+        }
+    }
+
+    // Gboard official Google Blue light (`style_sheet_google_blue_light`) &
+    // dark (`style_sheet_google_blue_dark`) theme colors.
+    private var bgColor: Color {
+        isDark
+            ? Color(red: 0.161, green: 0.180, blue: 0.200).opacity(0.92) // #292E33
+            : Color(red: 0.945, green: 0.953, blue: 0.957).opacity(0.92) // #F1F3F4
+    }
+
+    private var keyColor: Color {
+        isDark
+            ? Color(red: 0.212, green: 0.231, blue: 0.251).opacity(0.92) // #363B40
+            : Color.white.opacity(0.92)
+    }
+
+    private var labelColor: Color {
+        isDark
+            ? Color.white.opacity(0.8) // color_state_label_candidate (80% white)
+            : Color(red: 0.259, green: 0.259, blue: 0.259) // #424242
+    }
+
+    private var selectedLabelColor: Color {
+        isDark
+            ? Color.white // color_state_label_candidate_selected
+            : Color(red: 0.259, green: 0.259, blue: 0.259) // #424242
+    }
+
+    private var accentColor: Color {
+        isDark
+            ? Color(red: 0.369, green: 0.592, blue: 0.965) // #5E97F6
+            : Color(red: 0.102, green: 0.451, blue: 0.910) // #1A73E8
+    }
+
+    private var divColor: Color {
+        isDark
+            ? Color.white.opacity(0.1) // color_keyboard_separator (10% white)
+            : Color(red: 0.878, green: 0.878, blue: 0.878) // #E0E0E0
+    }
+
+    private var hintColor: Color {
+        accentColor.opacity(0.7)
+    }
+
     private let cornerRadius: CGFloat = 8
 
     var body: some View {
@@ -34,8 +87,43 @@ struct CandidateView: View {
             // Pinyin preedit strip (absent for next-word predictions)
             if !pinyin.isEmpty {
                 HStack(spacing: 6) {
-                    Text(pinyin.attributedText)
+                    Text(pinyin.attributedText(accent: accentColor))
+
+                    if preferences.isTraditional {
+                        Text("繁")
+                            .font(.system(size: 9, weight: .regular))
+                            .foregroundColor(accentColor)
+                            .padding(.horizontal, 4)
+                            .padding(.vertical, 1)
+                            .background(accentColor.opacity(0.12))
+                            .clipShape(RoundedRectangle(cornerRadius: 3))
+                    }
+
+                    if pinyin.displayText.hasPrefix("?123") {
+                        Text("符号")
+                            .font(.system(size: 9, weight: .regular))
+                            .foregroundColor(accentColor)
+                            .padding(.horizontal, 4)
+                            .padding(.vertical, 1)
+                            .background(accentColor.opacity(0.12))
+                            .clipShape(RoundedRectangle(cornerRadius: 3))
+                    }
+
                     Spacer()
+
+                    if let onOpenSettings = onOpenSettings {
+                        Button {
+                            onOpenSettings()
+                        } label: {
+                            Image(systemName: "gearshape")
+                                .font(.system(size: 11, weight: .regular))
+                                .foregroundColor(hintColor)
+                                .frame(width: 16, height: 16)
+                                .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .help("设置…")
+                    }
                 }
                 .padding(.horizontal, 12)
                 .padding(.vertical, 6)
@@ -58,7 +146,7 @@ struct CandidateView: View {
                                         .foregroundColor(hintColor)
                                     Text(cand)
                                         .font(.system(size: 18, weight: .regular))
-                                        .foregroundColor(labelColor)
+                                        .foregroundColor(i == selectedIndex ? selectedLabelColor : labelColor)
                                 }
                                 .frame(minWidth: 36, minHeight: 36)
                                 .padding(.horizontal, 4)
@@ -138,8 +226,9 @@ struct CandidateView: View {
 // MARK: - Window controller
 
 class CandidateWindowController: NSObject {
-    private var window: NSWindow?
-    private var hostingView: NSHostingView<CandidateView>?
+    private var window: CandidatePanel?
+    private var visualEffectView: NSVisualEffectView?
+    private var hostingView: FirstMouseHostingView<CandidateView>?
     private var onSelect: ((Int) -> Void)?
 
     func update(
@@ -150,7 +239,8 @@ class CandidateWindowController: NSObject {
         canGoNext: Bool,
         onSelect: @escaping (Int) -> Void,
         onPrevious: @escaping () -> Void,
-        onNext: @escaping () -> Void
+        onNext: @escaping () -> Void,
+        onOpenSettings: (() -> Void)? = nil
     ) {
         self.onSelect = onSelect
         let view = CandidateView(
@@ -161,32 +251,60 @@ class CandidateWindowController: NSObject {
             canGoNext: canGoNext,
             onSelect: { [weak self] idx in self?.onSelect?(idx) },
             onPrevious: onPrevious,
-            onNext: onNext
+            onNext: onNext,
+            onOpenSettings: onOpenSettings
         )
         let width = candidateWindowWidth(candidates: candidates, pinyin: pinyin.displayText)
         let height: CGFloat = pinyin.isEmpty ? 40 : 68
         if window == nil {
-            let w = NSWindow(
+            let w = CandidatePanel(
                 contentRect: NSRect(x: 0, y: 0, width: width, height: height),
-                styleMask: [.borderless],
+                styleMask: [.nonactivatingPanel, .borderless],
                 backing: .buffered,
                 defer: false
             )
             w.level = NSWindow.Level(rawValue: Int(CGWindowLevelKey.popUpMenuWindow.rawValue))
             w.isOpaque = false
             w.backgroundColor = .clear
-            w.hasShadow = false
-            let hv = NSHostingView(rootView: view)
-            hv.frame = NSRect(x: 0, y: 0, width: width, height: height)
+            w.hasShadow = true
+            w.isFloatingPanel = true
+            w.becomesKeyOnlyIfNeeded = false
+
+            let vfx = NSVisualEffectView(frame: NSRect(x: 0, y: 0, width: width, height: height))
+            vfx.material = .popover
+            vfx.blendingMode = .behindWindow
+            vfx.state = .active
+            vfx.wantsLayer = true
+            vfx.layer?.cornerRadius = 8
+            vfx.layer?.masksToBounds = true
+            w.contentView = vfx
+            visualEffectView = vfx
+
+            let hv = FirstMouseHostingView(rootView: view)
+            hv.frame = vfx.bounds
+            hv.autoresizingMask = [.width, .height]
             hv.wantsLayer = true
             hv.layer?.backgroundColor = NSColor.clear.cgColor
-            w.contentView = hv
+            vfx.addSubview(hv)
+
             window = w
             hostingView = hv
         } else {
             hostingView?.rootView = view
             window?.setContentSize(NSSize(width: width, height: height))
+            visualEffectView?.frame = NSRect(x: 0, y: 0, width: width, height: height)
         }
+
+        let isDark: Bool
+        switch Preferences.shared.themeMode {
+        case .system:
+            isDark = NSApp?.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+        case .dark:
+            isDark = true
+        case .light:
+            isDark = false
+        }
+        visualEffectView?.material = isDark ? .hudWindow : .popover
     }
 
     private func candidateWindowWidth(candidates: [String], pinyin: String) -> CGFloat {

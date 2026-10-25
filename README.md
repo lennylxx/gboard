@@ -63,8 +63,14 @@ A macOS input method that runs Gboard's native HMM Pinyin engine via a custom AR
   persisting both every four hours and on app teardown.
 - **Complete keyboard workflow** — Supports candidate paging, keyboard
   selection, and Chinese/English mode switching.
-- **Native macOS interface** — Uses InputMethodKit and SwiftUI for the input
-  method and candidate window.
+- **Simplified / Traditional Chinese toggle** — Convert candidates and
+  next-word predictions to Traditional Chinese in real time while keeping
+  user-dictionary learning and context scoring in Simplified Chinese.
+- **?123 symbols panel** — Open a 4-page symbol picker (`Ctrl+1` or
+  `Option+?` in Chinese mode, or from the input menu) and select symbols
+  with `1-9`.
+- **Native macOS interface** — Uses InputMethodKit, a non-activating
+  frosted-glass `NSPanel`, and Gboard Google Blue light/dark themes.
 
 **Learning limitation:** Undo of a just-committed learned entry is not
 supported. InputMethodKit does not reliably expose the context needed to
@@ -137,6 +143,8 @@ window; changes are saved automatically.
 | Escape | Cancel composition or dismiss predictions |
 | Return | Commit raw pinyin |
 | Shift | Switch between Chinese and English; commit active composition as raw pinyin |
+| Cmd+Shift+F | Toggle Simplified / Traditional Chinese (in Chinese mode) |
+| Ctrl+1 / Option+? | Toggle ?123 punctuation & symbols panel (in Chinese mode) |
 | Caps Lock | Switch between GboardIME and ABC when enabled in macOS Text Input settings; commit active composition as raw pinyin |
 
 ## Test

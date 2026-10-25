@@ -22,10 +22,26 @@ class ShiftToggleTracker {
 
     func handleFlagsChanged(keyCode: UInt16, modifierFlags: NSEvent.ModifierFlags) -> Result {
         guard isEnabled else { return .none }
-        guard isShiftKey(keyCode) else { return .none }
+        let otherModifiers = modifierFlags.intersection([.command, .control, .option])
+
+        if !isShiftKey(keyCode) {
+            if trackedShiftKeyCode != nil {
+                cancelTracking()
+            }
+            return .none
+        }
 
         if modifierFlags.contains(.shift) {
-            startTrackingShift(keyCode)
+            if otherModifiers.isEmpty {
+                startTrackingShift(keyCode)
+            } else {
+                cancelTracking()
+            }
+            return .none
+        }
+
+        if !otherModifiers.isEmpty {
+            cancelTracking()
             return .none
         }
 
@@ -35,19 +51,34 @@ class ShiftToggleTracker {
     func handleKeyDown(keyCode: UInt16, modifierFlags: NSEvent.ModifierFlags) {
         guard isEnabled else { return }
         if isShiftKey(keyCode) {
-            startTrackingShift(keyCode)
+            let otherModifiers = modifierFlags.intersection([.command, .control, .option])
+            if otherModifiers.isEmpty {
+                startTrackingShift(keyCode)
+            } else {
+                cancelTracking()
+            }
             return
         }
 
-        if trackedShiftKeyCode != nil && modifierFlags.contains(.shift) {
+        if trackedShiftKeyCode != nil {
             shiftKeyUsedWithOtherKey = true
         }
     }
 
     func handleKeyUp(keyCode: UInt16) -> Result {
         guard isEnabled else { return .none }
-        guard isShiftKey(keyCode) else { return .none }
+        guard isShiftKey(keyCode) else {
+            if trackedShiftKeyCode != nil {
+                shiftKeyUsedWithOtherKey = true
+            }
+            return .none
+        }
         return finishTrackingShift()
+    }
+
+    func cancelTracking() {
+        trackedShiftKeyCode = nil
+        shiftKeyUsedWithOtherKey = false
     }
 
     private func isShiftKey(_ keyCode: UInt16) -> Bool {

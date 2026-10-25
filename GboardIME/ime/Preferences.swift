@@ -31,6 +31,20 @@ enum CandidatePageSize: Int, CaseIterable {
     case five = 5, six, seven, eight, nine
 }
 
+enum ThemeMode: String, CaseIterable {
+    case system
+    case light
+    case dark
+
+    var title: String {
+        switch self {
+        case .system: return "跟随系统"
+        case .light: return "浅色"
+        case .dark: return "深色"
+        }
+    }
+}
+
 enum PinyinScheme: String, CaseIterable {
     case full
     case flypy
@@ -147,6 +161,21 @@ final class Preferences: NSObject, ObservableObject {
         static let saveInterval = "userDictionarySaveInterval"
         static let fuzzyPinyin = "fuzzyPinyinGroups"
         static let pinyinScheme = "pinyinScheme"
+        static let isTraditional = "traditionalChineseEnabled"
+        static let legacyIsTraditional = "GboardIME_isTraditional"
+        static let themeMode = "themeMode"
+    }
+
+    @Published var isTraditional: Bool {
+        didSet { save(isTraditional, forKey: Key.isTraditional) }
+    }
+
+    @Published var themeMode: ThemeMode {
+        didSet { save(themeMode.rawValue, forKey: Key.themeMode) }
+    }
+
+    func toggleTraditional() {
+        isTraditional.toggle()
     }
 
     @Published var predictionsEnabled: Bool {
@@ -273,10 +302,14 @@ final class Preferences: NSObject, ObservableObject {
         let defaultDisplayMode: PinyinDisplayMode =
             defaults.object(forKey: Key.legacyPinyinBar) as? Bool == false
                 ? .hidden : .candidateWindow
+        let defaultTraditional =
+            defaults.object(forKey: Key.legacyIsTraditional) as? Bool ?? false
         defaults.register(defaults: [
             Key.predictions: true,
             Key.context: true,
             Key.shift: true,
+            Key.isTraditional: defaultTraditional,
+            Key.themeMode: ThemeMode.system.rawValue,
             Key.correction: CorrectionStyle.edits.rawValue,
             Key.correctionAlignment: CorrectionAlignment.lcs.rawValue,
             Key.pageSize: CandidatePageSize.nine.rawValue,
@@ -287,6 +320,10 @@ final class Preferences: NSObject, ObservableObject {
         predictionsEnabled = defaults.bool(forKey: Key.predictions)
         contextEnabled = defaults.bool(forKey: Key.context)
         shiftToggleEnabled = defaults.bool(forKey: Key.shift)
+        isTraditional = defaults.bool(forKey: Key.isTraditional)
+        themeMode = ThemeMode(
+            rawValue: defaults.string(forKey: Key.themeMode) ?? ""
+        ) ?? .system
         correctionStyle = CorrectionStyle(
             rawValue: defaults.string(forKey: Key.correction) ?? ""
         ) ?? .edits

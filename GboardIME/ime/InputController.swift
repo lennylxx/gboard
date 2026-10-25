@@ -105,6 +105,24 @@ class GboardInputController: IMKInputController, PinyinSessionDelegate {
         let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
         let keyCode = event.keyCode
         let chars = event.characters ?? ""
+        let charsIgnoring = (event.charactersIgnoringModifiers ?? "").lowercased()
+
+        // Chinese-mode shortcuts:
+        // 1. Command + Shift + F -> Toggle Simplified / Traditional
+        if flags == [.command, .shift], keyCode == 3 || charsIgnoring == "f" {
+            toggleTraditional()
+            return true
+        }
+
+        // 2. Ctrl + 1 or Option + ?/ (with or without Shift) -> Toggle ?123 Symbols Mode
+        let isOptionSlashOrQuestion = (flags == .option || flags == [.option, .shift]) &&
+            (keyCode == 44 || charsIgnoring == "?" || charsIgnoring == "/")
+        if (flags == .control && (keyCode == 18 || charsIgnoring == "1")) ||
+           isOptionSlashOrQuestion {
+            shiftTracker.cancelTracking()
+            session.toggleSymbolsMode()
+            return true
+        }
 
         let result: KeyResult
 
@@ -285,9 +303,12 @@ class GboardInputController: IMKInputController, PinyinSessionDelegate {
     }
 
     private func updateNativeInputContext(_ context: SessionInputContext) {
-        context.beforeSelection.withCString { before in
-            context.selectedText.withCString { selected in
-                context.afterSelection.withCString { after in
+        let beforeText = PinyinSession.toSimplified(context.beforeSelection)
+        let selectedText = PinyinSession.toSimplified(context.selectedText)
+        let afterText = PinyinSession.toSimplified(context.afterSelection)
+        beforeText.withCString { before in
+            selectedText.withCString { selected in
+                afterText.withCString { after in
                     _ = gboard_update_input_context(before, selected, after)
                 }
             }
@@ -296,7 +317,9 @@ class GboardInputController: IMKInputController, PinyinSessionDelegate {
 
     func sessionSetMarkedText(_ text: String) {
         guard let client = currentClient as? IMKTextInput else { return }
-        let markedText = Preferences.shared.pinyinDisplayMode.markedText(for: text)
+        let markedText = text == "?123"
+            ? "\u{200B}"
+            : Preferences.shared.pinyinDisplayMode.markedText(for: text)
         if markedText.isEmpty {
             client.setMarkedText("",
                                  selectionRange: NSRange(location: 0, length: 0),
@@ -351,6 +374,11 @@ class GboardInputController: IMKInputController, PinyinSessionDelegate {
                 } else {
                     _ = session.nextPage()
                 }
+            },
+            onOpenSettings: { [weak self] in
+                self?.session.dismissPredictions()
+                self?.session.cancel()
+                SettingsWindowController.shared.show()
             }
         )
         if let client = currentClient as? IMKTextInput {
@@ -385,6 +413,27 @@ class GboardInputController: IMKInputController, PinyinSessionDelegate {
     override func menu() -> NSMenu! {
         let menu = NSMenu(title: "GboardIME")
         menu.autoenablesItems = false
+
+        let isTrad = Preferences.shared.isTraditional
+        let tradItem = NSMenuItem(
+            title: isTrad ? "切换为简体中文" : "切换为繁体中文",
+            action: #selector(toggleTraditionalMenuAction(_:)),
+            keyEquivalent: ""
+        )
+        tradItem.target = self
+        menu.addItem(tradItem)
+
+        let symItem = NSMenuItem(
+            title: "标点与符号 (?123)",
+            action: #selector(toggleSymbolsMenuAction(_:)),
+            keyEquivalent: ""
+        )
+        symItem.target = self
+        symItem.state = session.isSymbolsMode ? .on : .off
+        menu.addItem(symItem)
+
+        menu.addItem(NSMenuItem.separator())
+
         let settingsItem = NSMenuItem(
             title: "设置…",
             action: #selector(showPreferences(_:)),
@@ -394,6 +443,24 @@ class GboardInputController: IMKInputController, PinyinSessionDelegate {
         menu.addItem(settingsItem)
         imeLog("Settings menu requested: \(menu.numberOfItems) item(s)")
         return menu
+    }
+
+    private func toggleTraditional() {
+        shiftTracker.cancelTracking()
+        Preferences.shared.toggleTraditional()
+        imeLog("Traditional toggled to: \(Preferences.shared.isTraditional)")
+    }
+
+    @objc private func toggleTraditionalMenuAction(_ sender: Any!) {
+        toggleTraditional()
+    }
+
+    @objc private func toggleSymbolsMenuAction(_ sender: Any!) {
+        shiftTracker.cancelTracking()
+        if !chineseMode {
+            chineseMode = true
+        }
+        session.toggleSymbolsMode()
     }
 
     override func showPreferences(_ sender: Any!) {
