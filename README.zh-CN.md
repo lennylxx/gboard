@@ -10,7 +10,7 @@ GboardIME 是一款适用于 macOS 的中文输入法。本项目通过自定义
 
 ## 预览
 
-![预览](preview.png)
+![预览](https://github.com/user-attachments/assets/5840ead1-65f6-44c9-9c3a-6347d9271a02)
 
 ## 功能列表
 

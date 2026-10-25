@@ -8,7 +8,7 @@ A macOS input method that runs Gboard's native HMM Pinyin engine via a custom AR
 
 ## Preview
 
-![preview](preview.png)
+![preview](https://github.com/user-attachments/assets/5840ead1-65f6-44c9-9c3a-6347d9271a02)
 
 ## Features
 
