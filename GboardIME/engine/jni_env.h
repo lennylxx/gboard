@@ -1,6 +1,7 @@
 #pragma once
 #include <stdint.h>
 #include <stddef.h>
+#include <stdbool.h>
 
 // Minimal JNI type definitions (no jni.h from NDK needed)
 typedef void*    jobject;
@@ -81,6 +82,26 @@ void        jni_scored_input_set_vertices(jobject si, int start, int end);
 // Object array helpers (also available via JNI table)
 jobject     jni_NewObjectArray(JNIEnv *e, jsize n, jclass c, jobject init);
 void        jni_SetObjectArrayElement(JNIEnv *e, jobject arr, jsize i, jobject val);
+
+jsize       jni_GetArrayLength(JNIEnv *e, jobject a);
+jobject     jni_GetObjectArrayElement(JNIEnv *e, jobject a, jsize i);
+// Frees host-owned arrays; DeleteLocalRef is a no-op in this shim.
+void        jni_release_string_array(jobject a);
+void        jni_release_array(jobject a);
+
+// A MutableDictionaryAccessor$Entry from nativeExportAllEntries. Pointers
+// stay valid until jni_release_dict_entries frees the exported array.
+typedef struct {
+    const jstring *tokens;
+    const jint *languages;  // Language enum value per token
+    int token_count;
+    const char *value;
+    jint count;
+    jboolean modified;      // changed since the last sync export
+    jint match_type;        // 0 full, 1 partial, 2 derived key
+} JniDictEntry;
+bool        jni_get_dict_entry(jobject entry, JniDictEntry *out);
+void        jni_release_dict_entries(jobject entries);
 
 // Fake FileDescriptor for nativeEnrollDataFd
 jobject     jni_create_file_descriptor(JNIEnv *env, int fd);

@@ -63,6 +63,9 @@ void hmm_resolve_natives(void) {
     s_userDictNatives.getCandidateToken = (fn_GetCandidateToken) jni_find_registered_native_by_sig("nativeGetCandidateToken", "(JII)J");
     s_userDictNatives.getTokenLanguage = (fn_GetTokenLanguage) jni_find_registered_native_by_sig("nativeGetTokenLanguage", "(JJ)I");
     s_userDictNatives.removeByValue = (fn_RemoveByValue) jni_find_registered_native_by_sig("nativeRemoveByValue", "(JLjava/lang/String;)Z");
+    s_userDictNatives.removeByTokenAndValue = (fn_RemoveByTokenAndValue) jni_find_registered_native_by_sig("nativeRemoveByTokenAndValue", "(J[Ljava/lang/String;[ILjava/lang/String;)Z");
+    s_userDictNatives.insertOrUpdate = (fn_InsertOrUpdate) jni_find_registered_native_by_sig("nativeInsertOrUpdate", "(J[Ljava/lang/String;[ILjava/lang/String;IZZ)Z");
+    s_userDictNatives.exportAllEntries = (fn_ExportAllEntries) jni_find_registered_native_by_sig("nativeExportAllEntries", "(J)[L");
     s_userDictNatives.deleteCandidate = (fn_DeleteCandidate) jni_find_registered_native_by_sig("nativeDeleteCandidate", "(JI)Z");
     s_userDictNatives.getDataSourceIndex = (fn_GetDataSourceIndex) jni_find_registered_native_by_sig("nativeGetDataSourceIndex", "(JLjava/lang/String;)I");
     s_userDictNatives.getCandidatePrimaryDataSource = (fn_GetCandidatePrimaryDataSource) jni_find_registered_native_by_sig("nativeGetCandidatePrimaryDataSource", "(JI)I");

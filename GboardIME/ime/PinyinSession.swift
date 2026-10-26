@@ -32,7 +32,7 @@ enum KeyResult {
 class PinyinSession {
     private let preferences: Preferences
     private var preferencesObserver: NSObjectProtocol?
-    private var dictionaryObserver: NSObjectProtocol?
+    private var dictionaryObservers: [NSObjectProtocol] = []
     private var candidatePageSize: Int
     private var contextEnabled: Bool
     private var pinyinDisplayMode: PinyinDisplayMode
@@ -65,17 +65,23 @@ class PinyinSession {
         ) { [weak self] _ in
             self?.preferencesDidChange()
         }
-        dictionaryObserver = NotificationCenter.default.addObserver(
-            forName: UserDictionary.didClearNotification, object: nil, queue: .main
-        ) { [weak self] _ in
-            guard let self = self else { return }
-            self.lastLearning = nil
-            self.dismissPredictions()
-            if self.isComposing {
-                self.pendingLearningValid = false
-                self.fetchCandidates()
-                self.delegate?.sessionSetMarkedText(self.segmentedPinyin)
+        dictionaryObservers = [UserDictionary.didClearNotification,
+                               UserDictionary.didChangeNotification].map { name in
+            NotificationCenter.default.addObserver(
+                forName: name, object: nil, queue: .main
+            ) { [weak self] _ in
+                self?.userDictionaryDidChange()
             }
+        }
+    }
+
+    private func userDictionaryDidChange() {
+        lastLearning = nil
+        dismissPredictions()
+        if isComposing {
+            pendingLearningValid = false
+            fetchCandidates()
+            delegate?.sessionSetMarkedText(segmentedPinyin)
         }
     }
 
@@ -83,9 +89,7 @@ class PinyinSession {
         if let observer = preferencesObserver {
             NotificationCenter.default.removeObserver(observer)
         }
-        if let observer = dictionaryObserver {
-            NotificationCenter.default.removeObserver(observer)
-        }
+        dictionaryObservers.forEach { NotificationCenter.default.removeObserver($0) }
         preferences.endPinyinComposition(self)
     }
 

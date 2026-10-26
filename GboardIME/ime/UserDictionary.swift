@@ -18,6 +18,8 @@ enum UserDictionaryError: LocalizedError {
 final class UserDictionary: NSObject {
     static let shared = UserDictionary()
     static let didClearNotification = Notification.Name("GboardIME.UserDictionaryDidClear")
+    /// Posted after learned words are edited outside a typing session.
+    static let didChangeNotification = Notification.Name("GboardIME.UserDictionaryDidChange")
 
     private let preferences: Preferences
     private let isReady: () -> Bool

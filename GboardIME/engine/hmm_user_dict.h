@@ -46,6 +46,57 @@ bool hmm_user_dict_is_candidate_removable(int candidate_index);
 // Returns false when the candidate is not removable or nothing was removed.
 bool hmm_user_dict_remove_candidate(int candidate_index);
 
+// ── Learned word management ────────────────────────────────────────────────
+
+/* The native stores keys of any length, and learning joins consecutive
+ * selections, so the token count only guards against malformed input.
+ * Token bytes match the limit used when extracting candidate tokens. */
+#define HMM_USER_DICT_MAX_TOKENS 1024
+#define HMM_USER_DICT_MAX_TOKEN_BYTES 15
+
+typedef enum {
+    HMM_USER_DICT_PINYIN = 0,   // user_dict_3_3
+    HMM_USER_DICT_ENGLISH = 1,  // user_dict_3_3_english
+} HmmUserDictKind;
+
+// Token languages are values of Google's i18n Language enum. The pinyin
+// dictionary accepts only these two; the English one stores only English.
+#define HMM_LANGUAGE_ENGLISH 0
+#define HMM_LANGUAGE_CHINESE 16  // zh-CN
+
+// One learned MutableDictionaryAccessor$Entry. The native Entry.e
+// (modified since the last sync export) is not exposed; Entry.f is the
+// match type, where 2 marks keys derived from abbreviations, which
+// nativeExportAllEntries never returns.
+typedef struct {
+    HmmUserDictKind dictionary;
+    char *value;
+    char **tokens;
+    int *languages;
+    int token_count;
+    int count;
+    bool full_match;  // Entry.f == 0; false when learned from a partial match
+} HmmUserDictEntry;
+
+// Lists the learned entries of both user dictionaries (nativeExportAllEntries).
+// Entries with a zero count are removal tombstones and are skipped.
+// Entries learned from abbreviations are not exported by the native code.
+// Returns the entry count, or -1 on failure; free with
+// hmm_user_dict_free_entries.
+int hmm_user_dict_export_entries(HmmUserDictEntry **out);
+void hmm_user_dict_free_entries(HmmUserDictEntry *entries, int count);
+
+// Removes one entry by its reading, token languages and text
+// (nativeRemoveByTokenAndValue). Persist to keep the change.
+bool hmm_user_dict_remove_entry(const HmmUserDictEntry *entry);
+
+// Inserts the entry or sets its count to exactly `count` (positive) with
+// the given match type. `entry` holds the current count and match type,
+// which are restored if the change fails (count 0 for a new entry).
+// Persist to keep the change.
+bool hmm_user_dict_set_entry_count(const HmmUserDictEntry *entry, int count,
+                                   bool full_match);
+
 // Persist the user dictionary to disk.
 // Safe rename sequence: duplicate → compact → persist to _tmp →
 // rename primary→_bak → rename _tmp→primary → delete _bak.

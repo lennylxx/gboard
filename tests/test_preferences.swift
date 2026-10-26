@@ -989,6 +989,313 @@ private func testRemoveOnLaterPage(_ preferences: Preferences) {
           !offeredAsLearned(pendingText))
 }
 
+private func storeError(_ result: Result<Void, LearnedWordStore.StoreError>)
+    -> LearnedWordStore.StoreError? {
+    if case .failure(let error) = result { return error }
+    return nil
+}
+
+func testLearnedWordStore() {
+    print("[test_learned_word_store]")
+    withTestPreferences { preferences, _ in
+        preferences.predictionsEnabled = false
+        preferences.contextEnabled = false
+        check("word store test starts with an empty dictionary",
+              gboard_user_dict_clear())
+        for _ in 0..<2 {
+            let (session, _) = makeSession(preferences: preferences)
+            for ch in "ceshi" { _ = session.appendLetter(String(ch)) }
+            _ = selectCandidate("侧", in: session)
+            _ = selectCandidate("试", in: session)
+        }
+        func learnedRank() -> (Int?, Bool) {
+            let (session, _) = makeSession(preferences: preferences)
+            for ch in "ceshi" { _ = session.appendLetter(String(ch)) }
+            defer { session.cancel() }
+            guard let index = session.candidates.firstIndex(of: "侧试") else {
+                return (nil, false)
+            }
+            while session.selectedIndex < index { _ = session.moveRight() }
+            return (index, session.selectedCandidateRemovable)
+        }
+
+        var saves = 0
+        let native = LearnedWordOperations.native
+        let store = LearnedWordStore(operations: LearnedWordOperations(
+            export: native.export, remove: native.remove, setCount: native.setCount,
+            persist: { saves += 1; return true }))
+        check("store loads learned words", (try? store.reload().get()) != nil)
+        guard let word = store.words.first(where: { $0.text == "侧试" }) else {
+            check("store lists the learned phrase", false)
+            return
+        }
+        check("store lists the learned phrase with its reading",
+              store.words.count == 1 && word.dictionary == .pinyin &&
+              word.tokens == ["ce", "shi"] && word.reading == "ce'shi" &&
+              word.languages == [.chinese, .chinese] && word.fullMatch &&
+              word.count == 2)
+        check("search matches text and reading",
+              word.matches("侧") && word.matches("ceshi") &&
+              word.matches("ce'shi") && word.matches("CE SHI") &&
+              !word.matches("测") && !word.matches("ceshu"))
+
+        check("count edits reject zero",
+              storeError(store.setCount(word.id, to: 0)) == .changeFailed(1))
+        check("count edit saves and updates the list",
+              (try? store.setCount(word.id, to: 40).get()) != nil && saves == 1 &&
+              store.words.first?.count == 40)
+        let (rank, removable) = learnedRank()
+        check("raised count ranks the phrase first", rank == 0 && removable)
+        check("count edit can lower a count",
+              (try? store.setCount(word.id, to: 3).get()) != nil &&
+              store.words.first?.count == 3 && store.words.first?.fullMatch == true)
+        check("count edit raises it again",
+              (try? store.setCount(word.id, to: 40).get()) != nil &&
+              store.words.first?.count == 40 && saves == 3)
+
+        let exported = LearnedWordStore.exportText(store.words)
+        let parsed = LearnedWordStore.parse(exported)
+        check("export round-trips", parsed?.words == store.words &&
+              parsed?.invalid == 0)
+        check("export uses readable field names",
+              exported.contains("\"reading\":[\"ce\",\"shi\"]") &&
+              exported.contains("\"languages\":[\"chinese\",\"chinese\"]") &&
+              exported.contains("\"fullMatch\":true") &&
+              exported.contains("\"dictionary\":\"pinyin\""))
+
+        check("remove deletes the entry",
+              (try? store.remove([word.id]).get()) != nil && saves == 4 &&
+              store.words.isEmpty)
+        check("removed phrase is no longer learned", !learnedRank().1)
+
+        if case .success(let summary) = store.importText(exported) {
+            check("import restores the removed phrase",
+                  summary == .init(added: 1) && store.words.first?.count == 40 &&
+                  saves == 5)
+        } else {
+            check("import restores the removed phrase", false)
+        }
+        let lower = exported.replacingOccurrences(of: "\"count\":40", with: "\"count\":5")
+        let higher = exported.replacingOccurrences(of: "\"count\":40", with: "\"count\":60")
+        check("import never lowers a count",
+              (try? store.importText(lower).get()) == .init(unchanged: 1) &&
+              store.words.first?.count == 40 && saves == 5)
+        check("import raises a lower count",
+              (try? store.importText(higher).get()) == .init(updated: 1) &&
+              store.words.first?.count == 60)
+        check("import rejects other files",
+              store.importText("text\tonly\n") == .failure(.notWordList))
+        func entry(_ fields: String) -> String {
+            "{\"dictionary\":\"pinyin\",\"text\":\"坏\",\"fullMatch\":true,\(fields)}"
+        }
+        let chinese = "\"languages\":[\"chinese\"]"
+        let tooMany = Int(HMM_USER_DICT_MAX_TOKENS) + 1
+        let manyTokens = Array(repeating: "\"a\"", count: tooMany).joined(separator: ",")
+        let manyLanguages = Array(repeating: "\"chinese\"", count: tooMany)
+            .joined(separator: ",")
+        let mixed = LearnedWordStore.exportText([]) + [
+            entry("\"reading\":[\"ce\"],\"languages\":[\"chinese\",\"chinese\"],\"count\":3"),
+            entry("\"reading\":[\"ce\"],\(chinese),\"count\":0"),
+            entry("\"reading\":[\"abcdefghijklmnop\"],\(chinese),\"count\":3"),
+            entry("\"reading\":[\"c e\"],\(chinese),\"count\":3"),
+            entry("\"reading\":[\"ce\"],\"languages\":[\"japanese\"],\"count\":3"),
+            entry("\"reading\":[\"ce\"],\"languages\":[16],\"count\":3"),
+            entry("\"reading\":[\(manyTokens)],\"languages\":[\(manyLanguages)],\"count\":3"),
+            "{\"dictionary\":\"other\",\"text\":\"坏\",\"reading\":[\"ce\"],\(chinese)," +
+                "\"count\":3,\"fullMatch\":true}",
+            "not json",
+            "{\"dictionary\":\"english\",\"text\":\"ce\",\"reading\":[\"ce\"],\(chinese)," +
+                "\"count\":3,\"fullMatch\":true}",
+            entry("\"reading\":[\"q\",\"x\"],\"languages\":[\"english\",\"english\"]," +
+                  "\"count\":3"),
+            "{\"dictionary\":\"english\",\"text\":\"qx\",\"reading\":[\"qx\"]," +
+                "\"languages\":[\"english\"],\"count\":3,\"fullMatch\":true}",
+            entry("\"reading\":[\"ce\"],\(chinese),\"count\":3")
+                .replacingOccurrences(of: "坏", with: "坏\\u0000好"),
+            entry("\"reading\":[\"ce\"],\(chinese),\"count\":3")
+                .replacingOccurrences(of: "坏", with: "坏\\n"),
+            "{\"dictionary\":\"pinyin\",\"text\":\"坏\",\"reading\":[\"ce\"],\(chinese)," +
+                "\"count\":3}",
+        ].joined(separator: "\n")
+        check("malformed lines are counted, not imported",
+              (try? store.importText(mixed).get()) == .init(invalid: 15) &&
+              store.words.count == 1)
+        check("other formats and versions are rejected",
+              LearnedWordStore.parse("{\"format\":\"other\",\"version\":1}\n") == nil &&
+              LearnedWordStore.parse(
+                  "{\"format\":\"gboardime-learned-words\",\"version\":2}\n") == nil)
+
+        let multiline = LearnedWord(dictionary: .english, text: "a\nb\r\nc\u{2028}d",
+                                    tokens: ["a"], languages: [.english], count: 1,
+                                    fullMatch: true)
+        check("export keeps one word per line",
+              LearnedWordStore.exportText([multiline]).split(separator: "\n").count == 2)
+        let tricky = LearnedWord(dictionary: .english, text: "a\\b\"c/d😀",
+                                 tokens: ["a", "b"], languages: [.english, .english],
+                                 count: 20_000, fullMatch: false)
+        let trickyText = LearnedWordStore.exportText([tricky])
+        check("export round-trips escaped characters and large counts",
+              LearnedWordStore.parse(trickyText)?.words == [tricky])
+        check("CRLF files with a BOM are accepted",
+              LearnedWordStore.parse("\u{FEFF}" +
+                  trickyText.replacingOccurrences(of: "\n", with: "\r\n"))?
+                .words == [tricky])
+
+        _ = UserDictionary(preferences: preferences).clearLearningData()
+        check("clearing learning data empties the list", store.words.isEmpty)
+
+        let mock = MockLearnedWords([tricky])
+        let stale = LearnedWordStore(operations: mock.operations)
+        stale.reload()
+        mock.live[0].count = 30_000
+        var lowerTricky = tricky
+        lowerTricky.count = 25_000
+        check("import compares against the live dictionary",
+              (try? stale.importText(LearnedWordStore.exportText([lowerTricky])).get())
+                == .init(unchanged: 1) && mock.setCounts.isEmpty)
+        var changes = 0
+        let observer = NotificationCenter.default.addObserver(
+            forName: UserDictionary.didChangeNotification, object: nil, queue: nil
+        ) { _ in changes += 1 }
+        let english = LearnedWord(dictionary: .english, text: "qxz", tokens: ["q", "x", "z"],
+                                  languages: [.english, .english, .english], count: 2,
+                                  fullMatch: true)
+        check("import reports a failed save",
+              (try? stale.importText(LearnedWordStore.exportText([english])).get())
+                == .init(added: 1, saveFailed: true) && changes == 1)
+        mock.live[0].count = 7
+        check("count edits start from the live count",
+              storeError(stale.setCount(tricky.id, to: 7)) == nil && mock.setCounts == [2] &&
+              changes == 1)
+        check("count edits announce dictionary changes",
+              storeError(stale.setCount(tricky.id, to: 8)) == .saveFailed &&
+              changes == 2 && stale.words.first?.count == 8)
+        NotificationCenter.default.removeObserver(observer)
+
+        mock.applies = false
+        mock.saves = true
+        check("a count edit that does not take effect is reported",
+              storeError(stale.setCount(tricky.id, to: 9)) == .changeFailed(1) &&
+              stale.words.first?.count == 8)
+        var higherTricky = tricky
+        higherTricky.count = 90_000
+        check("an import that does not take effect is reported",
+              (try? stale.importText(LearnedWordStore.exportText([higherTricky])).get())
+                == .init(failed: 1))
+        mock.applies = true
+
+        mock.saves = false
+        mock.removable = { _ in false }
+        check("failed removal is reported",
+              storeError(stale.remove([tricky.id])) == .changeFailed(1))
+        mock.removable = { $0.text == "qxz" }
+        check("partial removal also reports a failed save",
+              storeError(stale.remove([tricky.id, english.id])) == .changeAndSaveFailed(1) &&
+              stale.words.map(\.text) == [tricky.text])
+        mock.saves = true
+        mock.removable = { _ in true }
+        var duplicate = english
+        duplicate.count = 5
+        check("duplicate import lines apply once with the highest count",
+              (try? stale.importText(LearnedWordStore.exportText([english, duplicate]))
+                .get()) == .init(added: 1, unchanged: 1) &&
+              mock.setCounts.last == 5 && mock.live.count == 2)
+        changes = 0
+        let dropObserver = NotificationCenter.default.addObserver(
+            forName: UserDictionary.didChangeNotification, object: nil, queue: nil
+        ) { _ in changes += 1 }
+        mock.drops = true
+        check("a failed count edit that drops the word is announced",
+              storeError(stale.setCount(english.id, to: 6)) == .changeFailed(1) &&
+              changes == 1 && !stale.words.contains { $0.id == english.id })
+        check("a failed import call is still saved and announced",
+              (try? stale.importText(LearnedWordStore.exportText([duplicate])).get())
+                == .init(failed: 1) && changes == 2)
+        NotificationCenter.default.removeObserver(dropObserver)
+        mock.drops = false
+        mock.live.append(english)
+        mock.exportFailsAfterRemove = true
+        check("a failed reload reports every target",
+              storeError(stale.remove([tricky.id, english.id])) == .changeFailed(2))
+        mock.exportFailsAfterRemove = false
+        let partialMock = MockLearnedWords([tricky])
+        partialMock.saves = true
+        let upgrading = LearnedWordStore(operations: partialMock.operations)
+        let fullTricky = LearnedWord(dictionary: tricky.dictionary, text: tricky.text,
+                                     tokens: tricky.tokens, languages: tricky.languages,
+                                     count: 30_000, fullMatch: true)
+        check("import upgrades a partial match to a full match",
+              (try? upgrading.importText(LearnedWordStore.exportText([fullTricky])).get())
+                == .init(updated: 1) && partialMock.live.first?.fullMatch == true)
+        let samePartial = MockLearnedWords([tricky])
+        samePartial.saves = true
+        let sameStore = LearnedWordStore(operations: samePartial.operations)
+        let sameFull = LearnedWord(dictionary: tricky.dictionary, text: tricky.text,
+                                   tokens: tricky.tokens, languages: tricky.languages,
+                                   count: tricky.count, fullMatch: true)
+        check("import upgrades the match type at the same count",
+              (try? sameStore.importText(LearnedWordStore.exportText([sameFull])).get())
+                == .init(updated: 1) && samePartial.live.first?.fullMatch == true &&
+              samePartial.live.first?.count == tricky.count)
+        var huge = sameFull
+        huge.count = 150_000
+        check("imported counts are capped at the editable maximum",
+              LearnedWordStore.parse(LearnedWordStore.exportText([huge]))?.words.first?
+                .count == LearnedWordStore.countRange.upperBound)
+        let unavailable = LearnedWordStore(operations: LearnedWordOperations(
+            export: { nil }, remove: { _ in true },
+            setCount: { _, _, _ in true }, persist: { true }))
+        check("unavailable dictionary reports a load failure",
+              storeError(unavailable.reload()) == .loadFailed && !unavailable.loaded)
+    }
+}
+
+/// An in-memory learned-word dictionary for store tests.
+private final class MockLearnedWords {
+    var live: [LearnedWord]
+    var setCounts: [Int] = []
+    var applies = true
+    var saves = false
+    var removable: (LearnedWord) -> Bool = { _ in true }
+    var drops = false
+    var exportFailsAfterRemove = false
+    private var exportFails = false
+
+    init(_ words: [LearnedWord]) { live = words }
+
+    var operations: LearnedWordOperations {
+        LearnedWordOperations(
+            export: { [unowned self] in
+                defer { self.exportFails = false }
+                return self.exportFails ? nil : self.live
+            },
+            remove: { [unowned self] word in
+                guard self.removable(word) else { return false }
+                if self.exportFailsAfterRemove { self.exportFails = true }
+                self.live.removeAll { $0.id == word.id }
+                return true
+            },
+            setCount: { [unowned self] word, count, fullMatch in
+                self.setCounts.append(count)
+                if self.drops {
+                    self.live.removeAll { $0.id == word.id }
+                    return false
+                }
+                guard self.applies else { return true }
+                let stored = LearnedWord(dictionary: word.dictionary, text: word.text,
+                                         tokens: word.tokens, languages: word.languages,
+                                         count: count, fullMatch: fullMatch)
+                if let i = self.live.firstIndex(where: { $0.id == word.id }) {
+                    self.live[i] = stored
+                } else {
+                    self.live.append(stored)
+                }
+                return true
+            },
+            persist: { [unowned self] in self.saves })
+    }
+}
+
 func testPreferenceSessionUpdates() {
     print("[test_preference_session_updates]")
     withTestPreferences { preferences, _ in

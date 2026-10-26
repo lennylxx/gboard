@@ -1543,6 +1543,230 @@ static void test_user_dict_remove_candidate(const char *executable,
                                            "ceshi", "厕视") == 3);
 }
 
+static const HmmUserDictEntry *find_entry(const HmmUserDictEntry *entries,
+                                          int count, const char *value) {
+    for (int i = 0; i < count; ++i)
+        if (strcmp(entries[i].value, value) == 0) return &entries[i];
+    return NULL;
+}
+
+static int exported_count(const char *value) {
+    HmmUserDictEntry *entries = NULL;
+    int count = hmm_user_dict_export_entries(&entries);
+    const HmmUserDictEntry *entry = find_entry(entries, count, value);
+    int result = entry ? entry->count : (count < 0 ? -2 : -1);
+    hmm_user_dict_free_entries(entries, count);
+    return result;
+}
+
+static int removable_position(const char *pinyin, const char *text) {
+    char *cands[50] = {0};
+    int count = get_candidates_bulk(pinyin, cands, 50);
+    int position = find_candidate(cands, count, text);
+    bool removable = position >= 0 &&
+        hmm_user_dict_is_candidate_removable(position);
+    free_cands(cands, count);
+    return removable ? position : -1;
+}
+
+static void test_user_dict_manage_entries(const char *executable,
+                                          const char *so, const char *pack) {
+    printf("[test_user_dict_manage_entries]\n");
+    set_editor_context("");
+    const char *tokens[] = {"ce", "shi"};
+    int types[] = {16, 16};
+    for (int i = 0; i < 3; ++i)
+        hmm_user_dict_learn(tokens, types, 2, "测视", true);
+    const char *letters[] = {"q", "x", "z"};
+    int letter_types[] = {0, 0, 0};
+    for (int i = 0; i < 2; ++i)
+        hmm_user_dict_learn(letters, letter_types, 3, "qxz", true);
+
+    HmmUserDictEntry *entries = NULL;
+    int count = hmm_user_dict_export_entries(&entries);
+    const HmmUserDictEntry *pinyin = find_entry(entries, count, "测视");
+    const HmmUserDictEntry *english = find_entry(entries, count, "qxz");
+    printf("    exported %d entries\n", count);
+    check("manage: export lists the learned phrase",
+          pinyin && pinyin->dictionary == HMM_USER_DICT_PINYIN &&
+          pinyin->count == 3 && pinyin->token_count == 2 &&
+          strcmp(pinyin->tokens[0], "ce") == 0 &&
+          strcmp(pinyin->tokens[1], "shi") == 0 &&
+          pinyin->languages[0] == HMM_LANGUAGE_CHINESE &&
+          pinyin->languages[1] == HMM_LANGUAGE_CHINESE && pinyin->full_match);
+    check("manage: export lists the English word",
+          english && english->dictionary == HMM_USER_DICT_ENGLISH &&
+          english->count == 2 && english->token_count == 3);
+    bool only_positive = count >= 0;
+    for (int i = 0; i < count; ++i)
+        only_positive = only_positive && entries[i].count > 0;
+    check("manage: export skips zero-count entries", only_positive);
+    bool repeated = true;
+    for (int i = 0; i < 200 && repeated; ++i)
+        repeated = exported_count("测视") == 3;
+    check("manage: repeated exports keep working", repeated);
+
+    HmmUserDictEntry phrase = pinyin ? *pinyin : (HmmUserDictEntry){0};
+    check("manage: zero count is rejected",
+          !hmm_user_dict_set_entry_count(&phrase, 0, phrase.full_match));
+    check("manage: update sets the count",
+          hmm_user_dict_set_entry_count(&phrase, 50, phrase.full_match) &&
+          exported_count("测视") == 50);
+    check("manage: raised count ranks the phrase first",
+          removable_position("ceshi", "测视") == 0);
+    phrase.count = 50;
+    check("manage: set count can lower a count",
+          hmm_user_dict_set_entry_count(&phrase, 2, phrase.full_match) &&
+          exported_count("测视") == 2);
+    phrase.count = 2;
+    check("manage: set count raises it again",
+          hmm_user_dict_set_entry_count(&phrase, 50, phrase.full_match) &&
+          exported_count("测视") == 50);
+    phrase.count = 50;
+
+    char long_token[] = "abcdefghijklmnop";
+    char *long_tokens[] = {long_token, phrase.tokens ? phrase.tokens[1] : NULL};
+    HmmUserDictEntry oversized = phrase;
+    oversized.tokens = long_tokens;
+    check("manage: oversized tokens are rejected",
+          !hmm_user_dict_set_entry_count(&oversized, 9, oversized.full_match) &&
+          exported_count("测视") == 50);
+    oversized.tokens = phrase.tokens;
+    oversized.token_count = HMM_USER_DICT_MAX_TOKENS + 1;
+    check("manage: too many tokens are rejected",
+          !hmm_user_dict_set_entry_count(&oversized, 9, oversized.full_match));
+
+    int wrong_languages[] = {0, 0};
+    HmmUserDictEntry wrong = phrase;
+    wrong.languages = wrong_languages;
+    check("manage: English languages are rejected in the pinyin dictionary",
+          !hmm_user_dict_set_entry_count(&wrong, 9, wrong.full_match) &&
+          exported_count("测视") == 50);
+    wrong.dictionary = HMM_USER_DICT_ENGLISH;
+    check("manage: removal needs the exported token languages",
+          !hmm_user_dict_remove_entry(&wrong) && exported_count("测视") == 50);
+    int other_languages[] = {69, 69};
+    wrong = phrase;
+    wrong.languages = other_languages;
+    check("manage: unsupported languages are rejected",
+          !hmm_user_dict_remove_entry(&wrong) &&
+          exported_count("测视") == 50);
+    check("manage: remove deletes the entry",
+          hmm_user_dict_remove_entry(&phrase) &&
+          exported_count("测视") == -1);
+    check("manage: removed phrase is no longer a learned candidate",
+          removable_position("ceshi", "测视") < 0);
+    check("manage: update restores a removed entry",
+          hmm_user_dict_set_entry_count(&phrase, 7, phrase.full_match) &&
+          exported_count("测视") == 7 &&
+          removable_position("ceshi", "测视") >= 0);
+    check("manage: remove after restore",
+          hmm_user_dict_remove_entry(&phrase) &&
+          exported_count("测视") == -1);
+    check("manage: persist removal", hmm_user_dict_persist());
+    check("manage: fresh process does not offer the removed entry",
+          verify_user_dict_removable_child(executable, so, pack,
+                                           "ceshi", "测视") == 3);
+    const char *partial_tokens[] = {"zi", "fu"};
+    for (int i = 0; i < 2; ++i)
+        hmm_user_dict_learn(partial_tokens, types, 2, "字幅", false);
+    HmmUserDictEntry *partial_entries = NULL;
+    int partial_count = hmm_user_dict_export_entries(&partial_entries);
+    const HmmUserDictEntry *found = find_entry(partial_entries, partial_count,
+                                               "字幅");
+    HmmUserDictEntry partial = found ? *found : (HmmUserDictEntry){0};
+    check("manage: partial-match learning exports full_match false",
+          found && !found->full_match && found->count == 2);
+    check("manage: partial-match count can be lowered and raised",
+          hmm_user_dict_set_entry_count(&partial, 1, partial.full_match) &&
+          exported_count("字幅") == 1 &&
+          hmm_user_dict_set_entry_count(&partial, 30, partial.full_match) &&
+          exported_count("字幅") == 30);
+    hmm_user_dict_free_entries(partial_entries, partial_count);
+    partial_entries = NULL;
+    partial_count = hmm_user_dict_export_entries(&partial_entries);
+    found = find_entry(partial_entries, partial_count, "字幅");
+    check("manage: count changes keep the match type",
+          found && !found->full_match);
+    partial = found ? *found : (HmmUserDictEntry){0};
+    check("manage: a partial match upgrades at the same count",
+          found && hmm_user_dict_set_entry_count(&partial, 30, true) &&
+          exported_count("字幅") == 30);
+    hmm_user_dict_free_entries(partial_entries, partial_count);
+    partial_entries = NULL;
+    partial_count = hmm_user_dict_export_entries(&partial_entries);
+    found = find_entry(partial_entries, partial_count, "字幅");
+    check("manage: the upgraded entry is a full match", found && found->full_match);
+    hmm_user_dict_free_entries(partial_entries, partial_count);
+
+    phrase.count = 0;
+    phrase.full_match = false;
+    bool restored_partial = hmm_user_dict_set_entry_count(&phrase, 5, phrase.full_match);
+    int restored_count = exported_count("测视");
+    printf("    full-match tombstone restored as partial: %d (count %d)\n",
+           restored_partial, restored_count);
+    check("manage: a removed full-match entry comes back as partial",
+          restored_partial && restored_count == 5);
+    phrase.full_match = true;
+    phrase.count = restored_count > 0 ? restored_count : 0;
+    hmm_user_dict_remove_entry(&phrase);
+
+    // Learning joins consecutive selections and has no token limit.
+    enum { LONG_TOKENS = 40 };
+    const char *learned_tokens[LONG_TOKENS];
+    int long_types[LONG_TOKENS];
+    char long_value[LONG_TOKENS * 3 + 1] = {0};
+    for (int i = 0; i < LONG_TOKENS; ++i) {
+        learned_tokens[i] = "ce";
+        long_types[i] = HMM_LANGUAGE_CHINESE;
+        strcat(long_value, "测");
+    }
+    hmm_user_dict_learn(learned_tokens, long_types, LONG_TOKENS, long_value, true);
+    HmmUserDictEntry *long_entries = NULL;
+    int long_count = hmm_user_dict_export_entries(&long_entries);
+    found = find_entry(long_entries, long_count, long_value);
+    HmmUserDictEntry long_entry = found ? *found : (HmmUserDictEntry){0};
+    check("manage: long learned phrases are exported",
+          found && found->token_count == LONG_TOKENS);
+    check("manage: long learned phrases can be edited and removed",
+          found && hmm_user_dict_set_entry_count(&long_entry, 4, long_entry.full_match) &&
+          exported_count(long_value) == 4 &&
+          hmm_user_dict_remove_entry(&long_entry) &&
+          exported_count(long_value) == -1);
+    hmm_user_dict_free_entries(long_entries, long_count);
+
+    const char *relearn_tokens[] = {"ci", "fu"};
+    hmm_user_dict_learn(relearn_tokens, types, 2, "词夫", true);
+    HmmUserDictEntry *relearn_entries = NULL;
+    int relearn_count = hmm_user_dict_export_entries(&relearn_entries);
+    found = find_entry(relearn_entries, relearn_count, "词夫");
+    bool relearn_removed = found && hmm_user_dict_remove_entry(found);
+    hmm_user_dict_free_entries(relearn_entries, relearn_count);
+    hmm_user_dict_learn(relearn_tokens, types, 2, "词夫", false);
+    int relearned = exported_count("词夫");
+    printf("    partial relearn after full-match removal: count %d\n", relearned);
+    check("manage: a removed word can be relearned by partial match",
+          relearn_removed && relearned == 1);
+
+    HmmUserDictEntry letters_entry = english ? *english : (HmmUserDictEntry){0};
+    check("manage: English count can be lowered",
+          english && hmm_user_dict_set_entry_count(&letters_entry, 1, letters_entry.full_match) &&
+          exported_count("qxz") == 1);
+    letters_entry.count = 1;
+    char *word_token[] = {"qxz"};
+    int english_language[] = {HMM_LANGUAGE_ENGLISH};
+    HmmUserDictEntry whole_word = letters_entry;
+    whole_word.tokens = word_token;
+    whole_word.languages = english_language;
+    whole_word.token_count = 1;
+    check("manage: multi-letter English tokens are not inserted",
+          !hmm_user_dict_set_entry_count(&whole_word, 9, whole_word.full_match));
+    check("manage: remove the English word",
+          english && hmm_user_dict_remove_entry(english) &&
+          exported_count("qxz") == -1);
+    hmm_user_dict_free_entries(entries, count);
+}
+
 static void test_user_dict_clear(void) {
     printf("[test_user_dict_clear]\n");
 
@@ -1825,6 +2049,7 @@ int main(int argc, char **argv) {
     test_user_dict_learn_and_boost();
     test_user_dict_learn_phrase();
     test_user_dict_remove_candidate(argv[0], so, pack);
+    test_user_dict_manage_entries(argv[0], so, pack);
     test_user_dict_clear();
 
     // Persist/reload test — destroys and reinits engine

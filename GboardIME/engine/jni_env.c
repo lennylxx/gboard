@@ -33,6 +33,7 @@ static os_log_t jni_os_log(void) {
 #define KIND_SCORED_INPUT 7
 #define KIND_FILE_DESCRIPTOR 8
 #define KIND_RANGE 9
+#define KIND_DICT_ENTRY 10
 
 // `bytes` caches a string's String.getBytes() result. DeleteLocalRef is a
 // no-op here, so a fresh array per call would leak on every native lookup
@@ -111,6 +112,21 @@ void jni_get_range(jobject range, int *start, int *end) {
     if (end)   *end   = r->end;
 }
 
+// MutableDictionaryAccessor$Entry(String[] a, int[] b, String c, int d,
+//                                 boolean e, boolean z2, int f)
+// built by nativeExportAllEntries. Java drops z2; it is kept for fidelity.
+typedef struct {
+    uint8_t kind;  // = KIND_DICT_ENTRY
+    uint32_t len;
+    jobject tokens;       // a
+    jintArray languages;  // b: Language enum value per token
+    jstring value;        // c
+    jint count;           // d
+    jboolean modified;    // e: changed since the last sync export
+    jboolean has_tokens;  // z2: false for internal value-index records
+    jint match_type;      // f: 0 full, 1 partial, 2 derived key
+} FakeDictEntry;
+
 // Forward declarations for object array exports (implemented below)
 
 const char *jni_get_string(jstring s) {
@@ -147,7 +163,15 @@ static jmethodID fn_GetMethodID(JNIEnv *e, jclass c, const char *n, const char *
     (void)e;(void)c;
     { char _b[256]; int _n = snprintf(_b,sizeof(_b),"[JNI] GetMethodID: %s %s\n",n?n:"?",s?s:"?"); write(STDERR_FILENO,_b,_n>0?(size_t)_n:0); }
     // For <init>, encode sig to distinguish String vs Range constructors
-    if (n && s && strcmp(n, "<init>") == 0 && s_mid_count < 128) {
+    if (n && s && strcmp(n, "<init>") == 0) {
+        char key[128];
+        snprintf(key, sizeof(key), "<init>\t%s", s);
+        for (int i = 0; i < s_mid_count; ++i)
+            if (strcmp(s_mid_pool[i], key) == 0) return (jmethodID)s_mid_pool[i];
+        if (s_mid_count >= 128) {
+            { char _b[256]; int _n = snprintf(_b,sizeof(_b),"[JNI] GetMethodID: constructor pool full for %s\n",s); write(STDERR_FILENO,_b,_n>0?(size_t)_n:0); }
+            return (jmethodID)n;
+        }
         int idx = s_mid_count++;
         snprintf(s_mid_pool[idx], sizeof(s_mid_pool[idx]), "<init>\t%s", s);
         return (jmethodID)s_mid_pool[idx];
@@ -527,6 +551,20 @@ static jobject fn_NewObjectV(JNIEnv *e, jclass c, jmethodID m, va_list args) {
             s->data[0] = '\0';
             return (jobject)s;
         }
+        if (strstr(sig, "IZZI)V")) {
+            // MutableDictionaryAccessor$Entry, from nativeExportAllEntries
+            void *vl_ptr = (void *)args;
+            FakeDictEntry *d = calloc(1, sizeof(*d));
+            d->kind = KIND_DICT_ENTRY;
+            d->tokens = android_va_arg_ptr(vl_ptr);
+            d->languages = android_va_arg_ptr(vl_ptr);
+            d->value = android_va_arg_ptr(vl_ptr);
+            d->count = (jint)(intptr_t)android_va_arg_ptr(vl_ptr);
+            d->modified = (jboolean)(uintptr_t)android_va_arg_ptr(vl_ptr);
+            d->has_tokens = (jboolean)(uintptr_t)android_va_arg_ptr(vl_ptr);
+            d->match_type = (jint)(intptr_t)android_va_arg_ptr(vl_ptr);
+            return (jobject)d;
+        }
         if (strstr(sig, "(II)V")) {
             void *vl_ptr = (void *)args;
             // Extract two ints from Android va_list
@@ -889,4 +927,59 @@ jintArray jni_NewIntArray(JNIEnv *e, jsize n) {
 }
 void jni_SetIntArrayRegion(JNIEnv *e, jintArray a, jsize start, jsize len, const jint *buf) {
     fn_SetIntArrayRegion(e, a, start, len, buf);
+}
+
+jsize jni_GetArrayLength(JNIEnv *e, jobject a) {
+    return a ? fn_GetArrayLength(e, a) : 0;
+}
+jobject jni_GetObjectArrayElement(JNIEnv *e, jobject a, jsize i) {
+    return a ? fn_GetObjectArrayElement(e, a, i) : NULL;
+}
+
+bool jni_get_dict_entry(jobject o, JniDictEntry *out) {
+    FakeDictEntry *d = (FakeDictEntry *)o;
+    if (!d || d->kind != KIND_DICT_ENTRY || !out) return false;
+    FakeObj *tokens = (FakeObj *)d->tokens;
+    FakeObj *types = (FakeObj *)d->languages;
+    out->token_count = tokens && tokens->kind == KIND_OBJARRAY
+        ? (int)tokens->len : 0;
+    if (types && (types->kind != KIND_IARRAY ||
+                  (int)types->len != out->token_count)) {
+        return false;
+    }
+    out->tokens = out->token_count ? (jstring *)tokens->data : NULL;
+    out->languages = types ? (const jint *)types->data : NULL;
+    out->value = jni_get_string(d->value);
+    out->count = d->count;
+    out->modified = d->modified;
+    out->match_type = d->match_type;
+    return true;
+}
+
+void jni_release_string_array(jobject a) {
+    FakeObj *o = (FakeObj *)a;
+    if (!o || o->kind != KIND_OBJARRAY) return;
+    for (uint32_t i = 0; i < o->len; ++i) {
+        jni_release_string(((jobject *)o->data)[i]);
+    }
+    free(o);
+}
+
+void jni_release_array(jobject a) {
+    FakeObj *o = (FakeObj *)a;
+    if (o && o->kind != KIND_STRING) free(o);
+}
+
+void jni_release_dict_entries(jobject a) {
+    FakeObj *o = (FakeObj *)a;
+    if (!o || o->kind != KIND_OBJARRAY) return;
+    for (uint32_t i = 0; i < o->len; ++i) {
+        FakeDictEntry *d = ((FakeDictEntry **)o->data)[i];
+        if (!d || d->kind != KIND_DICT_ENTRY) continue;
+        jni_release_string_array(d->tokens);
+        jni_release_array(d->languages);
+        jni_release_string(d->value);
+        free(d);
+    }
+    free(o);
 }

@@ -294,6 +294,217 @@ bool hmm_user_dict_unlearn(const char **tokens, const int *token_types,
     return (bool)result;
 }
 
+// ── Learned word management ─────────────────────────────────────────────────
+
+static bool usable_entry(const HmmUserDictEntry *entry) {
+    if (!s_ready || !entry || !entry->value || !entry->value[0] ||
+        !entry->tokens || !entry->languages || entry->token_count <= 0 ||
+        entry->token_count > HMM_USER_DICT_MAX_TOKENS ||
+        (entry->dictionary != HMM_USER_DICT_PINYIN &&
+         entry->dictionary != HMM_USER_DICT_ENGLISH) ||
+        !s_dicts[entry->dictionary].accessor) {
+        return false;
+    }
+    for (int i = 0; i < entry->token_count; ++i) {
+        size_t length = entry->tokens[i] ? strlen(entry->tokens[i]) : 0;
+        if (length == 0 || length > HMM_USER_DICT_MAX_TOKEN_BYTES) return false;
+        if (entry->languages[i] != HMM_LANGUAGE_CHINESE &&
+            entry->languages[i] != HMM_LANGUAGE_ENGLISH) {
+            return false;
+        }
+    }
+    if (entry->dictionary == HMM_USER_DICT_PINYIN && !s_pinyin_settings_valid) {
+        LOGERR("Cannot edit entries: pinyin accessor settings require a successful retry");
+        return false;
+    }
+    return true;
+}
+
+// Inserted keys must look like learned ones: the native splits English
+// into one token per letter, and dictionary_for_types routes only
+// all-English keys to the English dictionary.
+static bool learnable_entry(const HmmUserDictEntry *entry) {
+    if (!usable_entry(entry)) return false;
+    bool chinese = false;
+    for (int i = 0; i < entry->token_count; ++i) {
+        if (entry->languages[i] == HMM_LANGUAGE_CHINESE) {
+            chinese = true;
+        } else if (strlen(entry->tokens[i]) != 1) {
+            return false;
+        }
+    }
+    return chinese == (entry->dictionary == HMM_USER_DICT_PINYIN);
+}
+
+static char *copy_string(const char *s) {
+    return strdup(s ? s : "");
+}
+
+static void free_entry(HmmUserDictEntry *entry) {
+    for (int i = 0; i < entry->token_count; ++i) free(entry->tokens[i]);
+    free(entry->tokens);
+    free(entry->languages);
+    free(entry->value);
+}
+
+void hmm_user_dict_free_entries(HmmUserDictEntry *entries, int count) {
+    if (!entries) return;
+    for (int i = 0; i < count; ++i) free_entry(&entries[i]);
+    free(entries);
+}
+
+static bool copy_exported_entry(HmmUserDictKind kind, const JniDictEntry *src,
+                                HmmUserDictEntry *dst) {
+    *dst = (HmmUserDictEntry){
+        .dictionary = kind,
+        .count = src->count,
+        .full_match = src->match_type == 0,
+    };
+    dst->value = copy_string(src->value);
+    if (!dst->value) return false;
+    if (src->token_count > 0) {
+        dst->tokens = calloc((size_t)src->token_count, sizeof(*dst->tokens));
+        dst->languages = calloc((size_t)src->token_count,
+                                sizeof(*dst->languages));
+        if (!dst->tokens || !dst->languages) {
+            free_entry(dst);
+            return false;
+        }
+        for (int i = 0; i < src->token_count; ++i) {
+            dst->tokens[i] = copy_string(jni_get_string(src->tokens[i]));
+            if (!dst->tokens[i]) {
+                free_entry(dst);
+                return false;
+            }
+            dst->token_count = i + 1;
+            dst->languages[i] = src->languages ? src->languages[i] : 0;
+        }
+    }
+    return true;
+}
+
+int hmm_user_dict_export_entries(HmmUserDictEntry **out) {
+    if (!out) return -1;
+    *out = NULL;
+    if (!s_ready || !s_natives->exportAllEntries) return -1;
+
+    HmmUserDictEntry *entries = NULL;
+    int count = 0, capacity = 0;
+    for (int i = 0; i < DICT_COUNT; ++i) {
+        if (!s_dicts[i].accessor) continue;
+        jobject volatile exported = NULL;
+        CRASH_PROTECT_BEGIN()
+        exported = s_natives->exportAllEntries(g_env, NULL, s_dicts[i].accessor);
+        CRASH_PROTECT_END("nativeExportAllEntries")
+        if (!exported) {
+            hmm_user_dict_free_entries(entries, count);
+            return -1;
+        }
+        jsize length = jni_GetArrayLength(g_env, exported);
+        bool copied = true;
+        for (jsize j = 0; j < length && copied; ++j) {
+            JniDictEntry src;
+            if (!jni_get_dict_entry(jni_GetObjectArrayElement(g_env, exported, j),
+                                    &src) || src.count <= 0 ||
+                src.match_type > 1 || src.token_count <= 0 ||
+                !src.value || !src.value[0]) {
+                continue;
+            }
+            if (count == capacity) {
+                int grown = capacity ? capacity * 2 : 256;
+                HmmUserDictEntry *larger =
+                    realloc(entries, (size_t)grown * sizeof(*entries));
+                if (!larger) {
+                    copied = false;
+                    break;
+                }
+                entries = larger;
+                capacity = grown;
+            }
+            copied = copy_exported_entry((HmmUserDictKind)i, &src,
+                                         &entries[count]);
+            if (copied) count++;
+        }
+        jni_release_dict_entries(exported);
+        if (!copied) {
+            hmm_user_dict_free_entries(entries, count);
+            return -1;
+        }
+    }
+    *out = entries;
+    return count;
+}
+
+static bool entry_arrays(const HmmUserDictEntry *entry, jobject *token_array,
+                         jintArray *type_array) {
+    if (build_token_arrays((const char **)entry->tokens, entry->languages,
+                           entry->token_count, token_array, type_array)) {
+        return true;
+    }
+    jni_release_string_array(*token_array);
+    jni_release_array(*type_array);
+    return false;
+}
+
+bool hmm_user_dict_remove_entry(const HmmUserDictEntry *entry) {
+    if (!usable_entry(entry) || !s_natives->removeByTokenAndValue) return false;
+    jobject tokens;
+    jintArray types;
+    if (!entry_arrays(entry, &tokens, &types)) return false;
+    jstring value = jni_NewStringUTF(g_env, entry->value);
+    jboolean volatile removed = JNI_FALSE;
+    CRASH_PROTECT_BEGIN()
+    removed = s_natives->removeByTokenAndValue(
+        g_env, NULL, s_dicts[entry->dictionary].accessor, tokens, types, value);
+    CRASH_PROTECT_END("nativeRemoveByTokenAndValue")
+    jni_release_string_array(tokens);
+    jni_release_array(types);
+    jni_release_string(value);
+    return (bool)removed;
+}
+
+static bool insert_entry(const HmmUserDictEntry *entry, int count,
+                         bool modified) {
+    jobject tokens;
+    jintArray languages;
+    if (!entry_arrays(entry, &tokens, &languages)) return false;
+    jstring value = jni_NewStringUTF(g_env, entry->value);
+    jboolean volatile inserted = JNI_FALSE;
+    // The flags are Entry.e (modified) and is_full_match (Entry.f).
+    CRASH_PROTECT_BEGIN()
+    inserted = s_natives->insertOrUpdate(
+        g_env, NULL, s_dicts[entry->dictionary].accessor, tokens, languages,
+        value, (jint)count, modified ? JNI_TRUE : JNI_FALSE,
+        entry->full_match ? JNI_TRUE : JNI_FALSE);
+    CRASH_PROTECT_END("nativeInsertOrUpdate")
+    jni_release_string_array(tokens);
+    jni_release_array(languages);
+    jni_release_string(value);
+    return (bool)inserted;
+}
+
+bool hmm_user_dict_set_entry_count(const HmmUserDictEntry *entry, int count,
+                                   bool full_match) {
+    if (count <= 0 || !learnable_entry(entry) || !s_natives->insertOrUpdate) {
+        return false;
+    }
+    // InsertOrUpdate keeps an existing record, including a removal
+    // tombstone, unless the new one has a better match type or a higher
+    // count, and still reports success. A zero count with modified=false
+    // deletes the record outright, so the new count always applies.
+    HmmUserDictEntry target = *entry;
+    target.full_match = !full_match;
+    bool purged = insert_entry(&target, 0, false);
+    target.full_match = full_match;
+    purged = insert_entry(&target, 0, false) || purged;
+    // Learning always marks entries modified (Entry.e).
+    if (insert_entry(&target, count, true)) return true;
+    if (purged && entry->count > 0 && !insert_entry(entry, entry->count, true)) {
+        LOGERR("Cannot restore learned entry after a failed count change");
+    }
+    return false;
+}
+
 // ── Remove a learned candidate ──────────────────────────────────────────────
 
 // Mirrors Gboard's candidate iterator (hbm): a candidate offers "remove

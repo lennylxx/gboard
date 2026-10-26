@@ -68,6 +68,14 @@ A macOS input method that runs Gboard's native HMM Pinyin engine via a custom AR
   pinyin is shown in the candidate window). Pressing Backspace right
   after committing a learned phrase undoes that learning once and deletes
   the text as usual.
+- **Learned-word manager** — Settings → 个性化 → 管理学习词… lists the
+  learned Chinese and English words with their readings and counts.
+  Search, sort, delete multiple entries, edit counts, or export and
+  import the list as a JSON Lines file (import adds missing words and
+  only raises counts). Removing a word that also exists in the system
+  dictionary does not hide it from candidates. Words learned from
+  abbreviated pinyin (such as `cs`) are not listed, because Gboard's
+  export omits them.
 - **Complete keyboard workflow** — Supports candidate paging, keyboard
   selection, and Chinese/English mode switching.
 - **Simplified / Traditional Chinese toggle** — Convert candidates and

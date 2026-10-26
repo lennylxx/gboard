@@ -197,6 +197,9 @@ private struct SettingsView: View {
                         }
                         note("退出输入法时也会保存。")
                         HStack {
+                            Button("管理学习词…") {
+                                LearnedWordsWindowController.shared.show()
+                            }
                             Button("清除学习数据…", role: .destructive) {
                                 confirmClear = true
                             }
@@ -331,26 +334,17 @@ private struct SettingsView: View {
     }
 }
 
-final class SettingsWindowController: NSWindowController, NSWindowDelegate {
-    static let shared = SettingsWindowController()
-    private var previousActiveApp: NSRunningApplication?
+/// Shows a regular window from the background-only input method process and
+/// restores the background policy once the last such window closes.
+class AuxiliaryWindowController: NSWindowController, NSWindowDelegate {
+    private static var previousActiveApp: NSRunningApplication?
+    private static var openWindows = Set<ObjectIdentifier>()
 
-    private init() {
-        let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 460, height: 530),
-            styleMask: [.titled, .closable, .miniaturizable],
-            backing: .buffered,
-            defer: false
-        )
-        window.title = "GboardIME 设置"
-        window.isReleasedWhenClosed = false
-        window.hidesOnDeactivate = false
-        window.contentView = NSHostingView(rootView: SettingsView {
-            [weak window] in window?.performClose(nil)
-        })
-        window.center()
+    override init(window: NSWindow?) {
+        window?.isReleasedWhenClosed = false
+        window?.hidesOnDeactivate = false
         super.init(window: window)
-        window.delegate = self
+        window?.delegate = self
     }
 
     required init?(coder: NSCoder) {
@@ -360,14 +354,15 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     func show() {
         if let frontmost = NSWorkspace.shared.frontmostApplication,
            frontmost.bundleIdentifier != Bundle.main.bundleIdentifier {
-            previousActiveApp = frontmost
+            Self.previousActiveApp = frontmost
         }
         // Input methods start as background-only processes.
         if NSApp.activationPolicy() != .accessory,
            !NSApp.setActivationPolicy(.accessory) {
-            imeLog("Unable to activate settings window")
+            imeLog("Unable to activate \(window?.title ?? "window")")
             return
         }
+        Self.openWindows.insert(ObjectIdentifier(self))
         window?.deminiaturize(nil)
         showWindow(nil)
         NSApp.activate(ignoringOtherApps: true)
@@ -375,13 +370,38 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     }
 
     func windowWillClose(_ notification: Notification) {
-        let appToRestore = previousActiveApp
-        previousActiveApp = nil
+        Self.openWindows.remove(ObjectIdentifier(self))
+        guard Self.openWindows.isEmpty else { return }
+        let appToRestore = Self.previousActiveApp
+        Self.previousActiveApp = nil
         if !NSApp.setActivationPolicy(.prohibited) {
             imeLog("Unable to restore background activation policy")
         }
         if let app = appToRestore, !app.isTerminated {
             app.activate(options: [.activateIgnoringOtherApps])
         }
+    }
+}
+
+final class SettingsWindowController: AuxiliaryWindowController {
+    static let shared = SettingsWindowController()
+
+    private init() {
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 460, height: 530),
+            styleMask: [.titled, .closable, .miniaturizable],
+            backing: .buffered,
+            defer: false
+        )
+        window.title = "GboardIME 设置"
+        super.init(window: window)
+        window.contentView = NSHostingView(rootView: SettingsView {
+            [weak window] in window?.performClose(nil)
+        })
+        window.center()
+    }
+
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
     }
 }

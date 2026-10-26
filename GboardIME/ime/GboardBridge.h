@@ -1,6 +1,7 @@
 #pragma once
 #include <stdbool.h>
 #include "../engine/hmm_engine.h"
+#include "../engine/hmm_user_dict.h"
 
 bool  gboard_init(const char *so_path, const char *pack_dir);
 bool  gboard_init_with_user_data(const char *so_path, const char *pack_dir,
@@ -44,6 +45,12 @@ bool  gboard_user_dict_is_candidate_removable(int candidate_index);
 bool  gboard_user_dict_remove_candidate(int candidate_index);
 // True while a saved snapshot awaits the decoder refresh at the next reset.
 bool  gboard_user_dict_decoder_refresh_pending(void);
+// Learned word management; see hmm_user_dict.h.
+int   gboard_user_dict_export_entries(HmmUserDictEntry **out);
+void  gboard_user_dict_free_entries(HmmUserDictEntry *entries, int count);
+bool  gboard_user_dict_remove_entry(const HmmUserDictEntry *entry);
+bool  gboard_user_dict_set_entry_count(const HmmUserDictEntry *entry, int count,
+                                       bool full_match);
 // Persist the user dictionary to disk.
 bool  gboard_user_dict_persist(void);
 // Get the current dictionary size.
