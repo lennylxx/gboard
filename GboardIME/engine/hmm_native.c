@@ -56,6 +56,7 @@ void hmm_resolve_natives(void) {
     s_userDictNatives.compact = (fn_CompactDictionary) jni_find_registered_native_by_sig("nativeCompact", "(JI)Z");
     s_userDictNatives.getDictionarySize = (fn_GetDictionarySize) jni_find_registered_native_by_sig("nativeGetDictionarySize", "(J)I");
     s_userDictNatives.persist = (fn_PersistDictionary) jni_find_registered_native_by_sig("nativePersist", "(JLjava/lang/String;)Z");
+    s_userDictNatives.newEmptyDictionary = (fn_NewEmptyDictionary) jni_find_registered_native_by_sig("nativeNewEmptyDictionary", "(J)Z");
     s_userDictNatives.refreshData = g_refreshData;
     s_userDictNatives.closeAccessor = (fn_CloseManager) jni_find_registered_native_by_sig("nativeClose", "(J)V");
     s_userDictNatives.enrollMutableDictFd = (fn_EnrollMutableDictFd) jni_find_registered_native_by_sig("nativeEnrollMutableDictFd", "(JLjava/lang/String;ILjava/io/FileDescriptor;III)Z");

@@ -1520,6 +1520,17 @@ func testSymbolPanel() {
 
 // ── Main ─────────────────────────────────────────────────────────────────────
 
+func testShortcutsIntegration(_ args: [String]) {
+    let process = Process()
+    process.executableURL = URL(fileURLWithPath: args[0])
+    process.arguments = [args[1], args[2], "--shortcuts-only"]
+    process.standardError = FileHandle.nullDevice
+    let ran = (try? process.run()) != nil
+    if ran { process.waitUntilExit() }
+    check("shortcut session integration passes in an isolated process",
+          ran && process.terminationStatus == 0)
+}
+
 // ── Entry point ──────────────────────────────────────────────────────────────
 
 @main struct TestIME {
@@ -1528,6 +1539,18 @@ func testSymbolPanel() {
         guard args.count > 2 else {
             print("Usage: test_ime <so_path> <pack_dir>")
             exit(1)
+        }
+
+        if args.dropFirst(3).contains("--shortcuts-only") {
+            let directory = FileManager.default.temporaryDirectory
+                .appendingPathComponent("gboard-ime-shortcuts-\(UUID().uuidString)")
+            try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            defer { try? FileManager.default.removeItem(at: directory) }
+            let ready = gboard_init_with_user_data(args[1], args[2], directory.path)
+            check("engine initializes with user data", ready)
+            if ready { testShortcutsSession() }
+            print("Results: \(gPass) passed, \(gFail) failed")
+            exit(gFail > 0 ? 1 : 0)
         }
 
         print("[init]")
@@ -1597,6 +1620,9 @@ testCorrectedPinyinReading()
         testClearLearningSessionUpdates()
         testRemoveAndUndoLearning()
         testLearnedWordStore()
+        testShortcutStore()
+        testShortcutsPreference()
+        testShortcutsIntegration(args)
         testThemeAndTraditionalPreferences()
         testCandidateWindowFollowsTheme()
         testLegacyTraditionalKeyIgnored()

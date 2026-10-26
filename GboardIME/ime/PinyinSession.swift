@@ -37,6 +37,7 @@ class PinyinSession {
     private var contextEnabled: Bool
     private var pinyinDisplayMode: PinyinDisplayMode
     private var fuzzyPinyinMask: UInt32
+    private var shortcutsEnabled: Bool
     private var requestedPinyinScheme: PinyinScheme
     private var traditionalEnabled: Bool
     private var correctionStyle: CorrectionStyle
@@ -56,6 +57,7 @@ class PinyinSession {
         contextEnabled = preferences.contextEnabled
         pinyinDisplayMode = preferences.pinyinDisplayMode
         fuzzyPinyinMask = gboard_get_fuzzy_pinyin()
+        shortcutsEnabled = gboard_get_shortcuts_enabled()
         requestedPinyinScheme = preferences.pinyinScheme
         traditionalEnabled = preferences.isTraditional
         correctionStyle = preferences.correctionStyle
@@ -66,7 +68,8 @@ class PinyinSession {
             self?.preferencesDidChange()
         }
         dictionaryObservers = [UserDictionary.didClearNotification,
-                               UserDictionary.didChangeNotification].map { name in
+                               UserDictionary.didChangeNotification,
+                               ShortcutStore.didChangeNotification].map { name in
             NotificationCenter.default.addObserver(
                 forName: name, object: nil, queue: .main
             ) { [weak self] _ in
@@ -123,6 +126,16 @@ class PinyinSession {
             fuzzyPinyinMask = preferences.fuzzyPinyinMask
             dismissPredictions()
         }
+        let shortcutsChanged = !preferences.shortcutsApplyFailed &&
+            shortcutsEnabled != preferences.shortcutsEnabled
+        if shortcutsChanged {
+            guard gboard_set_shortcuts_enabled(preferences.shortcutsEnabled) else {
+                NSLog("Unable to update shortcuts: enabled=%d", preferences.shortcutsEnabled)
+                return
+            }
+            shortcutsEnabled = preferences.shortcutsEnabled
+            dismissPredictions()
+        }
 
         if contextChanged {
             contextBeforeInput = ""
@@ -137,12 +150,12 @@ class PinyinSession {
         }
         if isComposing {
             if traditionalChanged {
-                candidates = engineCandidates.map(toTraditionalIfEnabled)
+                candidates = displayCandidates()
             }
             if displayModeChanged {
                 delegate?.sessionSetMarkedText(segmentedPinyin)
             }
-            if contextChanged || fuzzyChanged {
+            if contextChanged || fuzzyChanged || shortcutsChanged {
                 fetchCandidates()
                 delegate?.sessionSetMarkedText(segmentedPinyin)
             } else if pageSizeChanged {
@@ -169,6 +182,8 @@ class PinyinSession {
     private(set) var candidates: [String] = []
     /// Original Simplified candidates from the engine, used for user dictionary learning.
     private var engineCandidates: [String] = []
+    /// User-defined shortcut phrases are committed exactly as entered.
+    private var verbatimCandidates: [Bool] = []
     private(set) var selectedIndex = 0
     private(set) var candidatePage = 0
     private(set) var hasNextPage = false
@@ -180,6 +195,12 @@ class PinyinSession {
     private var predictionContext = ""
     var isPredicting: Bool { !predictions.isEmpty }
     private static let maxPredictions = 50
+
+    private func displayCandidates() -> [String] {
+        zip(engineCandidates, verbatimCandidates).map { text, verbatim in
+            verbatim ? text : toTraditionalIfEnabled(text)
+        }
+    }
 
     func toTraditionalIfEnabled(_ text: String) -> String {
         guard preferences.isTraditional else { return text }
@@ -783,6 +804,7 @@ class PinyinSession {
         composition = ""
         candidates = []
         engineCandidates = []
+        verbatimCandidates = []
         selectedIndex = 0
         candidatePage = 0
         hasNextPage = false
@@ -819,6 +841,7 @@ class PinyinSession {
         guard gboard_append(letters) else {
             candidates = []
             engineCandidates = []
+        verbatimCandidates = []
             delegate?.sessionHideCandidates()
             return
         }
@@ -851,7 +874,10 @@ class PinyinSession {
 
         hasNextPage = results.count > candidatePageSize
         engineCandidates = Array(results.prefix(candidatePageSize))
-        candidates = engineCandidates.map(toTraditionalIfEnabled)
+        verbatimCandidates = engineCandidates.indices.map {
+            shortcutsEnabled && gboard_is_shortcut_candidate(Int32(offset + $0))
+        }
+        candidates = displayCandidates()
         selectedIndex = 0
         updateSegmentation()
         notifyCandidates()

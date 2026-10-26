@@ -161,6 +161,7 @@ final class Preferences: NSObject, ObservableObject {
         static let saveInterval = "userDictionarySaveInterval"
         static let fuzzyPinyin = "fuzzyPinyinGroups"
         static let pinyinScheme = "pinyinScheme"
+        static let shortcuts = "shortcutsEnabled"
         static let isTraditional = "traditionalChineseEnabled"
         static let themeMode = "themeMode"
         static let windowOpacity = "candidateWindowOpacity"
@@ -291,6 +292,36 @@ final class Preferences: NSObject, ObservableObject {
         }
     }
 
+    /// Off by default, as in Gboard's personal dictionary shortcuts.
+    @Published private(set) var shortcutsEnabled: Bool {
+        didSet { save(shortcutsEnabled, forKey: Key.shortcuts) }
+    }
+    @Published private(set) var shortcutsApplyFailed = false
+
+    @discardableResult
+    func applyShortcuts(
+        _ enabled: Bool? = nil,
+        using apply: (Bool) -> Bool = { gboard_set_shortcuts_enabled($0) }
+    ) -> Bool {
+        precondition(Thread.isMainThread)
+        let requested = enabled ?? shortcutsEnabled
+        guard apply(requested) else {
+            if enabled == nil {
+                shortcutsApplyFailed = true
+            }
+            NSLog("Unable to %@ shortcuts; saved setting retained",
+                  requested ? "enable" : "disable")
+            return false
+        }
+        shortcutsApplyFailed = false
+        if requested != shortcutsEnabled {
+            shortcutsEnabled = requested
+        } else {
+            NotificationCenter.default.post(name: Self.didChangeNotification, object: self)
+        }
+        return true
+    }
+
     var fuzzyPinyinMask: UInt32 {
         fuzzyPinyinGroups.reduce(0) { $0 | $1.mask }
     }
@@ -336,6 +367,7 @@ final class Preferences: NSObject, ObservableObject {
             Key.pageSize: CandidatePageSize.nine.rawValue,
             Key.pinyinDisplayMode: defaultDisplayMode.rawValue,
             Key.learning: true,
+            Key.shortcuts: false,
             Key.saveInterval: UserDictionarySaveInterval.fourHours.rawValue
         ])
         predictionsEnabled = defaults.bool(forKey: Key.predictions)
@@ -371,6 +403,7 @@ final class Preferences: NSObject, ObservableObject {
         pinyinScheme = PinyinScheme(
             rawValue: defaults.string(forKey: Key.pinyinScheme) ?? ""
         ) ?? .full
+        shortcutsEnabled = defaults.bool(forKey: Key.shortcuts)
         super.init()
     }
 

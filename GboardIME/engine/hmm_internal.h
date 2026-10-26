@@ -133,6 +133,7 @@ typedef jboolean (*fn_DuplicateDictionary)(JNIEnv *, jclass, jlong);
 typedef jboolean (*fn_CompactDictionary)(JNIEnv *, jclass, jlong, jint);
 typedef jint     (*fn_GetDictionarySize)(JNIEnv *, jclass, jlong);
 typedef jboolean (*fn_PersistDictionary)(JNIEnv *, jclass, jlong, jstring);
+typedef jboolean (*fn_NewEmptyDictionary)(JNIEnv *, jclass, jlong);
 typedef jboolean (*fn_EnrollMutableDictFd)(JNIEnv *, jclass, jlong, jstring, jint, jobject, jint, jint, jint);
 typedef jint     (*fn_GetCandidateTokenCount)(JNIEnv *, jobject, jlong, jint);
 typedef jlong    (*fn_GetCandidateToken)(JNIEnv *, jobject, jlong, jint, jint);
@@ -157,6 +158,7 @@ typedef struct {
     fn_CompactDictionary compact;
     fn_GetDictionarySize getDictionarySize;
     fn_PersistDictionary persist;
+    fn_NewEmptyDictionary newEmptyDictionary;
     fn_RefreshData refreshData;
     fn_CloseManager closeAccessor;
     fn_EnrollMutableDictFd enrollMutableDictFd;
@@ -230,6 +232,9 @@ extern fn_GetPredictionCandString  g_getPredictionCandString;
 // Refresh the decoder after a mutable dictionary snapshot is re-enrolled.
 bool hmm_engine_refresh_user_dictionary(void);
 bool hmm_engine_refresh_settings_after_reset(void);
+// Refresh both decoders on their next reset after the shortcut
+// dictionaries were re-enrolled.
+void hmm_engine_mark_shortcuts_dirty(void);
 void hmm_engine_set_external_context(bool has_context);
 
 // ── Symbol helper ───────────────────────────────────────────────────────────
@@ -244,6 +249,7 @@ void hmm_resolve_natives(void);
 const HmmUserDictNatives *hmm_get_user_dict_natives(void);
 bool hmm_enroll_all(const char *pack_dir);
 bool hmm_enroll_decoder_settings(const char *pack_dir, uint32_t fuzzy_groups,
-                                 HmmPinyinScheme scheme);
+                                 HmmPinyinScheme scheme, bool shortcuts);
 bool hmm_enroll_pinyin_accessor_settings(const char *pack_dir,
-                                         HmmPinyinScheme scheme);
+                                         HmmPinyinScheme scheme,
+                                         bool shortcuts);

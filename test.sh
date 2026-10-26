@@ -53,6 +53,7 @@ swiftc -g -parse-as-library -o "$TEST_DIR/test_ime" \
     "GboardIME/ime/Preferences.swift" \
     "GboardIME/ime/UserDictionary.swift" \
     "GboardIME/ime/LearnedWords.swift" \
+    "GboardIME/ime/Shortcuts.swift" \
     "GboardIME/ime/ShiftToggleTracker.swift" \
     "GboardIME/ime/SymbolPanel.swift" \
     "GboardIME/ime/SessionContextRetriever.swift" \

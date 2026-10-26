@@ -255,12 +255,12 @@ final class LearnedWordStore: ObservableObject {
 
     // MARK: - Import and export
 
-    private struct FileHeader: Codable {
+    private struct FileHeader: Decodable {
         let format: String
         let version: Int
     }
 
-    private struct FileEntry: Codable {
+    private struct FileEntry: Decodable {
         let dictionary: String
         let text: String
         let reading: [String]
@@ -269,20 +269,40 @@ final class LearnedWordStore: ObservableObject {
         let fullMatch: Bool
     }
 
-    /// JSON Lines: a header object, then one learned word per line.
+    /// JSON Lines: a header object, then one learned word per line, in a
+    /// stable order so repeated exports of the same words match.
     static func exportText(_ words: [LearnedWord]) -> String {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.withoutEscapingSlashes]
         func line<T: Encodable>(_ value: T) -> String? {
             (try? encoder.encode(value)).flatMap { String(data: $0, encoding: .utf8) }
         }
-        var lines = [line(FileHeader(format: formatName, version: formatVersion)) ?? ""]
-        for word in words {
-            let entry = FileEntry(dictionary: word.dictionary.fileName, text: word.text,
-                                  reading: word.tokens,
-                                  languages: word.languages.map(\.fileName),
-                                  count: word.count, fullMatch: word.fullMatch)
-            if let text = line(entry) { lines.append(text) }
+        var lines = ["{\"format\":\(line(formatName) ?? "\"\""),\"version\":\(formatVersion)}"]
+        let ordered = words.sorted {
+            if $0.dictionary != $1.dictionary {
+                return $0.dictionary.rawValue < $1.dictionary.rawValue
+            }
+            if $0.count != $1.count { return $0.count > $1.count }
+            if $0.reading != $1.reading { return $0.reading < $1.reading }
+            if $0.text != $1.text { return $0.text < $1.text }
+            return $0.languages.map(\.rawValue).lexicographicallyPrecedes(
+                $1.languages.map(\.rawValue))
+        }
+        // JSONEncoder orders keys by a per-process hash seed, so write the
+        // keys in a fixed order and encode only the values.
+        for word in ordered {
+            let fields: [(String, String?)] = [
+                ("dictionary", line(word.dictionary.fileName)),
+                ("text", line(word.text)),
+                ("reading", line(word.tokens)),
+                ("languages", line(word.languages.map(\.fileName))),
+                ("count", line(word.count)),
+                ("fullMatch", line(word.fullMatch)),
+            ]
+            let values = fields.compactMap { key, value in value.map { "\"\(key)\":\($0)" } }
+            if values.count == fields.count {
+                lines.append("{" + values.joined(separator: ",") + "}")
+            }
         }
         return lines.joined(separator: "\n") + "\n"
     }

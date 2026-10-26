@@ -58,6 +58,12 @@ typedef enum {
 bool hmm_engine_set_pinyin_scheme(HmmPinyinScheme scheme);
 HmmPinyinScheme hmm_engine_get_pinyin_scheme(void);
 
+// Enables the user shortcuts dictionary (shortcuts_dict_3_3), off by
+// default as in Gboard. Like fuzzy settings, decoders adopt the change on
+// their next reset.
+bool hmm_engine_set_shortcuts_enabled(bool enabled);
+bool hmm_engine_get_shortcuts_enabled(void);
+
 // Set the committed text immediately before the cursor. The engine keeps the
 // same trailing context window as Gboard Java: 5 Chinese UTF-16 code units or
 // 20 Latin UTF-16 code units, stopping at a language or punctuation boundary.

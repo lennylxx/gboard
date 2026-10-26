@@ -8,6 +8,7 @@ private struct SettingsView: View {
     @State private var clearError = ""
     @State private var didClear = false
     @State private var showFuzzyError = false
+    @State private var showShortcutsError = false
     @State private var showPinyinSchemeError = false
     let onClose: () -> Void
 
@@ -179,6 +180,22 @@ private struct SettingsView: View {
                         }
                         .help("只调整候选窗口中的拼音标记，不影响原生组合文本或实际纠错。")
                     }
+                    section("快捷短语", systemImage: "text.badge.plus") {
+                        toggle("启用快捷短语", isOn: shortcutsBinding)
+                        note("输入完整缩写时，自定义短语作为首选候选出现，如 dz → 北京市朝阳区建国路 88 号。")
+                        if preferences.shortcutsApplyFailed {
+                            Label("快捷短语设置未生效", systemImage: "exclamationmark.triangle")
+                                .foregroundStyle(.orange)
+                            Button("重试应用") {
+                                if !preferences.applyShortcuts() {
+                                    showShortcutsError = true
+                                }
+                            }
+                        }
+                        Button("管理快捷短语…") {
+                            ShortcutsWindowController.shared.show()
+                        }
+                    }
                     section("个性化", systemImage: "person.crop.circle") {
                         toggle("学习输入习惯", isOn: $preferences.learningEnabled)
                         note("关闭后停止学习新输入，已有学习数据保留。")
@@ -255,6 +272,11 @@ private struct SettingsView: View {
         } message: {
             Text("原生引擎未能切换模糊音，已保留原设置和输入内容，请重试。")
         }
+        .alert("无法更新快捷短语设置", isPresented: $showShortcutsError) {
+            Button("好", role: .cancel) {}
+        } message: {
+            Text("原生引擎未能切换快捷短语，已保留原设置，请重试。")
+        }
         .alert("无法切换拼音方案", isPresented: $showPinyinSchemeError) {
             Button("好", role: .cancel) {}
         } message: {
@@ -268,6 +290,17 @@ private struct SettingsView: View {
             set: {
                 if !preferences.applyPinyinScheme($0) {
                     showPinyinSchemeError = true
+                }
+            }
+        )
+    }
+
+    private var shortcutsBinding: Binding<Bool> {
+        Binding(
+            get: { preferences.shortcutsEnabled },
+            set: {
+                if !preferences.applyShortcuts($0) {
+                    showShortcutsError = true
                 }
             }
         )

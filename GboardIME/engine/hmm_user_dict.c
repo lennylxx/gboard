@@ -41,6 +41,27 @@ static char  s_pack_dir[4096] = {0};
 
 #define COMPACT_TARGET 450000
 
+// AbstractHmmEngineFactory type 4: the shortcuts mutable dictionaries.
+// Like Gboard's sync, ASCII-only phrases go to the English dictionary.
+typedef struct {
+    const char *filename;
+    const char *accessor;
+} ShortcutDict;
+static const ShortcutDict s_shortcut_dicts[] = {
+    {"shortcuts_dict_3_3", "zh_t_i0_pinyin_shortcuts_dictionary_accessor"},
+    {"shortcuts_dict_3_3_english", "en_shortcut_dictionary_accessor"},
+};
+#define SHORTCUT_DICT_COUNT \
+    (int)(sizeof(s_shortcut_dicts) / sizeof(s_shortcut_dicts[0]))
+#define SHORTCUTS_DICT_TYPE     24
+#define SHORTCUTS_DICT_CAPACITY 4
+// Each shortcut letter is one token of this type (shortcuts_tokens).
+#define SHORTCUT_TOKEN_TYPE     26
+// Candidates read shortcut tokens back as type 25 (verified in tests).
+#define SHORTCUT_DECODED_TYPE   25
+// Gboard's personal dictionary reports a fixed frequency for every word.
+#define SHORTCUT_FREQUENCY      255
+
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
 static bool ensure_directory(const char *path) {
@@ -140,6 +161,37 @@ static UserDict *dictionary_for_types(const int *token_types, int token_count) {
     return ENGLISH_DICT;
 }
 
+static void shortcuts_path(char *out, size_t out_sz, const ShortcutDict *dict,
+                           const char *suffix) {
+    snprintf(out, out_sz, "%s/%s%s", s_user_data_dir, dict->filename, suffix);
+}
+
+// Like AbstractHmmEngineFactory.G(), enroll the saved shortcuts file over
+// the empty dictionary registered by hmm_enroll_all().
+static bool enroll_shortcuts_file(const ShortcutDict *dict) {
+    if (!s_user_data_dir[0] || !s_natives->enrollMutableDictFd || !g_dm) {
+        return false;
+    }
+    char path[4096];
+    shortcuts_path(path, sizeof(path), dict, "");
+    struct stat st;
+    if (stat(path, &st) != 0 || st.st_size <= 0) return false;
+    int fd = open(path, O_RDONLY);
+    if (fd < 0) return false;
+    jstring name = jni_NewStringUTF(g_env, dict->filename);
+    volatile jboolean ok = JNI_FALSE;
+    CRASH_PROTECT_BEGIN()
+    ok = s_natives->enrollMutableDictFd(
+        g_env, NULL, g_dm, name, (jint)SHORTCUTS_DICT_TYPE,
+        jni_create_file_descriptor(g_env, fd), 0, (jint)st.st_size,
+        (jint)SHORTCUTS_DICT_CAPACITY);
+    CRASH_PROTECT_END("nativeEnrollMutableDictFd(shortcuts)")
+    close(fd);
+    jni_release_string(name);
+    if (!ok) LOGERR("Failed to enroll shortcuts dictionary '%s'", path);
+    return ok;
+}
+
 // ── Init ────────────────────────────────────────────────────────────────────
 
 bool hmm_user_dict_init(const char *user_data_dir, const char *pack_dir) {
@@ -156,6 +208,9 @@ bool hmm_user_dict_init(const char *user_data_dir, const char *pack_dir) {
     }
 
     for (int i = 0; i < DICT_COUNT; ++i) init_dictionary(&s_dicts[i]);
+    for (int i = 0; i < SHORTCUT_DICT_COUNT; ++i) {
+        enroll_shortcuts_file(&s_shortcut_dicts[i]);
+    }
 
     // The Pinyin dictionary is required; the English one is optional.
     if (!PINYIN_DICT->accessor) {
@@ -189,7 +244,8 @@ static bool refresh_pinyin_accessor(void) {
     return refreshed;
 }
 
-bool hmm_user_dict_set_pinyin_scheme(HmmPinyinScheme scheme) {
+bool hmm_user_dict_configure_pinyin_accessor(HmmPinyinScheme scheme,
+                                             bool shortcuts) {
     if (!s_ready) return true;
     if (!g_refreshData) {
         LOGERR("Cannot refresh user dictionary accessor settings");
@@ -197,12 +253,15 @@ bool hmm_user_dict_set_pinyin_scheme(HmmPinyinScheme scheme) {
     }
     // AbstractHmmChineseDecodeProcessor.C() refreshes the existing
     // accessor; replacing it can discard unpersisted learning.
-    bool refreshed = hmm_enroll_pinyin_accessor_settings(s_pack_dir, scheme) &&
+    bool refreshed = hmm_enroll_pinyin_accessor_settings(
+                         s_pack_dir, scheme, shortcuts) &&
                      refresh_pinyin_accessor();
     if (!refreshed) {
-        LOGERR("Cannot switch user dictionary accessor to pinyin scheme %d", scheme);
+        LOGERR("Cannot configure user dictionary accessor (scheme %d, shortcuts %d)",
+               scheme, shortcuts);
         s_pinyin_settings_valid = hmm_enroll_pinyin_accessor_settings(
-            s_pack_dir, hmm_engine_get_pinyin_scheme()) && refresh_pinyin_accessor();
+            s_pack_dir, hmm_engine_get_pinyin_scheme(),
+            hmm_engine_get_shortcuts_enabled()) && refresh_pinyin_accessor();
         if (!s_pinyin_settings_valid) {
             LOGERR("Cannot restore accessor settings; input and learning blocked until retry");
         }
@@ -245,6 +304,15 @@ bool hmm_user_dict_learn(const char **tokens, const int *token_types,
         !tokens || !token_types ||
         token_count <= 0 || !value || !value[0]) {
         return false;
+    }
+    // Gboard would learn shortcut expansions into the pinyin dictionary,
+    // but those entries cannot be managed here and would outlive the
+    // shortcut. The shortcut dictionary already ranks them first.
+    for (int i = 0; i < token_count; ++i) {
+        if (token_types[i] == SHORTCUT_DECODED_TYPE ||
+            token_types[i] == SHORTCUT_TOKEN_TYPE) {
+            return false;
+        }
     }
     UserDict *dict = dictionary_for_types(token_types, token_count);
     if (!dict->accessor) return false;
@@ -783,6 +851,170 @@ bool hmm_user_dict_clear(void) {
     }
     atomic_store(&s_decoder_refresh_pending, true);
     return all_cleared;
+}
+
+// ── Shortcuts ───────────────────────────────────────────────────────────────
+
+// Returns the length of one UTF-8 sequence at s, or 0 if malformed.
+static size_t utf8_sequence_length(const unsigned char *s) {
+    size_t length;
+    uint32_t cp;
+    if (s[0] < 0x80) return 1;
+    if ((s[0] & 0xE0) == 0xC0) { length = 2; cp = s[0] & 0x1F; }
+    else if ((s[0] & 0xF0) == 0xE0) { length = 3; cp = s[0] & 0x0F; }
+    else if ((s[0] & 0xF8) == 0xF0) { length = 4; cp = s[0] & 0x07; }
+    else return 0;
+    for (size_t i = 1; i < length; ++i) {
+        if ((s[i] & 0xC0) != 0x80) return 0;
+        cp = (cp << 6) | (s[i] & 0x3F);
+    }
+    static const uint32_t minimum[] = {0, 0, 0x80, 0x800, 0x10000};
+    if (cp < minimum[length] || cp > 0x10FFFF ||
+        (cp >= 0xD800 && cp <= 0xDFFF)) return 0;
+    return length;
+}
+
+bool hmm_shortcut_is_valid(const char *shortcut, const char *phrase) {
+    if (!shortcut || !phrase || !phrase[0]) return false;
+    size_t letters = strlen(shortcut);
+    if (letters == 0 || letters > HMM_SHORTCUT_MAX_LETTERS) return false;
+    for (size_t i = 0; i < letters; ++i) {
+        if (shortcut[i] < 'a' || shortcut[i] > 'z') return false;
+    }
+    for (const unsigned char *p = (const unsigned char *)phrase; *p;) {
+        size_t length = utf8_sequence_length(p);
+        if (length == 0) return false;
+        p += length;
+    }
+    return true;
+}
+
+static bool phrase_is_ascii(const char *phrase) {
+    for (const unsigned char *p = (const unsigned char *)phrase; *p; ++p) {
+        if (*p >= 0x7F) return false;
+    }
+    return true;
+}
+
+static bool insert_shortcut(jlong accessor, const HmmShortcut *entry) {
+    int letters = (int)strlen(entry->shortcut);
+    jobject tokens = jni_NewObjectArray(g_env, letters, NULL, NULL);
+    jintArray types = jni_NewIntArray(g_env, letters);
+    if (!tokens || !types) {
+        jni_release_string_array(tokens);
+        jni_release_array(types);
+        return false;
+    }
+    jint type_values[HMM_SHORTCUT_MAX_LETTERS];
+    for (int i = 0; i < letters; ++i) {
+        char letter[2] = {entry->shortcut[i], '\0'};
+        jni_SetObjectArrayElement(g_env, tokens, i, jni_NewStringUTF(g_env, letter));
+        type_values[i] = SHORTCUT_TOKEN_TYPE;
+    }
+    jni_SetIntArrayRegion(g_env, types, 0, letters, type_values);
+    jstring value = jni_NewStringUTF(g_env, entry->phrase);
+    volatile jboolean inserted = JNI_FALSE;
+    // Unmodified (Entry.e) and a full match, as the sync inserts them.
+    CRASH_PROTECT_BEGIN()
+    inserted = s_natives->insertOrUpdate(
+        g_env, NULL, accessor, tokens, types, value,
+        (jint)SHORTCUT_FREQUENCY, JNI_FALSE, JNI_TRUE);
+    CRASH_PROTECT_END("nativeInsertOrUpdate(shortcut)")
+    jni_release_string_array(tokens);
+    jni_release_array(types);
+    jni_release_string(value);
+    return inserted;
+}
+
+// Builds the complete dictionary in a temporary accessor and persists it.
+static bool write_shortcuts_file(const HmmShortcut *entries, int count,
+                                 bool english, const char *path) {
+    const ShortcutDict *dict = &s_shortcut_dicts[english ? 1 : 0];
+    jstring name = jni_NewStringUTF(g_env, dict->accessor);
+    jstring locale = jni_NewStringUTF(g_env, "");
+    jstring type = jni_NewStringUTF(g_env, dict->filename);
+    volatile jlong accessor = 0;
+    CRASH_PROTECT_BEGIN()
+    accessor = s_natives->createAccessor(g_env, NULL, g_factory, name, locale, type);
+    CRASH_PROTECT_END("nativeCreateMutableDictionaryAccessor(shortcuts)")
+    jni_release_string(name);
+    jni_release_string(locale);
+    jni_release_string(type);
+    if (!accessor) return false;
+
+    volatile bool ok = false;
+    CRASH_PROTECT_BEGIN()
+    ok = s_natives->newEmptyDictionary(g_env, NULL, accessor);
+    CRASH_PROTECT_END("nativeNewEmptyDictionary(shortcuts)")
+    for (int i = 0; ok && i < count; ++i) {
+        if (phrase_is_ascii(entries[i].phrase) != english) continue;
+        ok = insert_shortcut(accessor, &entries[i]);
+        if (!ok) LOGERR("Cannot insert shortcut '%s'", entries[i].shortcut);
+    }
+    if (ok) {
+        jstring jpath = jni_NewStringUTF(g_env, path);
+        ok = false;
+        CRASH_PROTECT_BEGIN()
+        ok = s_natives->persist(g_env, NULL, accessor, jpath);
+        CRASH_PROTECT_END("nativePersist(shortcuts)")
+        jni_release_string(jpath);
+    }
+    if (s_natives->closeAccessor) {
+        CRASH_PROTECT_BEGIN()
+        s_natives->closeAccessor(g_env, NULL, accessor);
+        CRASH_PROTECT_END("nativeClose(shortcuts)")
+    }
+    return ok;
+}
+
+bool hmm_user_dict_replace_shortcuts(const HmmShortcut *entries, int count) {
+    if (!s_ready || !s_user_data_dir[0] || count < 0 || (count > 0 && !entries) ||
+        !s_natives->createAccessor || !s_natives->newEmptyDictionary ||
+        !s_natives->insertOrUpdate ||
+        !s_natives->persist) {
+        return false;
+    }
+    for (int i = 0; i < count; ++i) {
+        if (!hmm_shortcut_is_valid(entries[i].shortcut, entries[i].phrase)) {
+            LOGERR("Rejecting invalid shortcut at index %d", i);
+            return false;
+        }
+    }
+    // Build both files before replacing either one.
+    char primary[SHORTCUT_DICT_COUNT][4096], tmp_path[SHORTCUT_DICT_COUNT][4096];
+    bool ok = true;
+    for (int i = 0; i < SHORTCUT_DICT_COUNT; ++i) {
+        shortcuts_path(primary[i], sizeof(primary[i]), &s_shortcut_dicts[i], "");
+        shortcuts_path(tmp_path[i], sizeof(tmp_path[i]), &s_shortcut_dicts[i], "_tmp");
+        ok = ok && (unlink(tmp_path[i]) == 0 || errno == ENOENT) &&
+             write_shortcuts_file(entries, count, i == 1, tmp_path[i]);
+    }
+    // Enroll each file as soon as it replaces the old one, so the enrolled
+    // dictionary always matches its file. On a partial failure the caller
+    // restores consistency by replacing again with the previous list.
+    bool changed = false;
+    for (int i = 0; ok && i < SHORTCUT_DICT_COUNT; ++i) {
+        ok = rename(tmp_path[i], primary[i]) == 0;
+        if (!ok) break;
+        changed = true;
+        ok = enroll_shortcuts_file(&s_shortcut_dicts[i]);
+    }
+    for (int i = 0; i < SHORTCUT_DICT_COUNT; ++i) unlink(tmp_path[i]);
+    if (changed) hmm_engine_mark_shortcuts_dirty();
+    return ok;
+}
+
+bool hmm_user_dict_is_shortcut_candidate(int candidate_index) {
+    char tokens[HMM_SHORTCUT_MAX_LETTERS][16];
+    int types[HMM_SHORTCUT_MAX_LETTERS];
+    int count = hmm_user_dict_extract_tokens(
+        candidate_index, tokens, types, HMM_SHORTCUT_MAX_LETTERS);
+    for (int i = 0; i < count; ++i) {
+        if (types[i] != SHORTCUT_DECODED_TYPE && types[i] != SHORTCUT_TOKEN_TYPE) {
+            return false;
+        }
+    }
+    return count > 0;
 }
 
 // ── Token extraction ────────────────────────────────────────────────────────

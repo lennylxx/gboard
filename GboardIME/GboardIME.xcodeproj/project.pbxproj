@@ -16,6 +16,8 @@
 		AA000001000000000000023A /* UserDictionary.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA000001000000000000023F /* UserDictionary.swift */; };
 		AA000001000000000000024A /* LearnedWords.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA000001000000000000024F /* LearnedWords.swift */; };
 		AA000001000000000000025A /* LearnedWordsWindow.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA000001000000000000025F /* LearnedWordsWindow.swift */; };
+		AA000001000000000000026A /* Shortcuts.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA000001000000000000026F /* Shortcuts.swift */; };
+		AA000001000000000000027A /* ShortcutsWindow.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA000001000000000000027F /* ShortcutsWindow.swift */; };
 		EE00000100000000000000PA /* PinyinSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = EE00000100000000000000PF /* PinyinSession.swift */; };
 		FF00000100000000000000SA /* ShiftToggleTracker.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF00000100000000000000SF /* ShiftToggleTracker.swift */; };
 		FF00000100000000000000YA /* SymbolPanel.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF00000100000000000000YF /* SymbolPanel.swift */; };
@@ -44,6 +46,8 @@
 		AA000001000000000000023F /* UserDictionary.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UserDictionary.swift; sourceTree = "<group>"; };
 		AA000001000000000000024F /* LearnedWords.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LearnedWords.swift; sourceTree = "<group>"; };
 		AA000001000000000000025F /* LearnedWordsWindow.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LearnedWordsWindow.swift; sourceTree = "<group>"; };
+		AA000001000000000000026F /* Shortcuts.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Shortcuts.swift; sourceTree = "<group>"; };
+		AA000001000000000000027F /* ShortcutsWindow.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ShortcutsWindow.swift; sourceTree = "<group>"; };
 		AA000001000000000000004F /* GboardBridge.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = GboardBridge.c; sourceTree = "<group>"; };
 		AA000001000000000000005F /* elf_loader.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = elf_loader.c; sourceTree = "<group>"; };
 		AA000001000000000000006F /* android_stubs.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = android_stubs.c; sourceTree = "<group>"; };
@@ -123,6 +127,8 @@
 				AA000001000000000000023F /* UserDictionary.swift */,
 				AA000001000000000000024F /* LearnedWords.swift */,
 				AA000001000000000000025F /* LearnedWordsWindow.swift */,
+				AA000001000000000000026F /* Shortcuts.swift */,
+				AA000001000000000000027F /* ShortcutsWindow.swift */,
 				DD00000100000000000000H6 /* GboardBridge.h */,
 				AA000001000000000000004F /* GboardBridge.c */,
 			);
@@ -280,6 +286,8 @@
 				AA000001000000000000023A /* UserDictionary.swift in Sources */,
 				AA000001000000000000024A /* LearnedWords.swift in Sources */,
 				AA000001000000000000025A /* LearnedWordsWindow.swift in Sources */,
+				AA000001000000000000026A /* Shortcuts.swift in Sources */,
+				AA000001000000000000027A /* ShortcutsWindow.swift in Sources */,
 				AA000001000000000000004A /* GboardBridge.c in Sources */,
 				AA000001000000000000005A /* elf_loader.c in Sources */,
 				AA000001000000000000006A /* android_stubs.c in Sources */,

@@ -37,6 +37,28 @@ HmmPinyinScheme gboard_get_pinyin_scheme(void) {
     return hmm_engine_get_pinyin_scheme();
 }
 
+bool gboard_set_shortcuts_enabled(bool enabled) {
+    bool ok = hmm_engine_set_shortcuts_enabled(enabled);
+    if (ok) s_cached_cand_idx = -1;
+    return ok;
+}
+
+bool gboard_get_shortcuts_enabled(void) {
+    return hmm_engine_get_shortcuts_enabled();
+}
+
+bool gboard_shortcut_is_valid(const char *shortcut, const char *phrase) {
+    return hmm_shortcut_is_valid(shortcut, phrase);
+}
+
+bool gboard_replace_shortcuts(const HmmShortcut *entries, int count) {
+    return hmm_user_dict_replace_shortcuts(entries, count);
+}
+
+bool gboard_is_shortcut_candidate(int candidate_index) {
+    return hmm_user_dict_is_shortcut_candidate(candidate_index);
+}
+
 bool gboard_set_context(const char *text)          { return hmm_engine_set_context(text); }
 bool gboard_update_input_context(const char *before, const char *selected,
                                   const char *after) {

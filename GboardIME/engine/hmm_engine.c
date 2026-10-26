@@ -72,6 +72,7 @@ static uint64_t s_last_session_id;
 static bool s_session_active;
 static uint32_t s_fuzzy_groups;
 static HmmPinyinScheme s_pinyin_scheme;
+static bool s_shortcuts_enabled;
 static bool s_decoder_settings_valid = true;
 static bool s_personalized_settings_dirty;
 static bool s_context_settings_dirty;
@@ -227,9 +228,10 @@ bool hmm_engine_set_fuzzy_pinyin(uint32_t groups) {
     }
     if (groups == s_fuzzy_groups && s_decoder_settings_valid) return true;
 
-    if (!hmm_enroll_decoder_settings(s_pack_dir, groups, s_pinyin_scheme)) {
+    if (!hmm_enroll_decoder_settings(s_pack_dir, groups, s_pinyin_scheme,
+                                     s_shortcuts_enabled)) {
         s_decoder_settings_valid = hmm_enroll_decoder_settings(
-            s_pack_dir, s_fuzzy_groups, s_pinyin_scheme);
+            s_pack_dir, s_fuzzy_groups, s_pinyin_scheme, s_shortcuts_enabled);
         if (!s_decoder_settings_valid) {
             LOGERR("Failed to restore fuzzy settings; decoder refresh blocked until retry");
         }
@@ -256,10 +258,11 @@ bool hmm_engine_set_pinyin_scheme(HmmPinyinScheme scheme) {
     }
     if (scheme == s_pinyin_scheme && s_decoder_settings_valid &&
         hmm_user_dict_pinyin_settings_valid()) return true;
-    if (!hmm_enroll_decoder_settings(s_pack_dir, s_fuzzy_groups, scheme) ||
-        !hmm_user_dict_set_pinyin_scheme(scheme)) {
+    if (!hmm_enroll_decoder_settings(s_pack_dir, s_fuzzy_groups, scheme,
+                                     s_shortcuts_enabled) ||
+        !hmm_user_dict_configure_pinyin_accessor(scheme, s_shortcuts_enabled)) {
         s_decoder_settings_valid = hmm_enroll_decoder_settings(
-            s_pack_dir, s_fuzzy_groups, s_pinyin_scheme);
+            s_pack_dir, s_fuzzy_groups, s_pinyin_scheme, s_shortcuts_enabled);
         if (!s_decoder_settings_valid) {
             LOGERR("Failed to restore pinyin settings; decoder refresh blocked until retry");
         }
@@ -272,6 +275,47 @@ bool hmm_engine_set_pinyin_scheme(HmmPinyinScheme scheme) {
     s_context_settings_dirty = true;
     LOGERR("Pinyin scheme configured: %d; refresh after reset", scheme);
     return true;
+}
+
+bool hmm_engine_get_shortcuts_enabled(void) {
+    return s_shortcuts_enabled;
+}
+
+// Mirrors the shortcuts preference (AbstractHmmEngineFactory.R(4)): when
+// enabled, PinyinHmmEngineFactory adds the shortcut letter tokens to the
+// decoder and user dictionary accessor, and hbd.n() adds
+// shortcuts_dict_3_3 to the decoder's dictionaries (here, both decoders).
+bool hmm_engine_set_shortcuts_enabled(bool enabled) {
+    if (!g_engine || !g_refreshData) {
+        LOGERR("Cannot set shortcuts dictionary: engine not ready");
+        return false;
+    }
+    if (enabled == s_shortcuts_enabled && s_decoder_settings_valid &&
+        hmm_user_dict_pinyin_settings_valid()) return true;
+    if (!hmm_enroll_decoder_settings(s_pack_dir, s_fuzzy_groups,
+                                     s_pinyin_scheme, enabled) ||
+        !hmm_user_dict_configure_pinyin_accessor(s_pinyin_scheme, enabled)) {
+        s_decoder_settings_valid = hmm_enroll_decoder_settings(
+            s_pack_dir, s_fuzzy_groups, s_pinyin_scheme, s_shortcuts_enabled);
+        if (!s_decoder_settings_valid) {
+            LOGERR("Failed to restore shortcut settings; decoder refresh blocked until retry");
+        }
+        LOGERR("Shortcuts dictionary update failed; previous setting retained");
+        return false;
+    }
+    s_decoder_settings_valid = true;
+    s_shortcuts_enabled = enabled;
+    s_personalized_settings_dirty = true;
+    s_context_settings_dirty = true;
+    LOGERR("Shortcuts dictionary %s; refresh after reset",
+           enabled ? "enabled" : "disabled");
+    return true;
+}
+
+// Both decoders read the shortcut dictionaries, so both must reload them.
+void hmm_engine_mark_shortcuts_dirty(void) {
+    s_personalized_settings_dirty = true;
+    s_context_settings_dirty = true;
 }
 
 static bool settings_pending(void) {
@@ -524,6 +568,7 @@ void hmm_engine_destroy(void) {
     s_session_active = false;
     s_fuzzy_groups = 0;
     s_pinyin_scheme = HMM_PINYIN_FULL;
+    s_shortcuts_enabled = false;
     s_decoder_settings_valid = true;
     s_personalized_settings_dirty = false;
     s_context_settings_dirty = false;

@@ -10,6 +10,13 @@ bool  gboard_set_fuzzy_pinyin(uint32_t groups);
 uint32_t gboard_get_fuzzy_pinyin(void);
 bool  gboard_set_pinyin_scheme(HmmPinyinScheme scheme);
 HmmPinyinScheme gboard_get_pinyin_scheme(void);
+bool  gboard_set_shortcuts_enabled(bool enabled);
+bool  gboard_get_shortcuts_enabled(void);
+bool  gboard_shortcut_is_valid(const char *shortcut, const char *phrase);
+// Replaces every user shortcut; see hmm_user_dict_replace_shortcuts.
+bool  gboard_replace_shortcuts(const HmmShortcut *entries, int count);
+// True when the candidate is exactly one user-defined shortcut phrase.
+bool  gboard_is_shortcut_candidate(int candidate_index);
 bool  gboard_set_context(const char *text_before_cursor);
 bool  gboard_update_input_context(const char *before_selection,
                                   const char *selected_text,

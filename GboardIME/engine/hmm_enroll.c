@@ -206,16 +206,14 @@ static size_t pb_write_dictionary_entry(uint8_t *buf, int raw_type,
 }
 
 // Replicates PinyinHmmEngineFactory (ioa) with chinese_english_mixed_input
-// enabled: X() adds the English token dictionary to the token list (field 2)
-// and q() adds English system/user/contacts dictionaries to the primary
-// DictionaryConfig (field 4 only).
+// enabled: q() adds English system/user/contacts dictionaries to the primary
+// DictionaryConfig (field 4 only), plus the English shortcuts dictionary
+// when shortcuts are enabled. configure_pinyin_tokens() adds the English
+// token dictionary.
 static uint8_t *add_english_mixed_input_to_setting(const uint8_t *orig,
                                                     size_t orig_len,
+                                                    bool shortcuts,
                                                     size_t *out_len) {
-    uint8_t tokens[96];
-    size_t tokens_len = pb_write_string(
-        tokens, 1, "zh_t_i0_pinyin_android_english_token_dictionary");
-
     uint8_t dicts[256];
     size_t dicts_len = 0;
     dicts_len += pb_write_dictionary_entry(
@@ -225,29 +223,43 @@ static uint8_t *add_english_mixed_input_to_setting(const uint8_t *orig,
         dicts + dicts_len, 2, "user_dict_3_3_english", 2);
     dicts_len += pb_write_dictionary_entry(
         dicts + dicts_len, 3, "contacts_dict_3_3_english", 3);
+    if (shortcuts) {
+        dicts_len += pb_write_dictionary_entry(
+            dicts + dicts_len, 3, "shortcuts_dict_3_3_english", 4);
+    }
 
-    const SettingAppend appends[] = {
-        {2, tokens, tokens_len, false},
-        {4, dicts, dicts_len, false},
-    };
-    uint8_t *out = append_to_setting_fields(orig, orig_len, appends, 2, out_len);
+    const SettingAppend append = {4, dicts, dicts_len, false};
+    uint8_t *out = append_to_setting_fields(orig, orig_len, &append, 1, out_len);
     if (out) LOGERR("Added English mixed-input dictionaries to setting scheme");
     return out;
 }
 
-// Replicates AbstractHmmEngineFactory.k(): add the enabled mutable dictionary
-// to both DictionaryConfig messages in the main setting scheme.
+// Replicates AbstractHmmEngineFactory.n(): add each enabled mutable
+// dictionary to both DictionaryConfig messages in the main setting scheme.
+// Raw entry values are hbd.r[type] - 1 and hbd.s[type] - 1. The context
+// decoder omits the learned dictionary but keeps user-defined shortcuts.
 static uint8_t *add_user_dictionary_to_setting(const uint8_t *orig,
                                                 size_t orig_len,
+                                                bool user_dict,
+                                                bool shortcuts,
                                                 size_t *out_len) {
-    uint8_t entry[128];
-    size_t entry_len = pb_write_dictionary_entry(entry, 2, "user_dict_3_3", 2);
+    uint8_t entries[256];
+    size_t entries_len = user_dict
+        ? pb_write_dictionary_entry(entries, 2, "user_dict_3_3", 2) : 0;
+    if (shortcuts) {
+        entries_len += pb_write_dictionary_entry(
+            entries + entries_len, 3, "shortcuts_dict_3_3", 4);
+    }
     const SettingAppend appends[] = {
-        {4, entry, entry_len, false},
-        {5, entry, entry_len, false},
+        {4, entries, entries_len, false},
+        {5, entries, entries_len, false},
     };
     uint8_t *out = append_to_setting_fields(orig, orig_len, appends, 2, out_len);
-    if (out) LOGERR("Added user_dict_3_3 to setting dictionary configs");
+    if (out) {
+        LOGERR("Added%s%s to setting dictionary configs",
+               user_dict ? " user_dict_3_3" : "",
+               shortcuts ? " shortcuts_dict_3_3" : "");
+    }
     return out;
 }
 
@@ -546,15 +558,17 @@ static bool enroll_decoder_setting(const uint8_t *bytes, size_t length,
 
 static uint8_t *configure_pinyin_tokens(const uint8_t *original, size_t length,
                                        const char *pack_dir, HmmPinyinScheme scheme,
-                                       size_t *out_length) {
-    // PinyinHmmEngineFactory.X()/p()/q() share this token list. Token ID
-    // tables belong to the separate gesture decoder, not the HMM scheme.
+                                       bool shortcuts, size_t *out_length) {
+    // PinyinHmmEngineFactory.X() builds this list for the decoders and the
+    // user dictionary accessor: the scheme's tokens, English tokens for
+    // mixed input, then shortcut letters when the shortcuts dictionary is
+    // enabled. Token ID tables belong to the separate gesture decoder.
     static const char *const scheme_names[] = {
         NULL, "abc", "flypy", "jiajia", "ms", "ziguang", "ziranma"
     };
     if (scheme < HMM_PINYIN_FULL || scheme > HMM_PINYIN_SHUANGPIN_ZIRANMA)
         return NULL;
-    uint8_t tokens[256];
+    uint8_t tokens[512];
     size_t tokens_length;
     if (scheme == HMM_PINYIN_FULL) {
         tokens_length = pb_write_string(
@@ -571,6 +585,13 @@ static uint8_t *configure_pinyin_tokens(const uint8_t *original, size_t length,
                  "zh_t_i0_shuangpin_%s_android_token_dictionary",
                  scheme_names[scheme]);
         tokens_length = pb_write_string(tokens, 1, name);
+    }
+    tokens_length += pb_write_string(
+        tokens + tokens_length, 1,
+        "zh_t_i0_pinyin_android_english_token_dictionary");
+    if (shortcuts) {
+        tokens_length += pb_write_string(
+            tokens + tokens_length, 1, "shortcuts_token_dictionary");
     }
     const SettingAppend replacement = {2, tokens, tokens_length, true};
     return append_to_setting_fields(
@@ -602,31 +623,23 @@ static uint8_t *read_setting(const char *pack_dir, const char *filename,
 }
 
 bool hmm_enroll_pinyin_accessor_settings(const char *pack_dir,
-                                         HmmPinyinScheme scheme) {
+                                         HmmPinyinScheme scheme,
+                                         bool shortcuts) {
     size_t length = 0, configured_length = 0;
     uint8_t *original = read_setting(
         pack_dir, "pinyin_mutable_dictionary_accessor_setting_scheme", &length);
     if (!original) return false;
     uint8_t *configured = configure_pinyin_tokens(
-        original, length, pack_dir, scheme, &configured_length);
+        original, length, pack_dir, scheme, shortcuts, &configured_length);
     free(original);
-    if (!configured) return false;
-    uint8_t english[96];
-    size_t english_length = pb_write_string(
-        english, 1, "zh_t_i0_pinyin_android_english_token_dictionary");
-    const SettingAppend append = {2, english, english_length, false};
-    size_t mixed_length = 0;
-    uint8_t *mixed = append_to_setting_fields(
-        configured, configured_length, &append, 1, &mixed_length);
+    bool ok = configured && enroll_decoder_setting(
+        configured, configured_length, "user_dictionary_accessor_for_ime");
     free(configured);
-    bool ok = mixed && enroll_decoder_setting(
-        mixed, mixed_length, "user_dictionary_accessor_for_ime");
-    free(mixed);
     return ok;
 }
 
 bool hmm_enroll_decoder_settings(const char *pack_dir, uint32_t fuzzy_groups,
-                                 HmmPinyinScheme scheme) {
+                                 HmmPinyinScheme scheme, bool shortcuts) {
     if (!pack_dir || !g_sm || !g_enrollSettingScheme ||
         scheme < HMM_PINYIN_FULL || scheme > HMM_PINYIN_SHUANGPIN_ZIRANMA ||
         (fuzzy_groups & ~HMM_FUZZY_ALL)) {
@@ -638,7 +651,7 @@ bool hmm_enroll_decoder_settings(const char *pack_dir, uint32_t fuzzy_groups,
     uint8_t *original = read_setting(pack_dir, "pinyin_qwerty_setting_scheme", &length);
     if (!original) return false;
     uint8_t *configured = configure_pinyin_tokens(
-        original, length, pack_dir, scheme, &configured_length);
+        original, length, pack_dir, scheme, shortcuts, &configured_length);
     free(original);
     if (!configured) {
         LOGERR("Cannot configure pinyin token dictionary");
@@ -647,7 +660,7 @@ bool hmm_enroll_decoder_settings(const char *pack_dir, uint32_t fuzzy_groups,
 
     size_t base_length = 0;
     uint8_t *base = add_english_mixed_input_to_setting(
-        configured, configured_length, &base_length);
+        configured, configured_length, shortcuts, &base_length);
     free(configured);
     if (!base) {
         LOGERR("Cannot configure English mixed input");
@@ -684,15 +697,22 @@ bool hmm_enroll_decoder_settings(const char *pack_dir, uint32_t fuzzy_groups,
 
     size_t personalized_length = 0;
     uint8_t *personalized = add_user_dictionary_to_setting(
-        base, base_length, &personalized_length);
-    bool ok = personalized &&
+        base, base_length, true, shortcuts, &personalized_length);
+    size_t context_length = base_length;
+    uint8_t *context = base;
+    if (shortcuts) {
+        context = add_user_dictionary_to_setting(
+            base, base_length, false, true, &context_length);
+    }
+    bool ok = personalized && context &&
         enroll_decoder_setting(personalized, personalized_length,
                                "zh-t-i0-pinyin-x-f0-delight") &&
         enroll_decoder_setting(personalized, personalized_length,
                                "zh-t-i0-pinyin") &&
-        enroll_decoder_setting(base, base_length,
+        enroll_decoder_setting(context, context_length,
                                "zh-t-i0-pinyin-x-f0-delight-context");
     free(personalized);
+    if (context != base) free(context);
     free(base);
     if (!ok) LOGERR("Decoder setting enrollment failed (fuzzy mask=%u)", fuzzy_groups);
     return ok;
@@ -731,7 +751,8 @@ bool hmm_enroll_all(const char *pack_dir) {
     }
 
     // 3. Enroll setting schemes (SettingScheme / aohv)
-    bool setting_ok = hmm_enroll_decoder_settings(pack_dir, 0, HMM_PINYIN_FULL);
+    bool setting_ok = hmm_enroll_decoder_settings(
+        pack_dir, 0, HMM_PINYIN_FULL, false);
     jlong handles[] = { g_sm, 0 };
 
     if (g_loadBuiltInSettingScheme && !setting_ok) {
@@ -765,7 +786,7 @@ bool hmm_enroll_all(const char *pack_dir) {
             {"zh_t_i0_pinyin_user_dictionary_accessor",          "pinyin_mutable_dictionary_accessor_setting_scheme_secondary"},
             {"en_contacts_dictionary_accessor",                  "en_mutable_dictionary_accessor_setting_scheme"},
             {"en_user_dictionary_accessor",                      "en_mutable_dictionary_accessor_setting_scheme"},
-            {"en_shortcut_dictionary_accessor",                  "en_mutable_dictionary_accessor_setting_scheme"},
+            {"en_shortcut_dictionary_accessor",                  "shortcuts_mutable_dictionary_accessor_setting_scheme"},
             {NULL, NULL}
         };
         for (int mi = 0; mut_schemes[mi].accessor; mi++) {

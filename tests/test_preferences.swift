@@ -1128,6 +1128,30 @@ func testLearnedWordStore() {
         let multiline = LearnedWord(dictionary: .english, text: "a\nb\r\nc\u{2028}d",
                                     tokens: ["a"], languages: [.english], count: 1,
                                     fullMatch: true)
+        func sample(_ dictionary: LearnedWordDictionary, _ text: String,
+                    _ tokens: [String], _ count: Int) -> LearnedWord {
+            LearnedWord(dictionary: dictionary, text: text, tokens: tokens,
+                        languages: tokens.map { _ in
+                            dictionary == .pinyin ? .chinese : .english },
+                        count: count, fullMatch: true)
+        }
+        let unordered = [
+            sample(.english, "ab", ["a", "b"], 50),
+            sample(.pinyin, "测试", ["ce", "shi"], 3),
+            sample(.pinyin, "爱", ["ai"], 3),
+            sample(.pinyin, "你好", ["ni", "hao"], 9),
+        ]
+        check("export orders by dictionary, count, then reading",
+              LearnedWordStore.parse(LearnedWordStore.exportText(unordered))?
+                .words.map(\.text) == ["你好", "爱", "测试", "ab"] &&
+              LearnedWordStore.exportText(unordered) ==
+                LearnedWordStore.exportText(unordered.reversed()))
+        check("export writes keys in a fixed order",
+              LearnedWordStore.exportText([]) ==
+                "{\"format\":\"gboardime-learned-words\",\"version\":1}\n" &&
+              LearnedWordStore.exportText([unordered[3]]).split(separator: "\n").last ==
+                "{\"dictionary\":\"pinyin\",\"text\":\"你好\",\"reading\":[\"ni\",\"hao\"]," +
+                "\"languages\":[\"chinese\",\"chinese\"],\"count\":9,\"fullMatch\":true}")
         check("export keeps one word per line",
               LearnedWordStore.exportText([multiline]).split(separator: "\n").count == 2)
         let tricky = LearnedWord(dictionary: .english, text: "a\\b\"c/d😀",
@@ -1778,5 +1802,218 @@ func testPinyinTextAttributes() {
               attributed.runs.allSatisfy {
                   $0[AttributeScopes.SwiftUIAttributes.ForegroundColorAttribute.self] != nil
               })
+    }
+}
+
+private func failure<T>(_ result: Result<T, ShortcutStore.StoreError>) -> ShortcutStore.StoreError? {
+    if case .failure(let error) = result { return error }
+    return nil
+}
+
+private func withTemporaryDirectory(_ body: (URL) -> Void) {
+    let url = FileManager.default.temporaryDirectory
+        .appendingPathComponent("gboard-shortcuts-\(UUID().uuidString)")
+    try? FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: url) }
+    body(url)
+}
+
+func testShortcutStore() {
+    print("[test_shortcut_store]")
+    withTemporaryDirectory { directory in
+        let fileURL = directory.appendingPathComponent("data/shortcuts.jsonl")
+        var applied: [[Shortcut]] = []
+        var replaceSucceeds = true
+        var engineReady = true
+        let operations = ShortcutOperations(
+            isEngineReady: { engineReady },
+            replace: { applied.append($0); return replaceSucceeds },
+            isValid: { gboard_shortcut_is_valid($0, $1) })
+        let store = ShortcutStore(fileURL: fileURL, operations: operations)
+        check("missing shortcut file loads as empty",
+              (try? store.loadAndSync().get()) != nil && store.loaded &&
+              store.shortcuts.isEmpty && applied == [[]])
+
+        check("shortcut input is normalized",
+              (try? store.add(shortcut: " BJ ", phrase: " 北京市 ").get()) != nil &&
+              store.shortcuts == [Shortcut(shortcut: "bj", phrase: "北京市")] &&
+              applied.last == store.shortcuts)
+        check("one shortcut may expand to several phrases",
+              (try? store.add(shortcut: "bj", phrase: "北京欢迎你").get()) != nil &&
+              store.shortcuts.count == 2)
+        check("ASCII-only phrases are accepted",
+              (try? store.add(shortcut: "yx", phrase: "me@example.com").get()) != nil)
+        check("duplicate shortcuts are rejected",
+              failure(store.add(shortcut: "bj", phrase: "北京市")) == .duplicate &&
+              store.shortcuts.count == 3)
+        let invalid = [("b1", "北京"), ("", "北京"), ("bj", ""), ("bj", "北\n京"),
+                       (String(repeating: "a", count: Int(HMM_SHORTCUT_MAX_LETTERS) + 1), "长"),
+                       ("bj", String(repeating: "长", count: ShortcutStore.maxPhraseLength + 1))]
+        check("invalid shortcuts are rejected before reaching the engine",
+              invalid.allSatisfy { failure(store.add(shortcut: $0.0, phrase: $0.1)) == .invalid } &&
+              applied.count == 4)
+
+        let reloaded = ShortcutStore(fileURL: fileURL, operations: operations)
+        check("saved shortcuts reload in order",
+              (try? reloaded.load().get()) != nil && reloaded.shortcuts == store.shortcuts)
+
+        let original = Shortcut(shortcut: "bj", phrase: "北京市")
+        check("shortcuts can be edited in place",
+              (try? store.update(original, shortcut: "bjs", phrase: "北京市").get()) != nil &&
+              store.shortcuts.first == Shortcut(shortcut: "bjs", phrase: "北京市"))
+        check("editing into an existing shortcut is rejected",
+              failure(store.update(Shortcut(shortcut: "bjs", phrase: "北京市"),
+                           shortcut: "bj", phrase: "北京欢迎你")) == .duplicate)
+        check("editing a removed shortcut reports it missing",
+              failure(store.update(original, shortcut: "bj", phrase: "北京")) == .notFound)
+
+        replaceSucceeds = false
+        let beforeFailure = store.shortcuts
+        applied.removeAll()
+        check("engine failure leaves shortcuts unchanged",
+              failure(store.add(shortcut: "sh", phrase: "上海市")) == .applyFailed &&
+              store.shortcuts == beforeFailure &&
+              (try? ShortcutStore(fileURL: fileURL, operations: operations).load().get()) != nil)
+        check("engine failure restores the previous list",
+              applied.count == 2 && applied.last == beforeFailure)
+        check("a failed restore is reported", store.needsEngineSync)
+        replaceSucceeds = true
+        check("resyncing clears the warning",
+              (try? store.loadAndSync().get()) != nil && !store.needsEngineSync &&
+              applied.last == beforeFailure)
+
+        engineReady = false
+        let appliedBefore = applied.count
+        check("shortcuts can be edited before the engine is ready",
+              (try? store.add(shortcut: "sh", phrase: "上海市").get()) != nil &&
+              applied.count == appliedBefore)
+        engineReady = true
+
+        let exported = ShortcutStore.exportText(store.shortcuts)
+        check("export starts with a format header",
+              exported.hasPrefix("{\"format\":\"gboardime-shortcuts\",\"version\":1}\n") &&
+              exported.contains("{\"shortcut\":\"yx\",\"phrase\":\"me@example.com\"}"))
+        check("remove deletes selected shortcuts",
+              (try? store.remove([Shortcut(shortcut: "sh", phrase: "上海市"),
+                                  Shortcut(shortcut: "yx", phrase: "me@example.com")]).get()) != nil &&
+              store.shortcuts.count == 2)
+        let imported = "\u{FEFF}" + exported.replacingOccurrences(of: "\n", with: "\r\n") +
+            "{\"shortcut\":\"x1\",\"phrase\":\"坏\"}\nnot json\n"
+        if case .success(let summary) = store.importText(imported) {
+            check("import adds missing shortcuts and skips existing ones",
+                  summary == ShortcutStore.ImportSummary(added: 2, unchanged: 2, invalid: 2) &&
+                  store.shortcuts.count == 4 && applied.last == store.shortcuts)
+        } else {
+            check("import adds missing shortcuts and skips existing ones", false)
+        }
+        let appliedBeforeNoop = applied.count
+        check("importing only existing shortcuts changes nothing",
+              (try? store.importText(exported).get())?.added == 0 &&
+              applied.count == appliedBeforeNoop)
+        check("files without the header are rejected",
+              failure(store.importText("{\"shortcut\":\"bj\",\"phrase\":\"北京\"}\n")) ==
+                  .notShortcutList)
+
+        let partial = ShortcutStore.exportText([Shortcut(shortcut: "bj", phrase: "北京")]) +
+            "{\"shortcut\":\"b1\",\"phrase\":\"坏\"}\nnot json\n"
+        try? partial.write(to: fileURL, atomically: true, encoding: .utf8)
+        let damaged = ShortcutStore(fileURL: fileURL, operations: operations)
+        check("unreadable lines are counted on load",
+              (try? damaged.load().get()) != nil && damaged.shortcuts.count == 1 &&
+              damaged.skippedLines == 2)
+        check("saving clears the unreadable-line count",
+              (try? damaged.add(shortcut: "sh", phrase: "上海").get()) != nil &&
+              damaged.skippedLines == 0)
+
+        try? "garbage".write(to: fileURL, atomically: true, encoding: .utf8)
+        let corrupt = ShortcutStore(fileURL: fileURL, operations: operations)
+        check("unreadable files are never overwritten",
+              failure(corrupt.load()) == .loadFailed &&
+              failure(corrupt.add(shortcut: "bj", phrase: "北京")) == .loadFailed &&
+              (try? String(contentsOf: fileURL, encoding: .utf8)) == "garbage")
+
+        let blocked = directory.appendingPathComponent("blocked")
+        try? "file".write(to: blocked, atomically: true, encoding: .utf8)
+        let unsaved = ShortcutStore(fileURL: blocked.appendingPathComponent("shortcuts.jsonl"),
+                                    operations: operations)
+        _ = unsaved.load()
+        applied.removeAll()
+        check("save failure restores the engine",
+              failure(unsaved.add(shortcut: "bj", phrase: "北京")) == .saveFailed &&
+              unsaved.shortcuts.isEmpty &&
+              applied == [[Shortcut(shortcut: "bj", phrase: "北京")], []] &&
+              !unsaved.needsEngineSync)
+    }
+}
+
+func testShortcutsPreference() {
+    print("[test_shortcuts_preference]")
+    withTestPreferences { preferences, defaults in
+        check("shortcuts default to disabled", !preferences.shortcutsEnabled)
+        var requested: [Bool] = []
+        check("enabling shortcuts applies and saves",
+              preferences.applyShortcuts(true, using: { requested.append($0); return true }) &&
+              preferences.shortcutsEnabled && Preferences(defaults: defaults).shortcutsEnabled)
+        check("a failed change keeps the setting",
+              !preferences.applyShortcuts(false, using: { _ in false }) &&
+              preferences.shortcutsEnabled && !preferences.shortcutsApplyFailed)
+        check("a failed restore is reported for retry",
+              !preferences.applyShortcuts(using: { _ in false }) &&
+              preferences.shortcutsApplyFailed)
+        check("a successful retry clears the failure",
+              preferences.applyShortcuts(using: { requested.append($0); return true }) &&
+              !preferences.shortcutsApplyFailed && requested == [true, true])
+    }
+}
+
+/// Needs a user data directory, so it runs in its own process.
+func testShortcutsSession() {
+    print("[test_shortcuts_session]")
+    withTemporaryDirectory { directory in
+        withTestPreferences { preferences, _ in
+            preferences.contextEnabled = false
+            preferences.predictionsEnabled = false
+            let store = ShortcutStore(fileURL: directory.appendingPathComponent("shortcuts.jsonl"))
+            check("session store starts empty", (try? store.loadAndSync().get()) != nil)
+            check("session store saves a shortcut",
+                  (try? store.add(shortcut: "bjcy", phrase: "北京市朝阳区").get()) != nil)
+            let (session, delegate) = makeSession(preferences: preferences)
+            for ch in "bjcy" { _ = session.appendLetter(String(ch)) }
+            check("disabled shortcuts are not offered",
+                  !session.candidates.contains("北京市朝阳区"))
+            check("enabling shortcuts succeeds", preferences.applyShortcuts(true))
+            check("enabling shortcuts refreshes the active composition",
+                  session.candidates.first == "北京市朝阳区" &&
+                  delegate.shownCandidates == session.candidates)
+            check("adding a shortcut refreshes the active composition",
+                  (try? store.add(shortcut: "bjcy", phrase: "北京市朝阳区建国路").get()) != nil &&
+                  session.candidates.contains("北京市朝阳区建国路"))
+            _ = session.selectCurrent()
+            check("selecting a shortcut commits its phrase",
+                  delegate.committedText == "北京市朝阳区" && !session.isComposing)
+            check("shortcut selections are not learned",
+                  !LearnedWordStore().words.contains { $0.text == "北京市朝阳区" })
+
+            delegate.clear()
+            preferences.isTraditional = true
+            for ch in "bjcy" { _ = session.appendLetter(String(ch)) }
+            check("traditional mode keeps shortcut phrases verbatim",
+                  session.candidates.first == "北京市朝阳区")
+            for ch in "q" { _ = session.appendLetter(String(ch)) }
+            check("traditional mode still converts other candidates",
+                  !session.candidates.contains("北京市朝阳区去"))
+            preferences.isTraditional = false
+            session.cancel()
+
+            for ch in "bjcy" { _ = session.appendLetter(String(ch)) }
+            check("removing a shortcut refreshes the active composition",
+                  (try? store.remove([Shortcut(shortcut: "bjcy", phrase: "北京市朝阳区")]).get()) != nil &&
+                  !session.candidates.contains("北京市朝阳区") &&
+                  session.candidates.contains("北京市朝阳区建国路"))
+            check("disabling shortcuts succeeds", preferences.applyShortcuts(false))
+            check("disabling shortcuts refreshes the active composition",
+                  !session.candidates.contains("北京市朝阳区建国路"))
+            session.cancel()
+        }
     }
 }

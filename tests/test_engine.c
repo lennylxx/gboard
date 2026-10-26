@@ -10,6 +10,7 @@
 #include "engine/hmm_internal.h"
 
 static int g_pass = 0, g_fail = 0;
+static const char *g_argv0, *g_so, *g_pack;
 
 static void check(const char *name, bool cond) {
     if (cond) { g_pass++; printf("  PASS: %s\n", name); }
@@ -1858,9 +1859,245 @@ static void test_next_word_prediction(void) {
 
 // ── Main ─────────────────────────────────────────────────────────────────────
 
+static int find_shortcut_candidate(const char *input, const char *phrase) {
+    char *cands[500] = {0};
+    int count = get_candidates_bulk(input, cands, 500);
+    int position = -1;
+    for (int i = 0; i < count && position < 0; ++i) {
+        if (strcmp(cands[i], phrase) == 0) position = i;
+    }
+    printf("    '%s' -> %s at %d (first: %s)\n", input, phrase, position,
+           count > 0 ? cands[0] : "(none)");
+    free_cands(cands, count);
+    return position;
+}
+
+static void test_shortcuts(const char *user_dir) {
+    printf("[test_shortcuts]\n");
+    const HmmShortcut entries[] = {
+        {"bjcy", "北京市朝阳区"},
+        {"wdyx", "我的邮箱是 test@example.com"},
+        {"yxdz", "test@example.com"},
+    };
+    check("shortcuts are disabled by default", !hmm_engine_get_shortcuts_enabled());
+    check("replace shortcuts", hmm_user_dict_replace_shortcuts(entries, 3));
+    check("disabled shortcuts produce no candidate",
+          find_shortcut_candidate("bjcy", "北京市朝阳区") < 0);
+
+    check("enable shortcuts", hmm_engine_set_shortcuts_enabled(true));
+    int position = find_shortcut_candidate("bjcy", "北京市朝阳区");
+    check("enabled shortcut is offered", position >= 0);
+    check("mixed-script phrase is offered",
+          find_shortcut_candidate("wdyx", "我的邮箱是 test@example.com") >= 0);
+    check("ASCII-only phrase is offered",
+          find_shortcut_candidate("yxdz", "test@example.com") >= 0);
+    {
+        char *ascii_cands[500] = {0};
+        int ascii_count = get_candidates_bulk("yxdz", ascii_cands, 500);
+        int ascii_position = find_candidate(ascii_cands, ascii_count, "test@example.com");
+        char tokens[16][16];
+        int types[16];
+        int tc = ascii_position >= 0
+                 ? hmm_user_dict_extract_tokens(ascii_position, tokens, types, 16) : 0;
+        const char *token_ptrs[16];
+        for (int i = 0; i < tc; i++) token_ptrs[i] = tokens[i];
+        check("ASCII-only shortcut candidate is not learned",
+              tc == 4 && !hmm_user_dict_learn(token_ptrs, types, tc,
+                                             "test@example.com", true));
+        free_cands(ascii_cands, ascii_count);
+    }
+    check("shortcut prefix does not expand",
+          find_shortcut_candidate("bjc", "北京市朝阳区") < 0);
+    check("shortcut remains available with trailing input",
+          find_shortcut_candidate("bjcyq", "北京市朝阳区") >= 0);
+    {
+        char *combined[500] = {0};
+        int combined_count = get_candidates_bulk("bjcyq", combined, 500);
+        char tokens[16][16];
+        int types[16];
+        int tc = combined_count > 0 &&
+                 strncmp(combined[0], "北京市朝阳区", strlen("北京市朝阳区")) == 0
+                 ? hmm_user_dict_extract_tokens(0, tokens, types, 16) : 0;
+        const char *token_ptrs[16];
+        for (int i = 0; i < tc; i++) token_ptrs[i] = tokens[i];
+        check("candidate containing a shortcut is not learned",
+              tc > 4 && !hmm_user_dict_learn(token_ptrs, types, tc,
+                                             combined[0], true));
+        free_cands(combined, combined_count);
+    }
+
+    char *cands[500] = {0};
+    int count = get_candidates_bulk("bjcy", cands, 500);
+    if (position >= 0 && position < count) {
+        char tokens[16][16];
+        int types[16];
+        int tc = hmm_user_dict_extract_tokens(position, tokens, types, 16);
+        const char *token_ptrs[16];
+        for (int i = 0; i < tc; i++) token_ptrs[i] = tokens[i];
+        check("shortcut candidate consumes the whole shortcut",
+              hmm_engine_get_candidate_consumed(position) == 4);
+        check("shortcut candidate is not a removable learned word",
+              !hmm_user_dict_is_candidate_removable(position));
+        check("shortcut candidate is not learned",
+              tc == 4 && !hmm_user_dict_learn(token_ptrs, types, tc,
+                                               "北京市朝阳区", true));
+    }
+    free_cands(cands, count);
+
+    check("regular decoding still works with shortcuts",
+          find_shortcut_candidate("nihao", "你好") == 0);
+    {
+        char *verbatim[500] = {0};
+        int verbatim_count = get_candidates_bulk("bjcy", verbatim, 500);
+        int at = find_candidate(verbatim, verbatim_count, "北京市朝阳区");
+        check("a shortcut candidate is recognized",
+              at >= 0 && hmm_user_dict_is_shortcut_candidate(at));
+        free_cands(verbatim, verbatim_count);
+        verbatim_count = get_candidates_bulk("bjcyq", verbatim, 500);
+        check("a candidate extending a shortcut is not a shortcut",
+              verbatim_count > 0 && !hmm_user_dict_is_shortcut_candidate(0));
+        free_cands(verbatim, verbatim_count);
+        verbatim_count = get_candidates_bulk("nihao", verbatim, 500);
+        check("a regular candidate is not a shortcut",
+              verbatim_count > 0 && !hmm_user_dict_is_shortcut_candidate(0));
+        free_cands(verbatim, verbatim_count);
+    }
+
+    // External context and long input use the context decoder.
+    set_editor_context("我住在");
+    check("shortcut is offered with editor context",
+          find_shortcut_candidate("bjcy", "北京市朝阳区") >= 0);
+    check("ASCII-only shortcut is offered with editor context",
+          find_shortcut_candidate("yxdz", "test@example.com") >= 0);
+    const HmmShortcut edited[] = {
+        {"bjcy", "北京市朝阳区"},
+        {"yxdz", "other@example.com"},
+        {"zhegesuoxiechaoguoshier", "长缩写测试"},
+    };
+    check("replace shortcuts with editor context",
+          hmm_user_dict_replace_shortcuts(edited, 3));
+    check("edited ASCII-only shortcut updates with editor context",
+          find_shortcut_candidate("yxdz", "other@example.com") >= 0 &&
+          find_shortcut_candidate("yxdz", "test@example.com") < 0);
+    set_editor_context("");
+    check("long shortcut is offered",
+          find_shortcut_candidate("zhegesuoxiechaoguoshier", "长缩写测试") >= 0);
+    {
+        // Swift accepts 32-letter shortcuts and 1000-character phrases.
+        static char long_phrase[1000 * 3 + 1];
+        for (int i = 0; i < 1000; ++i) memcpy(long_phrase + i * 3, "长", 3);
+        long_phrase[3000] = '\0';
+        static char ascii_phrase[1001];
+        memset(ascii_phrase, 'a', 1000);
+        ascii_phrase[1000] = '\0';
+        enum { MANY = 500 };
+        static HmmShortcut many[MANY + 3];
+        static char names[MANY][8];
+        many[0] = (HmmShortcut){"abcdefghijklmnopqrstuvwxyzabcdef", long_phrase};
+        many[1] = (HmmShortcut){"cxdy", ascii_phrase};
+        many[2] = (HmmShortcut){"bjcy", "北京市朝阳区"};
+        for (int i = 0; i < MANY; ++i) {
+            snprintf(names[i], sizeof(names[i]), "zz%c%c%c",
+                     'a' + i / 676, 'a' + i / 26 % 26, 'a' + i % 26);
+            many[i + 3] = (HmmShortcut){names[i], "批量短语"};
+        }
+        check("longest shortcuts and many entries are accepted",
+              hmm_user_dict_replace_shortcuts(many, MANY + 3));
+        check("32-letter shortcut expands to a 1000-character phrase",
+              find_shortcut_candidate("abcdefghijklmnopqrstuvwxyzabcdef", long_phrase) >= 0);
+        check("1000-character ASCII phrase is offered",
+              find_shortcut_candidate("cxdy", ascii_phrase) >= 0);
+        check("the last of many shortcuts is offered",
+              find_shortcut_candidate(names[MANY - 1], "批量短语") >= 0);
+    }
+    check("restore shortcuts after the context checks",
+          hmm_user_dict_replace_shortcuts(entries, 3));
+
+    const HmmShortcut invalid[] = {{"bj", "北京"}, {"b1", "北京"}};
+    check("invalid shortcut is rejected", !hmm_user_dict_replace_shortcuts(invalid, 2));
+    const HmmShortcut malformed[] = {{"bj", "\xE5\x8C"}};
+    check("malformed UTF-8 phrase is rejected",
+          !hmm_user_dict_replace_shortcuts(malformed, 1));
+    check("rejected replacement keeps shortcuts",
+          find_shortcut_candidate("bjcy", "北京市朝阳区") >= 0);
+
+    pid_t pid = fork();
+    if (pid == 0) {
+        execl(g_argv0, g_argv0, "--verify-shortcut", g_so, g_pack, user_dir,
+              "bjcy", "北京市朝阳区", NULL);
+        _exit(127);
+    }
+    int status = 0;
+    check("fresh process reloads saved shortcuts",
+          pid > 0 && waitpid(pid, &status, 0) == pid &&
+          WIFEXITED(status) && WEXITSTATUS(status) == 0);
+    pid = fork();
+    if (pid == 0) {
+        execl(g_argv0, g_argv0, "--verify-shortcut", g_so, g_pack, user_dir,
+              "yxdz", "test@example.com", NULL);
+        _exit(127);
+    }
+    status = 0;
+    check("fresh process reloads saved ASCII-only shortcuts",
+          pid > 0 && waitpid(pid, &status, 0) == pid &&
+          WIFEXITED(status) && WEXITSTATUS(status) == 0);
+
+    check("clear shortcuts", hmm_user_dict_replace_shortcuts(NULL, 0));
+    check("cleared shortcut is gone",
+          find_shortcut_candidate("bjcy", "北京市朝阳区") < 0);
+    check("cleared ASCII-only shortcut is gone",
+          find_shortcut_candidate("yxdz", "test@example.com") < 0);
+    check("restore shortcuts", hmm_user_dict_replace_shortcuts(entries, 3));
+    check("disable shortcuts", hmm_engine_set_shortcuts_enabled(false));
+    check("disabled shortcut is gone",
+          find_shortcut_candidate("bjcy", "北京市朝阳区") < 0);
+    check("disabled ASCII-only shortcut is gone",
+          find_shortcut_candidate("yxdz", "test@example.com") < 0);
+    check("shuangpin with shortcuts",
+          hmm_engine_set_shortcuts_enabled(true) &&
+          hmm_engine_set_pinyin_scheme(HMM_PINYIN_SHUANGPIN_FLYPY));
+    check("shuangpin offers shortcuts",
+          find_shortcut_candidate("bjcy", "北京市朝阳区") == 0);
+    check("restore full pinyin", hmm_engine_set_pinyin_scheme(HMM_PINYIN_FULL));
+}
+
 int main(int argc, char **argv) {
     const char *so = "../source/resources/lib/arm64-v8a/libintegrated_shared_object.so";
     const char *pack = "../hmmoemdata/current";
+    g_argv0 = argv[0];
+    if (argc == 4 && strcmp(argv[1], "--shortcuts-only") == 0) {
+        char user_dir[] = "/tmp/gboard-shortcuts-XXXXXX";
+        if (!mkdtemp(user_dir)) {
+            perror("mkdtemp(shortcuts)");
+            return 2;
+        }
+        g_so = argv[2];
+        g_pack = argv[3];
+        if (!hmm_engine_init_with_user_data(argv[2], argv[3], user_dir)) return 2;
+        test_shortcuts(user_dir);
+        hmm_engine_destroy();
+        const char *files[] = {
+            "shortcuts_dict_3_3", "shortcuts_dict_3_3_tmp",
+            "shortcuts_dict_3_3_english", "shortcuts_dict_3_3_english_tmp",
+            "user_dict_3_3", "user_dict_3_3_english"
+        };
+        for (size_t i = 0; i < sizeof(files) / sizeof(files[0]); i++) {
+            char path[4096];
+            snprintf(path, sizeof(path), "%s/%s", user_dir, files[i]);
+            unlink(path);
+        }
+        rmdir(user_dir);
+        printf("Results: %d passed, %d failed\n", g_pass, g_fail);
+        return g_fail > 0 ? 1 : 0;
+    }
+    if (argc == 7 && strcmp(argv[1], "--verify-shortcut") == 0) {
+        if (!hmm_engine_init_with_user_data(argv[2], argv[3], argv[4]) ||
+            !hmm_engine_set_shortcuts_enabled(true))
+            return 2;
+        int position = find_shortcut_candidate(argv[5], argv[6]);
+        hmm_engine_destroy();
+        return position >= 0 ? 0 : 3;
+    }
     if (argc == 4 && strcmp(argv[1], "--shuangpin-only") == 0) {
         char user_dir[] = "/tmp/gboard-shuangpin-XXXXXX";
         if (!mkdtemp(user_dir)) {
@@ -2041,6 +2278,17 @@ int main(int argc, char **argv) {
           shuangpin_pid > 0 &&
           waitpid(shuangpin_pid, &shuangpin_status, 0) == shuangpin_pid &&
           WIFEXITED(shuangpin_status) && WEXITSTATUS(shuangpin_status) == 0);
+
+    pid_t shortcuts_pid = fork();
+    if (shortcuts_pid == 0) {
+        execl(argv[0], argv[0], "--shortcuts-only", so, pack, NULL);
+        _exit(127);
+    }
+    int shortcuts_status = 0;
+    check("native shortcuts integration passes in an isolated process",
+          shortcuts_pid > 0 &&
+          waitpid(shortcuts_pid, &shortcuts_status, 0) == shortcuts_pid &&
+          WIFEXITED(shortcuts_status) && WEXITSTATUS(shortcuts_status) == 0);
 
     // User dictionary tests
     test_user_dict_init();

@@ -76,6 +76,12 @@ A macOS input method that runs Gboard's native HMM Pinyin engine via a custom AR
   dictionary does not hide it from candidates. Words learned from
   abbreviated pinyin (such as `cs`) are not listed, because Gboard's
   export omits them.
+- **Shortcuts** — Settings → 快捷短语 expands a full abbreviation into a
+  custom phrase, offered as the first candidate (for example, `dz` →
+  北京市朝阳区建国路 88 号). Off by default. Manage the list in 管理快捷短语…:
+  add, edit, delete, search, and import or export it as JSON Lines.
+  Shortcuts use 1–32 letters; phrases may be Chinese, mixed, or plain
+  ASCII such as an email address. Selecting a shortcut is not learned.
 - **Complete keyboard workflow** — Supports candidate paging, keyboard
   selection, and Chinese/English mode switching.
 - **Simplified / Traditional Chinese toggle** — Convert candidates and
