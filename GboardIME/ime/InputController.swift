@@ -368,8 +368,11 @@ class GboardInputController: IMKInputController, PinyinSessionDelegate {
                              at: NSRange(location: NSNotFound, length: 0))
             let str = NSAttributedString(string: markedText,
                                          attributes: attrs as? [NSAttributedString.Key: Any])
+            // Keep the caret before a placeholder, as Squirrel does, so
+            // terminals like iTerm2 do not move their cursor past it.
+            let caret = markedText == "\u{200B}" ? 0 : markedText.utf16.count
             client.setMarkedText(str,
-                                 selectionRange: NSRange(location: markedText.utf16.count, length: 0),
+                                 selectionRange: NSRange(location: caret, length: 0),
                                  replacementRange: NSRange(location: NSNotFound, length: 0))
         }
     }
