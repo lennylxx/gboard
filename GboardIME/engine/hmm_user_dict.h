@@ -36,6 +36,16 @@ bool hmm_user_dict_learn(const char **tokens, const int *token_types,
 bool hmm_user_dict_unlearn(const char **tokens, const int *token_types,
                            int token_count, const char *value);
 
+// Returns true when the candidate at the given engine index comes only from a
+// user dictionary, so it can be removed. Must be called after the candidate
+// list is filled.
+bool hmm_user_dict_is_candidate_removable(int candidate_index);
+
+// Removes a learned candidate: deletes its text from both user dictionaries
+// and from the decoder's current candidate list. Refill candidates afterwards.
+// Returns false when the candidate is not removable or nothing was removed.
+bool hmm_user_dict_remove_candidate(int candidate_index);
+
 // Persist the user dictionary to disk.
 // Safe rename sequence: duplicate → compact → persist to _tmp →
 // rename primary→_bak → rename _tmp→primary → delete _bak.
@@ -60,6 +70,8 @@ bool hmm_user_dict_pinyin_settings_valid(void);
 
 // Apply a dictionary snapshot enrolled by persist after the decoder resets.
 void hmm_user_dict_refresh_decoder_if_needed(void);
+// True while a persisted snapshot awaits the next decoder reset.
+bool hmm_user_dict_decoder_refresh_pending(void);
 
 // Extract token information for the candidate at the given engine index.
 // Must be called after hmm_engine_get_candidates() fills the candidate list.

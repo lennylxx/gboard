@@ -133,11 +133,15 @@ typedef jboolean (*fn_DuplicateDictionary)(JNIEnv *, jclass, jlong);
 typedef jboolean (*fn_CompactDictionary)(JNIEnv *, jclass, jlong, jint);
 typedef jint     (*fn_GetDictionarySize)(JNIEnv *, jclass, jlong);
 typedef jboolean (*fn_PersistDictionary)(JNIEnv *, jclass, jlong, jstring);
-typedef jboolean (*fn_NewEmptyDictionary)(JNIEnv *, jclass, jlong);
 typedef jboolean (*fn_EnrollMutableDictFd)(JNIEnv *, jclass, jlong, jstring, jint, jobject, jint, jint, jint);
 typedef jint     (*fn_GetCandidateTokenCount)(JNIEnv *, jobject, jlong, jint);
 typedef jlong    (*fn_GetCandidateToken)(JNIEnv *, jobject, jlong, jint, jint);
 typedef jint     (*fn_GetTokenLanguage)(JNIEnv *, jobject, jlong, jlong);
+typedef jboolean (*fn_RemoveByValue)(JNIEnv *, jclass, jlong, jstring);
+typedef jboolean (*fn_DeleteCandidate)(JNIEnv *, jobject, jlong, jint);
+typedef jint     (*fn_GetDataSourceIndex)(JNIEnv *, jobject, jlong, jstring);
+typedef jint     (*fn_GetCandidatePrimaryDataSource)(JNIEnv *, jobject, jlong, jint);
+typedef jboolean (*fn_IsCandidateFromSingleDataSource)(JNIEnv *, jobject, jlong, jint);
 typedef jboolean (*fn_FillPredictionCandList)(JNIEnv *, jobject, jlong);
 typedef jint     (*fn_GetPredictionCandCount)(JNIEnv *, jobject, jlong);
 typedef jstring  (*fn_GetPredictionCandString)(JNIEnv *, jobject, jlong, jint);
@@ -152,11 +156,15 @@ typedef struct {
     fn_PersistDictionary persist;
     fn_RefreshData refreshData;
     fn_CloseManager closeAccessor;
-    fn_NewEmptyDictionary newEmptyDictionary;
     fn_EnrollMutableDictFd enrollMutableDictFd;
     fn_GetCandidateTokenCount getCandidateTokenCount;
     fn_GetCandidateToken getCandidateToken;
     fn_GetTokenLanguage getTokenLanguage;
+    fn_RemoveByValue removeByValue;
+    fn_DeleteCandidate deleteCandidate;
+    fn_GetDataSourceIndex getDataSourceIndex;
+    fn_GetCandidatePrimaryDataSource getCandidatePrimaryDataSource;
+    fn_IsCandidateFromSingleDataSource isCandidateFromSingleDataSource;
 } HmmUserDictNatives;
 
 // ── Global engine state ─────────────────────────────────────────────────────

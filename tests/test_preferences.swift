@@ -745,6 +745,250 @@ func testClearLearningSessionUpdates() {
     }
 }
 
+func testRemoveAndUndoLearning() {
+    print("[test_remove_and_undo_learning]")
+    withTestPreferences { preferences, _ in
+        preferences.predictionsEnabled = false
+        preferences.contextEnabled = false
+        check("remove/undo test starts with an empty dictionary",
+              gboard_user_dict_clear())
+
+        func position() -> Int? {
+            let (session, _) = makeSession(preferences: preferences)
+            for ch in "ceshi" { _ = session.appendLetter(String(ch)) }
+            defer { session.cancel() }
+            return candidatePosition("侧试", in: session)
+        }
+        func learnPhrase() -> PinyinSession {
+            let (session, delegate) = makeSession(preferences: preferences)
+            for ch in "ceshi" { _ = session.appendLetter(String(ch)) }
+            _ = selectCandidate("侧", in: session)
+            _ = selectCandidate("试", in: session)
+            check("remove/undo test commits 侧试", delegate.committedText == "侧试")
+            return session
+        }
+        func select(_ text: String, in session: PinyinSession) -> Bool {
+            guard let index = session.candidates.firstIndex(of: text) else {
+                return false
+            }
+            while session.selectedIndex < index { _ = session.moveRight() }
+            return session.selectedIndex == index
+        }
+
+        let baseline = position()
+        let learned = learnPhrase()
+        check("learned commit can be undone", learned.canUndoLearning)
+        let boosted = position()
+        check("learning boosts the phrase",
+              boosted != nil && (baseline == nil || boosted! < baseline!))
+        check("undo decrements the learned phrase", learned.undoLastLearning())
+        check("undo record is consumed", !learned.canUndoLearning &&
+              !learned.undoLastLearning())
+        check("undo restores the original ranking", position() == baseline)
+
+        let (other, _) = makeSession(preferences: preferences)
+        for ch in "ceshi" { _ = other.appendLetter(String(ch)) }
+        _ = selectCandidate("侧", in: other)
+        _ = selectCandidate("试", in: other)
+        for ch in "ni" { _ = other.appendLetter(String(ch)) }
+        check("new composition forgets the undo record", !other.canUndoLearning)
+        other.cancel()
+        let afterOther = position()
+        check("a later commit keeps its learning", afterOther == boosted)
+
+        for key in [Character(","), Character(".")] {
+            let (punct, _) = makeSession(preferences: preferences)
+            for ch in "ceshi" { _ = punct.appendLetter(String(ch)) }
+            _ = selectCandidate("侧", in: punct)
+            _ = punct.handlePunctuation(key)
+            check("punctuation commit forgets the undo record (\(key))",
+                  !punct.canUndoLearning)
+        }
+        let (passed, _) = makeSession(preferences: preferences)
+        for ch in "ceshi" { _ = passed.appendLetter(String(ch)) }
+        _ = selectCandidate("侧", in: passed)
+        _ = passed.commitAndPassThrough()
+        check("pass-through commit forgets the undo record",
+              !passed.canUndoLearning)
+
+        let forgotten = learnPhrase()
+        forgotten.forgetLearningUndo()
+        check("forgetting the record blocks undo", !forgotten.undoLastLearning())
+
+        preferences.contextEnabled = true
+        let (mismatch, delegate) = makeSession(preferences: preferences)
+        for ch in "ceshi" { _ = mismatch.appendLetter(String(ch)) }
+        _ = selectCandidate("侧", in: mismatch)
+        _ = selectCandidate("试", in: mismatch)
+        delegate.contextBeforeInput = "其他"
+        check("mismatch case has an undo record", mismatch.canUndoLearning)
+        check("undo is skipped when the text before the caret differs",
+              !mismatch.undoLastLearning())
+        let (matched, matchedDelegate) = makeSession(preferences: preferences)
+        for ch in "ceshi" { _ = matched.appendLetter(String(ch)) }
+        _ = selectCandidate("侧", in: matched)
+        _ = selectCandidate("试", in: matched)
+        matchedDelegate.contextBeforeInput = "这是侧试"
+        check("undo runs when the caret follows the committed text",
+              matched.undoLastLearning())
+        preferences.contextEnabled = false
+
+        for _ in 0..<5 { _ = learnPhrase() }
+        let (session, mock) = makeSession(preferences: preferences)
+        for ch in "ceshi" { _ = session.appendLetter(String(ch)) }
+        check("remove test shows the learned phrase on the first page",
+              select("侧试", in: session))
+        check("selected learned phrase is marked removable",
+              session.selectedCandidateRemovable)
+        check("selected system phrase is not marked removable",
+              select("测试", in: session) && !session.selectedCandidateRemovable)
+        session.cancel()
+        for ch in "ceshi" { _ = session.appendLetter(String(ch)) }
+        _ = select("侧试", in: session)
+        check("remove deletes the learned phrase", session.removeSelectedCandidate())
+        // Without its user-dictionary entry, 侧试 survives only if the system
+        // model composes it, and then it is never removable.
+        if baseline == nil {
+            check("removed phrase leaves the refreshed list",
+                  !session.candidates.contains("侧试"))
+        } else {
+            check("removed phrase falls back to an unremovable system candidate",
+                  !session.candidates.contains("侧试") ||
+                  (select("侧试", in: session) && !session.selectedCandidateRemovable))
+        }
+        check("remove keeps composing with refreshed candidates",
+              session.composition == "ceshi" && !mock.shownCandidates.isEmpty &&
+              mock.shownCandidates == session.candidates &&
+              session.selectedIndex < session.candidates.count &&
+              mock.committedText.isEmpty)
+        check("system candidate cannot be removed",
+              select("测试", in: session) && !session.removeSelectedCandidate() &&
+              session.candidates.contains("测试"))
+        session.cancel()
+        let removed = position()
+        check("removed phrase no longer has its learned boost",
+              removed == baseline)
+        check("remove without composition does nothing",
+              !session.removeSelectedCandidate())
+
+        testRemoveOnLaterPage(preferences)
+        _ = gboard_user_dict_clear()
+    }
+}
+
+/// Removal from a page after the first, both normally and while a decoder
+/// refresh is pending (the session re-decodes and restores the page).
+private func testRemoveOnLaterPage(_ preferences: Preferences) {
+    let pageSize = 5
+    let originalPageSize = preferences.candidatePageSize
+    preferences.candidatePageSize = .five
+    defer { preferences.candidatePageSize = originalPageSize }
+    check("later-page test starts with an empty dictionary",
+          gboard_user_dict_clear())
+    let phrases = [["侧", "试"], ["厕", "视"], ["策", "士"], ["测", "视"],
+                   ["侧", "视"], ["册", "时"], ["策", "试"], ["侧", "时"],
+                   ["厕", "试"], ["测", "时"], ["册", "试"], ["策", "视"]]
+    for parts in phrases {
+        let (learn, _) = makeSession(preferences: preferences)
+        for ch in "ceshi" { _ = learn.appendLetter(String(ch)) }
+        for part in parts { _ = selectCandidate(part, in: learn) }
+    }
+
+    // Leaves the session on the first removable candidate past page 0.
+    func selectRemovableOnLaterPage(_ session: PinyinSession) -> String? {
+        session.cancel()
+        for ch in "ceshi" { _ = session.appendLetter(String(ch)) }
+        for _ in 0..<3 {
+            guard session.hasNextPage else { return nil }
+            _ = session.nextPage()
+            for index in session.candidates.indices {
+                while session.selectedIndex < index { _ = session.moveRight() }
+                if session.selectedCandidateRemovable {
+                    return session.candidates[index]
+                }
+            }
+        }
+        return nil
+    }
+    func offeredAsLearned(_ text: String) -> Bool {
+        let (probe, _) = makeSession(preferences: preferences)
+        for ch in "ceshi" { _ = probe.appendLetter(String(ch)) }
+        defer { probe.cancel() }
+        while true {
+            if let index = probe.candidates.firstIndex(of: text) {
+                while probe.selectedIndex < index { _ = probe.moveRight() }
+                return probe.selectedCandidateRemovable
+            }
+            guard probe.hasNextPage else { return false }
+            _ = probe.nextPage()
+        }
+    }
+    func checkRemovedInPlace(_ label: String, _ session: PinyinSession,
+                             _ mock: MockDelegate, page: Int) {
+        check("\(label) keeps the page and a valid selection",
+              session.composition == "ceshi" && session.candidatePage == page &&
+              !session.candidates.isEmpty &&
+              session.selectedIndex < session.candidates.count &&
+              mock.shownCandidates == session.candidates &&
+              mock.committedText.isEmpty)
+    }
+
+    let (session, mock) = makeSession(preferences: preferences)
+    guard let text = selectRemovableOnLaterPage(session) else {
+        check("learned phrases reach a later page", false)
+        return
+    }
+    let page = session.candidatePage
+    check("later-page removal deletes \(text)", session.removeSelectedCandidate())
+    checkRemovedInPlace("later-page removal", session, mock, page: page)
+    session.cancel()
+    check("later-page removal drops the learned entry", !offeredAsLearned(text))
+
+    let (pending, pendingMock) = makeSession(preferences: preferences)
+    guard let pendingText = selectRemovableOnLaterPage(pending) else {
+        check("another learned phrase reaches a later page", false)
+        return
+    }
+    let pendingPage = pending.candidatePage
+    let engineIndex = Int32(pendingPage * pageSize + pending.selectedIndex)
+    let tokenCount = Int(gboard_user_dict_extract_token_count(engineIndex))
+    var tokens: [String] = []
+    var types: [Int32] = []
+    for i in 0..<tokenCount {
+        var buffer = [CChar](repeating: 0, count: 16)
+        var type: Int32 = 0
+        if gboard_user_dict_get_token(engineIndex, Int32(i), &buffer, &type) {
+            tokens.append(String(cString: buffer))
+            types.append(type)
+        }
+    }
+    check("pending test captures the phrase tokens",
+          tokenCount > 0 && tokens.count == tokenCount)
+    // Clearing without a user-data directory marks the decoder stale, like a
+    // save does; relearning the phrase directly keeps that state.
+    check("clear while composing leaves a decoder refresh pending",
+          gboard_user_dict_clear() && gboard_user_dict_decoder_refresh_pending())
+    let relearned = tokens.withCString2DArray { cTokens in
+        types.withUnsafeMutableBufferPointer { cTypes in
+            pendingText.withCString { cValue in
+                gboard_user_dict_learn(cTokens, cTypes.baseAddress!,
+                                       Int32(tokens.count), cValue, true)
+            }
+        }
+    }
+    check("pending test relearns \(pendingText) without a reset",
+          relearned && gboard_user_dict_decoder_refresh_pending() &&
+          pending.selectedCandidateRemovable)
+    check("pending removal deletes \(pendingText)",
+          pending.removeSelectedCandidate())
+    check("pending removal refreshes the decoder",
+          !gboard_user_dict_decoder_refresh_pending())
+    checkRemovedInPlace("pending removal", pending, pendingMock, page: pendingPage)
+    pending.cancel()
+    check("pending removal drops the learned entry",
+          !offeredAsLearned(pendingText))
+}
+
 func testPreferenceSessionUpdates() {
     print("[test_preference_session_updates]")
     withTestPreferences { preferences, _ in

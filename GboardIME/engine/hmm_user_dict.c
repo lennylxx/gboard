@@ -294,6 +294,89 @@ bool hmm_user_dict_unlearn(const char **tokens, const int *token_types,
     return (bool)result;
 }
 
+// ── Remove a learned candidate ──────────────────────────────────────────────
+
+// Mirrors Gboard's candidate iterator (hbm): a candidate offers "remove
+// suggestion" only when its primary data source is a user dictionary and no
+// other source (e.g. the system dictionary) contributed to it.
+// Emulated JNI strings are heap objects that DeleteLocalRef never frees.
+// This check runs on every selection change, so reuse one name per file.
+static jstring dictionary_filename_string(int index) {
+    static jstring names[DICT_COUNT];
+    if (!names[index]) {
+        names[index] = jni_NewStringUTF(g_env, s_dicts[index].filename);
+    }
+    return names[index];
+}
+
+bool hmm_user_dict_is_candidate_removable(int candidate_index) {
+    if (!s_ready || !g_engine || candidate_index < 0 ||
+        !s_natives->getDataSourceIndex ||
+        !s_natives->getCandidatePrimaryDataSource ||
+        !s_natives->isCandidateFromSingleDataSource) {
+        return false;
+    }
+    volatile bool removable = false;
+    CRASH_PROTECT_BEGIN()
+    volatile jint primary = s_natives->getCandidatePrimaryDataSource(
+        g_env, NULL, g_engine, (jint)candidate_index);
+    if (primary >= 0 &&
+        s_natives->isCandidateFromSingleDataSource(
+            g_env, NULL, g_engine, (jint)candidate_index)) {
+        // Indices can change after nativeRefreshData, so look them up each time.
+        for (int i = 0; i < DICT_COUNT && !removable; ++i) {
+            if (!s_dicts[i].accessor) continue;
+            jint source = s_natives->getDataSourceIndex(
+                g_env, NULL, g_engine, dictionary_filename_string(i));
+            removable = source >= 0 && source == primary;
+        }
+    }
+    CRASH_PROTECT_END("isCandidateRemovable")
+    return removable;
+}
+
+// Mirrors AbstractHmmChineseDecodeProcessor.X(): remove the candidate text
+// by value from both user dictionaries, then drop it from the decoder's
+// current list. Like Gboard, this does not persist immediately.
+bool hmm_user_dict_remove_candidate(int candidate_index) {
+    if (!hmm_user_dict_is_candidate_removable(candidate_index) ||
+        !s_natives->removeByValue || !s_natives->deleteCandidate ||
+        !g_getCandString) {
+        return false;
+    }
+    jstring volatile value = NULL;
+    CRASH_PROTECT_BEGIN()
+    value = g_getCandString(g_env, NULL, g_engine, (jint)candidate_index);
+    CRASH_PROTECT_END("nativeGetCandidateString(remove)")
+    const char *text = value ? jni_get_string(value) : NULL;
+    if (!text || !text[0]) {
+        jni_release_string(value);
+        return false;
+    }
+
+    volatile bool removed = false;
+    for (int i = 0; i < DICT_COUNT; ++i) {
+        if (!s_dicts[i].accessor) continue;
+        jstring volatile key = jni_NewStringUTF(g_env, text);
+        CRASH_PROTECT_BEGIN()
+        if (s_natives->removeByValue(g_env, NULL, s_dicts[i].accessor, key)) {
+            removed = true;
+        }
+        CRASH_PROTECT_END("nativeRemoveByValue")
+        jni_release_string(key);
+    }
+    jni_release_string(value);
+    if (!removed) return false;
+
+    CRASH_PROTECT_BEGIN()
+    if (!s_natives->deleteCandidate(g_env, NULL, g_engine,
+                                    (jint)candidate_index)) {
+        LOGERR("nativeDeleteCandidate failed for index %d", candidate_index);
+    }
+    CRASH_PROTECT_END("nativeDeleteCandidate")
+    return true;
+}
+
 // ── Persistence ─────────────────────────────────────────────────────────────
 
 static bool persist_dictionary(const UserDict *dict) {
@@ -305,29 +388,42 @@ static bool persist_dictionary(const UserDict *dict) {
     // 1. Remove stale tmp
     if (access(tmp_path, F_OK) == 0 && unlink(tmp_path) != 0) return false;
 
-    // 2. Duplicate dictionary
-    if (s_natives->duplicateDictionary) {
-        jboolean duplicate_ok = JNI_FALSE;
-        CRASH_PROTECT_BEGIN()
-        duplicate_ok = s_natives->duplicateDictionary(
-            g_env, NULL, dict->accessor);
-        CRASH_PROTECT_END("nativeDuplicateDictionary")
-        if (!duplicate_ok) return false;
-    }
-
-    // 3. Compact (ignore return per Android behavior)
-    if (s_natives->compact) {
-        CRASH_PROTECT_BEGIN()
-        s_natives->compact(g_env, NULL, dict->accessor, (jint)COMPACT_TARGET);
-        CRASH_PROTECT_END("nativeCompact")
-    }
-
-    // 4. Persist to tmp
-    jstring jtmp = jni_NewStringUTF(g_env, tmp_path);
-    jboolean persist_ok = JNI_FALSE;
+    // 2-4. Like Gboard's SaveDictionaryTask, snapshot through a temporary
+    // accessor. Duplicating or compacting the live accessor would detach it
+    // from the decoder, so later learning and removal would stop showing.
+    volatile jlong snapshot = 0;
     CRASH_PROTECT_BEGIN()
-    persist_ok = s_natives->persist(g_env, NULL, dict->accessor, jtmp);
-    CRASH_PROTECT_END("nativePersist")
+    snapshot = s_natives->createAccessor(
+        g_env, NULL, g_factory, jni_NewStringUTF(g_env, dict->accessor_name),
+        jni_NewStringUTF(g_env, ""), jni_NewStringUTF(g_env, dict->filename));
+    CRASH_PROTECT_END("nativeCreateMutableDictionaryAccessor(persist)")
+    if (!snapshot) return false;
+
+    volatile jboolean persist_ok = JNI_FALSE;
+    volatile jboolean duplicate_ok =
+        s_natives->duplicateDictionary ? JNI_FALSE : JNI_TRUE;
+    if (s_natives->duplicateDictionary) {
+        CRASH_PROTECT_BEGIN()
+        duplicate_ok = s_natives->duplicateDictionary(g_env, NULL, snapshot);
+        CRASH_PROTECT_END("nativeDuplicateDictionary")
+    }
+    if (duplicate_ok) {
+        // Ignore the compact result, as Android does.
+        if (s_natives->compact) {
+            CRASH_PROTECT_BEGIN()
+            s_natives->compact(g_env, NULL, snapshot, (jint)COMPACT_TARGET);
+            CRASH_PROTECT_END("nativeCompact")
+        }
+        jstring jtmp = jni_NewStringUTF(g_env, tmp_path);
+        CRASH_PROTECT_BEGIN()
+        persist_ok = s_natives->persist(g_env, NULL, snapshot, jtmp);
+        CRASH_PROTECT_END("nativePersist")
+    }
+    if (s_natives->closeAccessor) {
+        CRASH_PROTECT_BEGIN()
+        s_natives->closeAccessor(g_env, NULL, snapshot);
+        CRASH_PROTECT_END("nativeClose(persist)")
+    }
     if (!persist_ok) { unlink(tmp_path); return false; }
 
     // 5. Delete old bak
@@ -352,8 +448,16 @@ static bool persist_dictionary(const UserDict *dict) {
     // 8. Delete bak (non-fatal)
     if (access(bak_path, F_OK) == 0) unlink(bak_path);
 
-    // 9. Re-enroll the saved snapshot; the decoder refreshes afterwards.
-    return enroll_dictionary_file(dict, primary);
+    // 9. Re-enroll the saved snapshot. Rebind the accessor now so edits
+    // made before the next reset land in the enrolled data; only the
+    // decoder refresh is deferred.
+    if (!enroll_dictionary_file(dict, primary)) return false;
+    if (s_natives->refreshData) {
+        CRASH_PROTECT_BEGIN()
+        s_natives->refreshData(g_env, NULL, dict->accessor);
+        CRASH_PROTECT_END("MutableDictionaryAccessor nativeRefreshData(persist)")
+    }
+    return true;
 }
 
 bool hmm_user_dict_persist(void) {
@@ -373,6 +477,10 @@ bool hmm_user_dict_persist(void) {
     }
     if (any_enrolled) atomic_store(&s_decoder_refresh_pending, true);
     return ok;
+}
+
+bool hmm_user_dict_decoder_refresh_pending(void) {
+    return atomic_load(&s_decoder_refresh_pending);
 }
 
 void hmm_user_dict_refresh_decoder_if_needed(void) {
@@ -434,18 +542,26 @@ static bool remove_cleared_files(void) {
 }
 
 bool hmm_user_dict_clear(void) {
-    if (!s_ready || !s_natives->newEmptyDictionary) return false;
+    if (!s_ready) return false;
 
     // Clear every dictionary before persisting so a single failure does not
-    // leave an already-cleared dictionary unsaved.
+    // leave an already-cleared dictionary unsaved. Like Gboard, replace the
+    // enrolled data instead of detaching the live accessor from the decoder;
+    // the accessor adopts it now and the decoder on its next reset.
     bool all_cleared = true;
     for (int i = 0; i < DICT_COUNT; ++i) {
         if (!s_dicts[i].accessor) continue;
-        jboolean cleared = JNI_FALSE;
+        volatile jboolean cleared = JNI_FALSE;
         CRASH_PROTECT_BEGIN()
-        cleared = s_natives->newEmptyDictionary(g_env, NULL,
-                                                s_dicts[i].accessor);
-        CRASH_PROTECT_END("nativeNewEmptyDictionary(clear)")
+        if (g_enrollEmptyMutableDict && g_dm && s_natives->refreshData) {
+            cleared = g_enrollEmptyMutableDict(
+                g_env, NULL, g_dm, jni_NewStringUTF(g_env, s_dicts[i].filename),
+                (jint)23, (jint)0);
+            if (cleared) {
+                s_natives->refreshData(g_env, NULL, s_dicts[i].accessor);
+            }
+        }
+        CRASH_PROTECT_END("nativeEnrollEmptyMutableDict(clear)")
         if (!cleared) all_cleared = false;
     }
 

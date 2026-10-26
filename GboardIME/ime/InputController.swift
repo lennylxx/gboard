@@ -96,6 +96,11 @@ class GboardInputController: IMKInputController, PinyinSessionDelegate {
         // Shift key itself as keyDown — ignore
         if event.keyCode == 56 || event.keyCode == 60 { return false }
 
+        // Only a Delete right after a learned commit may undo that learning.
+        if event.keyCode != 51 || session.isComposing || !chineseMode {
+            session.forgetLearningUndo()
+        }
+
         // ── English mode: pass everything through ────────────────────────
         if !chineseMode {
             contextTracker.invalidate()
@@ -125,6 +130,7 @@ class GboardInputController: IMKInputController, PinyinSessionDelegate {
             return true
         }
 
+        let symbolPanelWasOpen = symbolPanel.isOpen
         if symbolPanel.isOpen {
             // Arrows carry .numericPad/.function, keypad digits .numericPad.
             let modifiers = flags.subtracting([.capsLock, .numericPad, .function])
@@ -171,7 +177,24 @@ class GboardInputController: IMKInputController, PinyinSessionDelegate {
             return wasComposing
         case 36, 76: // Return / Enter — commit raw pinyin
             result = session.commitRawPinyin()
+        case 51 where session.isComposing &&
+                flags.subtracting(.capsLock) == .shift: // Shift+Delete
+            // The panel hid the candidates; never remove one unseen.
+            if symbolPanelWasOpen { return true }
+            if !session.removeSelectedCandidate() {
+                NSSound.beep()
+            }
+            return true
         case 51: // Delete
+            if !session.isComposing {
+                // Like Gboard, only a plain Backspace unlearns; Option or
+                // Command+Delete edit more text, so just drop the record.
+                if flags.subtracting(.capsLock).isEmpty {
+                    session.undoLastLearning()
+                } else {
+                    session.forgetLearningUndo()
+                }
+            }
             result = session.deleteBack()
         case 123: // Left arrow
             result = session.moveLeft()
@@ -234,6 +257,7 @@ class GboardInputController: IMKInputController, PinyinSessionDelegate {
     }
 
     private func toggleChineseMode() {
+        session.forgetLearningUndo()
         symbolPanel.dismiss()
         session.dismissPredictions()
         if session.isComposing {
@@ -364,11 +388,14 @@ class GboardInputController: IMKInputController, PinyinSessionDelegate {
             candidates: candidates,
             pinyin: pinyin,
             selectedIndex: selectedIndex,
+            selectedRemovable: !symbolPanel.isOpen && session.isComposing &&
+                session.selectedCandidateRemovable,
             canGoPrevious: canGoPrevious,
             canGoNext: canGoNext,
             onSelect: { [weak self] idx in
                 guard let self = self else { return }
                 let session = self.session
+                session.forgetLearningUndo()
                 if self.symbolPanel.isOpen {
                     self.symbolPanel.select(index: idx)
                 } else if session.isPredicting {
@@ -501,12 +528,16 @@ class GboardInputController: IMKInputController, PinyinSessionDelegate {
 
     override func commitComposition(_ sender: Any!) {
         switchClient(to: sender)
+        // Clients send this on clicks and caret moves; a later Backspace no
+        // longer follows the learned commit.
+        session.forgetLearningUndo()
         symbolPanel.dismiss()
         session.dismissPredictions()
         _ = session.commitRawPinyin()
     }
 
     override func deactivateServer(_ sender: Any!) {
+        session.forgetLearningUndo()
         symbolPanel.dismiss()
         session.dismissPredictions()
         _ = session.commitRawPinyin()

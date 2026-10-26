@@ -34,7 +34,10 @@ static os_log_t jni_os_log(void) {
 #define KIND_FILE_DESCRIPTOR 8
 #define KIND_RANGE 9
 
-typedef struct { uint8_t kind; uint32_t len; char data[]; } FakeObj;
+// `bytes` caches a string's String.getBytes() result. DeleteLocalRef is a
+// no-op here, so a fresh array per call would leak on every native lookup
+// that reads a Java string this way (e.g. nativeGetDataSourceIndex).
+typedef struct { uint8_t kind; uint32_t len; void *bytes; char data[]; } FakeObj;
 
 static FakeObj *alloc_obj(uint8_t kind, size_t sz) {
     FakeObj *o = calloc(1, sizeof(FakeObj) + sz);
@@ -118,7 +121,10 @@ const char *jni_get_string(jstring s) {
 }
 void jni_release_string(jstring s) {
     FakeObj *o = (FakeObj *)s;
-    if (o && o->kind == KIND_STRING) free(o);
+    if (o && o->kind == KIND_STRING) {
+        free(o->bytes);
+        free(o);
+    }
 }
 jstring jni_new_string(JNIEnv *e, const char *s) {
     (void)e; if (!s) s = "";
@@ -550,9 +556,11 @@ static jobject fn_CallObjectMethodV(JNIEnv *e, jobject o, jmethodID m, va_list a
             if (fo->kind == KIND_STRING) {
                 const char *s = fo->data;
                 size_t len = strlen(s);
-                jbyteArray ba = jni_NewByteArray(e, (jsize)len);
-                jni_SetByteArrayRegion(e, ba, 0, (jsize)len, (const jbyte*)s);
-                return (jobject)ba;
+                if (!fo->bytes) fo->bytes = jni_NewByteArray(e, (jsize)len);
+                // Recopy each call: Get*ArrayElements exposes the storage, so
+                // a native caller that edited it must not affect later reads.
+                jni_SetByteArrayRegion(e, fo->bytes, 0, (jsize)len, (const jbyte*)s);
+                return (jobject)fo->bytes;
             }
         }
     }

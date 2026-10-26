@@ -34,6 +34,13 @@ struct CandidateView: View {
     let candidates: [String]
     let pinyin: PinyinReading
     let selectedIndex: Int
+    /// Shift+Delete can remove the highlighted candidate when it is a
+    /// learned word; a hint shows beside the settings button. The pinyin
+    /// strip always reserves its width, so the candidate row never moves.
+    var selectedRemovable = false
+
+    static let removeHint = "⇧⌫ 删除学习词"
+    static let removeHintFont = NSFont.systemFont(ofSize: 11)
     let canGoPrevious: Bool
     let canGoNext: Bool
     let onSelect: (Int) -> Void
@@ -134,6 +141,7 @@ struct CandidateView: View {
                             correction: Color(nsColor: .systemOrange),
                             typo: Color(nsColor: .secondaryLabelColor))
                         : pinyin.attributedText(accent: accentColor))
+                        .layoutPriority(1)
 
                     if preferences.isTraditional {
                         Text("繁")
@@ -156,6 +164,14 @@ struct CandidateView: View {
                     }
 
                     Spacer()
+
+                    if selectedRemovable {
+                        Text(Self.removeHint)
+                            .font(Font(Self.removeHintFont))
+                            .foregroundColor(hintColor)
+                            .fixedSize()
+                            .help("Shift+退格 删除选中的学习词")
+                    }
 
                     if let onOpenSettings = onOpenSettings {
                         Button {
@@ -351,6 +367,7 @@ class CandidateWindowController: NSObject {
         candidates: [String],
         pinyin: PinyinReading,
         selectedIndex: Int = 0,
+        selectedRemovable: Bool = false,
         canGoPrevious: Bool,
         canGoNext: Bool,
         onSelect: @escaping (Int) -> Void,
@@ -363,6 +380,7 @@ class CandidateWindowController: NSObject {
             candidates: candidates,
             pinyin: pinyin,
             selectedIndex: selectedIndex,
+            selectedRemovable: selectedRemovable,
             canGoPrevious: canGoPrevious,
             canGoNext: canGoNext,
             onSelect: { [weak self] idx in self?.onSelect?(idx) },
@@ -372,7 +390,9 @@ class CandidateWindowController: NSObject {
             glassBacked: glassEffectClass != nil,
             preferences: preferences
         )
-        let width = candidateWindowWidth(candidates: candidates, pinyin: pinyin.displayText)
+        let width = candidateWindowWidth(
+            candidates: candidates, pinyin: pinyin.displayText,
+            removeHint: !pinyin.isEmpty)
         let height: CGFloat = pinyin.isEmpty ? 40 : 68
         if window == nil {
             let w = CandidatePanel(
@@ -427,7 +447,14 @@ class CandidateWindowController: NSObject {
         }
     }
 
-    private func candidateWindowWidth(candidates: [String], pinyin: String) -> CGFloat {
+    /// Room the pinyin strip reserves for the remove hint, so moving the
+    /// selection on or off a learned word never resizes the window: the
+    /// Spacer minimum (8), two HStack gaps (12), the gear (16), and slack
+    /// for the arrow glyphs, which draw wider than they measure.
+    static let removeHintChrome: CGFloat = 52
+
+    private func candidateWindowWidth(candidates: [String], pinyin: String,
+                                      removeHint: Bool = false) -> CGFloat {
         let candidateWidths = candidates.enumerated().map { index, candidate in
             let number = "\(index + 1)." as NSString
             let text = candidate as NSString
@@ -437,7 +464,9 @@ class CandidateWindowController: NSObject {
             let textWidth = text.size(withAttributes: [
                 .font: NSFont.systemFont(ofSize: 18)
             ]).width
-            return max(36, numberWidth + 2 + textWidth) + 8
+            // SwiftUI lays each Text out at its pixel-rounded width; matching
+            // that keeps the row from overflowing and scrolling by a few points.
+            return max(36, ceil(numberWidth) + 2 + ceil(textWidth)) + 8
         }
 
         let rowWidth = candidateWidths.reduce(0, +)
@@ -446,7 +475,11 @@ class CandidateWindowController: NSObject {
             + 38
         let pinyinWidth = (pinyin as NSString).size(withAttributes: [
             .font: PinyinReading.displayNSFont
-        ]).width + 24
+        ]).width + 24 + (removeHint
+            ? ceil((CandidateView.removeHint as NSString).size(withAttributes: [
+                .font: CandidateView.removeHintFont
+            ]).width) + Self.removeHintChrome
+            : 0)
         let contentWidth = ceil(max(120, max(rowWidth, pinyinWidth)))
         let screenWidth = NSScreen.main?.visibleFrame.width ?? contentWidth
         return min(contentWidth, screenWidth - 24)

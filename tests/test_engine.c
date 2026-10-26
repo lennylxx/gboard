@@ -1395,6 +1395,154 @@ static void test_user_dict_persist_and_reload(const char *executable,
     rmdir("tests/test_user_data");
 }
 
+static int find_candidate(char **cands, int count, const char *text) {
+    for (int i = 0; i < count; ++i) {
+        if (cands[i] && strcmp(cands[i], text) == 0) return i;
+    }
+    return -1;
+}
+
+static int verify_user_dict_child(const char *executable, const char *so,
+                                  const char *pack, const char *pinyin,
+                                  const char *text, const char *max_position) {
+    pid_t pid = fork();
+    if (pid == 0) {
+        execl(executable, executable, "--verify-user-dict", so, pack,
+              "tests/test_user_data", pinyin, text, max_position, NULL);
+        _exit(127);
+    }
+    int status = 0;
+    if (pid <= 0 || waitpid(pid, &status, 0) != pid || !WIFEXITED(status))
+        return -1;
+    return WEXITSTATUS(status);
+}
+
+// Exit 0 when a fresh process still offers `text` from the user dictionary
+// alone (removable), 3 when it does not.
+static int verify_user_dict_removable_child(const char *executable,
+                                            const char *so, const char *pack,
+                                            const char *pinyin,
+                                            const char *text) {
+    pid_t pid = fork();
+    if (pid == 0) {
+        execl(executable, executable, "--verify-user-dict-removable", so, pack,
+              "tests/test_user_data", pinyin, text, NULL);
+        _exit(127);
+    }
+    int status = 0;
+    if (pid <= 0 || waitpid(pid, &status, 0) != pid || !WIFEXITED(status))
+        return -1;
+    return WEXITSTATUS(status);
+}
+
+static void test_user_dict_remove_candidate(const char *executable,
+                                            const char *so,
+                                            const char *pack) {
+    printf("[test_user_dict_remove_candidate]\n");
+
+    const char *tokens[] = {"ce", "shi"};
+    int types[] = {16, 16};
+    for (int i = 0; i < 20; ++i)
+        hmm_user_dict_learn(tokens, types, 2, "侧试", true);
+    check("remove: persist learned phrase", hmm_user_dict_persist());
+    check("remove: fresh process ranks learned phrase first",
+          verify_user_dict_child(executable, so, pack,
+                                 "ceshi", "侧试", "0") == 0);
+
+    char *cands[50] = {0};
+    set_editor_context("");
+    int count = get_candidates_bulk("ceshi", cands, 50);
+    int learned = find_candidate(cands, count, "侧试");
+    int system = find_candidate(cands, count, "测试");
+    printf("    侧试 at %d, 测试 at %d\n", learned, system);
+    check("remove: learned phrase is a candidate", learned >= 0);
+    check("remove: learned-only candidate is removable",
+          learned >= 0 && hmm_user_dict_is_candidate_removable(learned));
+    check("remove: system candidate is not removable",
+          system >= 0 && !hmm_user_dict_is_candidate_removable(system));
+    check("remove: system candidate cannot be removed",
+          system >= 0 && !hmm_user_dict_remove_candidate(system));
+    check("remove: out-of-range candidate is not removable",
+          !hmm_user_dict_is_candidate_removable(-1));
+    check("remove: learned candidate is removed",
+          learned >= 0 && hmm_user_dict_remove_candidate(learned));
+    free_cands(cands, count);
+
+    // Refill without resetting, as the IME does after removal.
+    count = hmm_engine_get_candidates(cands, 50);
+    int refilled = find_candidate(cands, count, "侧试");
+    printf("    after removal, 侧试 at %d of %d\n", refilled, count);
+    check("remove: refilled list still has candidates", count > 0);
+    check("remove: refilled list no longer offers it from the user dict",
+          refilled < 0 || !hmm_user_dict_is_candidate_removable(refilled));
+    free_cands(cands, count);
+
+    // Check the saved removal before anything else is learned.
+    check("remove: persist first removal", hmm_user_dict_persist());
+    check("remove: fresh process no longer has it in the user dict",
+          verify_user_dict_removable_child(executable, so, pack,
+                                           "ceshi", "侧试") == 3);
+
+    // Learning after a persist must still reach the decoder.
+    const char *other_tokens[] = {"ce", "shi"};
+    int other_types[] = {16, 16};
+    for (int i = 0; i < 20; ++i)
+        hmm_user_dict_learn(other_tokens, other_types, 2, "厕视", true);
+    count = get_candidates_bulk("ceshi", cands, 50);
+    check("remove: learning after persist updates ranking live",
+          find_candidate(cands, count, "厕视") == 0);
+    check("remove: removal survives a fresh decode",
+          find_candidate(cands, count, "侧试") < 0 ||
+          !hmm_user_dict_is_candidate_removable(
+              find_candidate(cands, count, "侧试")));
+    free_cands(cands, count);
+
+    check("remove: persist after relearning", hmm_user_dict_persist());
+    check("remove: fresh process offers the relearned phrase",
+          verify_user_dict_removable_child(executable, so, pack,
+                                           "ceshi", "厕视") == 0);
+
+    count = get_candidates_bulk("ceshi", cands, 50);
+    int fresh = find_candidate(cands, count, "侧试");
+    check("remove: fresh decode no longer offers it from the user dict",
+          fresh < 0 || !hmm_user_dict_is_candidate_removable(fresh));
+    free_cands(cands, count);
+
+    // A save can land while candidates are shown; a removal made before
+    // the next reset must not be lost when the decoder refreshes.
+    count = get_candidates_bulk("ceshi", cands, 50);
+    int pending = find_candidate(cands, count, "厕视");
+    check("remove: second learned phrase is removable before save",
+          pending >= 0 && hmm_user_dict_is_candidate_removable(pending));
+    check("remove: persist with candidates shown", hmm_user_dict_persist());
+    check("remove: removal right after persist succeeds",
+          pending >= 0 && hmm_user_dict_remove_candidate(pending));
+    free_cands(cands, count);
+    // The IME refills without a reset right after removal.
+    count = hmm_engine_get_candidates(cands, 50);
+    int refill_after_save = find_candidate(cands, count, "厕视");
+    printf("    post-save refill: 厕视 at %d removable=%d refresh=%d\n",
+           refill_after_save,
+           refill_after_save >= 0 &&
+               hmm_user_dict_is_candidate_removable(refill_after_save),
+           hmm_user_dict_decoder_refresh_pending());
+    // The stale decoder can refill the phrase, so the IME must re-decode
+    // (reset refreshes the decoder) while a refresh is pending.
+    check("remove: post-save removal reports a pending decoder refresh",
+          hmm_user_dict_decoder_refresh_pending());
+    free_cands(cands, count);
+    count = get_candidates_bulk("ceshi", cands, 50);
+    int after_reset = find_candidate(cands, count, "厕视");
+    check("remove: removal between persist and reset survives refresh",
+          after_reset < 0 ||
+          !hmm_user_dict_is_candidate_removable(after_reset));
+    free_cands(cands, count);
+    check("remove: persist post-save removal", hmm_user_dict_persist());
+    check("remove: fresh process drops post-save removal",
+          verify_user_dict_removable_child(executable, so, pack,
+                                           "ceshi", "厕视") == 3);
+}
+
 static void test_user_dict_clear(void) {
     printf("[test_user_dict_clear]\n");
 
@@ -1589,6 +1737,18 @@ int main(int argc, char **argv) {
         hmm_engine_destroy();
         return size == 0 ? 0 : 3;
     }
+    if (argc == 7 && strcmp(argv[1], "--verify-user-dict-removable") == 0) {
+        if (!hmm_engine_init_with_user_data(argv[2], argv[3], argv[4]))
+            return 2;
+        char *cands[500] = {0};
+        int count = get_candidates_bulk(argv[5], cands, 500);
+        int position = find_candidate(cands, count, argv[6]);
+        bool removable = position >= 0 &&
+            hmm_user_dict_is_candidate_removable(position);
+        free_cands(cands, count);
+        hmm_engine_destroy();
+        return removable ? 0 : 3;
+    }
     if (argc == 8 && strcmp(argv[1], "--verify-user-dict") == 0) {
         if (!hmm_engine_init_with_user_data(argv[2], argv[3], argv[4]))
             return 2;
@@ -1664,6 +1824,7 @@ int main(int argc, char **argv) {
     test_context_overrides_user_frequency();
     test_user_dict_learn_and_boost();
     test_user_dict_learn_phrase();
+    test_user_dict_remove_candidate(argv[0], so, pack);
     test_user_dict_clear();
 
     // Persist/reload test — destroys and reinits engine

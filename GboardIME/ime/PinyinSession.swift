@@ -69,6 +69,7 @@ class PinyinSession {
             forName: UserDictionary.didClearNotification, object: nil, queue: .main
         ) { [weak self] _ in
             guard let self = self else { return }
+            self.lastLearning = nil
             self.dismissPredictions()
             if self.isComposing {
                 self.pendingLearningValid = false
@@ -241,6 +242,7 @@ class PinyinSession {
 
     func appendLetter(_ ch: String) -> KeyResult {
         if composition.isEmpty {
+            lastLearning = nil
             preferences.beginPinyinComposition(self)
             dismissPredictions()
             let rawContext = preferences.contextEnabled
@@ -303,6 +305,7 @@ class PinyinSession {
         let text = candidates[index]
         let engineText = index < engineCandidates.count
             ? engineCandidates[index] : engineContext(text)
+        lastLearning = nil
 
         // Get the vertex range BEFORE selecting (like Android does)
         let engineIndex = candidatePage * candidatePageSize + index
@@ -385,6 +388,7 @@ class PinyinSession {
             return .passThrough
         }
         let text = visible[index]
+        lastLearning = nil
         let absolute = predictionPage * candidatePageSize + index
         let engineText = absolute < enginePredictions.count
             ? enginePredictions[absolute] : engineContext(text)
@@ -547,6 +551,8 @@ class PinyinSession {
         }
         guard let punct = chinesePunctuation(for: ch) else { return .passThrough }
         finishComposition()
+        // Text now follows the learned word, so Delete must not unlearn it.
+        lastLearning = nil
         dismissPredictions()
         delegate?.sessionInsertText(punct)
         return .handled
@@ -578,6 +584,7 @@ class PinyinSession {
     /// Drops all state owned by a client that IMKit no longer routes to,
     /// clearing its marked text first. Call while the old client is current.
     func handleClientSwitch() {
+        lastLearning = nil
         if isComposing {
             cancel()
         } else {
@@ -588,6 +595,7 @@ class PinyinSession {
     func commitAndPassThrough() -> KeyResult {
         guard !composition.isEmpty else { return .passThrough }
         finishComposition()
+        lastLearning = nil
         dismissPredictions()
         return .commitAndPass
     }
@@ -657,15 +665,112 @@ class PinyinSession {
             return
         }
 
-        pendingLearningTokens.withCString2DArray { cTokens in
+        let learned = pendingLearningTokens.withCString2DArray { cTokens in
             pendingLearningTypes.withUnsafeMutableBufferPointer { cTypes in
                 pendingLearningText.withCString { cValue in
-                    _ = gboard_user_dict_learn(
+                    gboard_user_dict_learn(
                         cTokens, cTypes.baseAddress!,
                         Int32(pendingLearningTokens.count), cValue, true)
                 }
             }
         }
+        if learned {
+            lastLearning = LearnedCommit(
+                tokens: pendingLearningTokens,
+                types: pendingLearningTypes,
+                text: pendingLearningText
+            )
+        }
+    }
+
+    /// The most recent learned commit, undoable by the next Delete.
+    /// Mirrors Gboard's AbstractHmmChineseDecodeProcessor learning record.
+    private struct LearnedCommit {
+        let tokens: [String]
+        var types: [Int32]
+        let text: String
+    }
+
+    private var lastLearning: LearnedCommit?
+
+    var canUndoLearning: Bool { lastLearning != nil }
+
+    /// Forgets the undo record; any key other than Delete makes it stale.
+    func forgetLearningUndo() {
+        lastLearning = nil
+    }
+
+    /// Like Gboard's Backspace after a commit: decrements the learned entry
+    /// once. Returns true if the dictionary was updated. The caller still
+    /// lets the Delete key remove the text.
+    @discardableResult
+    func undoLastLearning() -> Bool {
+        guard var learned = lastLearning else { return false }
+        lastLearning = nil
+        guard !isComposing, preferences.learningEnabled,
+              gboard_user_dict_is_ready() else { return false }
+        let rawContext = preferences.contextEnabled
+            ? delegate?.sessionContextBeforeInput() ?? "" : ""
+        guard Self.contextEndsWith(engineContext(rawContext),
+                                   learned.text) else { return false }
+        let count = Int32(learned.tokens.count)
+        return learned.tokens.withCString2DArray { cTokens in
+            learned.types.withUnsafeMutableBufferPointer { cTypes in
+                learned.text.withCString { cValue in
+                    gboard_user_dict_unlearn(
+                        cTokens, cTypes.baseAddress!, count, cValue)
+                }
+            }
+        }
+    }
+
+    /// True when `context` (a bounded trailing window, possibly empty when
+    /// unavailable) is consistent with `text` being just before the caret.
+    static func contextEndsWith(_ context: String, _ text: String) -> Bool {
+        guard !context.isEmpty else { return true }
+        let overlap = min(context.count, text.count)
+        return context.suffix(overlap) == text.suffix(overlap)
+    }
+
+    // MARK: - Removing learned candidates
+
+    /// Removes the selected candidate if it came only from the user
+    /// dictionary, like Gboard's DELETE_CANDIDATE action. The candidate
+    /// list is refilled on the same input; the change is saved later.
+    @discardableResult
+    func removeSelectedCandidate() -> Bool {
+        guard isComposing, selectedIndex >= 0,
+              selectedIndex < candidates.count else { return false }
+        let engineIndex = candidatePage * candidatePageSize + selectedIndex
+        guard gboard_user_dict_remove_candidate(Int32(engineIndex)) else {
+            return false
+        }
+        let previousSelection = selectedIndex
+        if gboard_user_dict_decoder_refresh_pending() {
+            // After a save the decoder still holds the old snapshot and
+            // would refill the removed word; re-decode to refresh it.
+            let page = candidatePage
+            fetchCandidates()
+            if page > 0 {
+                candidatePage = page
+                fillCandidatePage()
+            }
+        } else {
+            fillCandidatePage()
+        }
+        var selection = previousSelection
+        if candidates.isEmpty && candidatePage > 0 {
+            // The removed word was alone on the last page; stay nearby.
+            candidatePage -= 1
+            fillCandidatePage()
+            selection = candidates.count - 1
+        }
+        if !candidates.isEmpty {
+            selectedIndex = max(0, min(selection, candidates.count - 1))
+            notifyCandidates()
+        }
+        delegate?.sessionSetMarkedText(segmentedPinyin)
+        return true
     }
 
     // MARK: - Internal
@@ -749,6 +854,10 @@ class PinyinSession {
     }
 
     private func notifyCandidates() {
+        selectedCandidateRemovable = !candidates.isEmpty &&
+            selectedIndex < candidates.count &&
+            gboard_user_dict_is_candidate_removable(
+                Int32(candidatePage * candidatePageSize + selectedIndex))
         if candidates.isEmpty {
             pinyinReading = .empty
             delegate?.sessionHideCandidates()
@@ -764,6 +873,9 @@ class PinyinSession {
             )
         }
     }
+
+    /// True when Shift+Delete can remove the highlighted candidate.
+    private(set) var selectedCandidateRemovable = false
 
     /// Reading shown in the candidate window for the selected candidate.
     private(set) var pinyinReading = PinyinReading.empty

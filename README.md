@@ -61,6 +61,13 @@ A macOS input method that runs Gboard's native HMM Pinyin engine via a custom AR
   phrases in `user_dict_3_3` and pure English words in
   `user_dict_3_3_english` under `~/Library/Application Support/GboardIME/`,
   persisting both every four hours and on app teardown.
+- **Remove and undo learned words** — `Shift+Backspace` removes the
+  highlighted candidate when it comes only from the user dictionary (as
+  Gboard's long-press "remove suggestion"); while one is highlighted, a
+  "⇧⌫ 删除学习词" hint appears beside the settings button (only when
+  pinyin is shown in the candidate window). Pressing Backspace right
+  after committing a learned phrase undoes that learning once and deletes
+  the text as usual.
 - **Complete keyboard workflow** — Supports candidate paging, keyboard
   selection, and Chinese/English mode switching.
 - **Simplified / Traditional Chinese toggle** — Convert candidates and
@@ -76,10 +83,6 @@ A macOS input method that runs Gboard's native HMM Pinyin engine via a custom AR
   follows the system Appearance and Reduce Transparency settings. Earlier
   macOS versions fall back to a frosted-glass panel with Gboard Google Blue
   light/dark themes and an adjustable opacity.
-
-**Learning limitation:** Undo of a just-committed learned entry is not
-supported. InputMethodKit does not reliably expose the context needed to
-distinguish it from normal editing.
 
 ## How it works
 
@@ -144,7 +147,8 @@ window; changes are saved automatically.
 | = | Show next candidate or prediction page |
 | Space | Commit highlighted candidate or first prediction |
 | ← → | Move candidate selection, crossing page boundaries |
-| Backspace | Delete last pinyin character |
+| Backspace | Delete last pinyin character; right after a learned commit (without modifiers), also undo that learning |
+| Shift+Backspace | Remove the highlighted learned candidate from the user dictionary |
 | Escape | Cancel composition or dismiss predictions |
 | Return | Commit raw pinyin |
 | Shift | Switch between Chinese and English; commit active composition as raw pinyin |

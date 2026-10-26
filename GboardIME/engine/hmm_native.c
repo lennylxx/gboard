@@ -58,11 +58,15 @@ void hmm_resolve_natives(void) {
     s_userDictNatives.persist = (fn_PersistDictionary) jni_find_registered_native_by_sig("nativePersist", "(JLjava/lang/String;)Z");
     s_userDictNatives.refreshData = g_refreshData;
     s_userDictNatives.closeAccessor = (fn_CloseManager) jni_find_registered_native_by_sig("nativeClose", "(J)V");
-    s_userDictNatives.newEmptyDictionary = (fn_NewEmptyDictionary) jni_find_registered_native_by_sig("nativeNewEmptyDictionary", "(J)Z");
     s_userDictNatives.enrollMutableDictFd = (fn_EnrollMutableDictFd) jni_find_registered_native_by_sig("nativeEnrollMutableDictFd", "(JLjava/lang/String;ILjava/io/FileDescriptor;III)Z");
     s_userDictNatives.getCandidateTokenCount = (fn_GetCandidateTokenCount) jni_find_registered_native_by_sig("nativeGetCandidateTokenCount", "(JI)I");
     s_userDictNatives.getCandidateToken = (fn_GetCandidateToken) jni_find_registered_native_by_sig("nativeGetCandidateToken", "(JII)J");
     s_userDictNatives.getTokenLanguage = (fn_GetTokenLanguage) jni_find_registered_native_by_sig("nativeGetTokenLanguage", "(JJ)I");
+    s_userDictNatives.removeByValue = (fn_RemoveByValue) jni_find_registered_native_by_sig("nativeRemoveByValue", "(JLjava/lang/String;)Z");
+    s_userDictNatives.deleteCandidate = (fn_DeleteCandidate) jni_find_registered_native_by_sig("nativeDeleteCandidate", "(JI)Z");
+    s_userDictNatives.getDataSourceIndex = (fn_GetDataSourceIndex) jni_find_registered_native_by_sig("nativeGetDataSourceIndex", "(JLjava/lang/String;)I");
+    s_userDictNatives.getCandidatePrimaryDataSource = (fn_GetCandidatePrimaryDataSource) jni_find_registered_native_by_sig("nativeGetCandidatePrimaryDataSource", "(JI)I");
+    s_userDictNatives.isCandidateFromSingleDataSource = (fn_IsCandidateFromSingleDataSource) jni_find_registered_native_by_sig("nativeIsCandidateFromSingleDataSource", "(JI)Z");
 
     LOGERR("Resolved: factory=%p dm=%p engine=%p enroll=%p append=%p fill=%p count=%p str=%p",
         (void*)g_createFactory, (void*)g_getDataManager, (void*)g_createEngine,

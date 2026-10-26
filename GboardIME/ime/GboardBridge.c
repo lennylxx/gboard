@@ -75,6 +75,20 @@ bool gboard_user_dict_unlearn(const char **tokens, const int *token_types,
     return hmm_user_dict_unlearn(tokens, token_types, token_count, value);
 }
 
+bool gboard_user_dict_is_candidate_removable(int candidate_index) {
+    return hmm_user_dict_is_candidate_removable(candidate_index);
+}
+
+bool gboard_user_dict_remove_candidate(int candidate_index) {
+    bool ok = hmm_user_dict_remove_candidate(candidate_index);
+    if (ok) s_cached_cand_idx = -1;
+    return ok;
+}
+
+bool gboard_user_dict_decoder_refresh_pending(void) {
+    return hmm_user_dict_decoder_refresh_pending();
+}
+
 bool gboard_user_dict_persist(void)   { return hmm_user_dict_persist(); }
 int  gboard_user_dict_get_size(void)  { return hmm_user_dict_get_size(); }
 bool gboard_user_dict_clear(void)     { return hmm_user_dict_clear(); }

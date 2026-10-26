@@ -38,6 +38,12 @@ bool  gboard_user_dict_learn(const char **tokens, const int *token_types,
 // Undo learning of a previously committed candidate.
 bool  gboard_user_dict_unlearn(const char **tokens, const int *token_types,
                                 int token_count, const char *value);
+// True if the candidate came only from a user dictionary and can be removed.
+bool  gboard_user_dict_is_candidate_removable(int candidate_index);
+// Remove a learned candidate from the user dictionaries and decoder list.
+bool  gboard_user_dict_remove_candidate(int candidate_index);
+// True while a saved snapshot awaits the decoder refresh at the next reset.
+bool  gboard_user_dict_decoder_refresh_pending(void);
 // Persist the user dictionary to disk.
 bool  gboard_user_dict_persist(void);
 // Get the current dictionary size.
