@@ -143,9 +143,25 @@ func testFuzzyPinyinPreference() {
 
         session.cancel()
         delegate.clear()
+        for ch in "nihao'shijie" {
+            _ = ch == "'" ? session.handlePunctuation("'") : session.appendLetter(String(ch))
+        }
+        check("separated partial selection succeeds",
+              selectCandidate("你好", in: session) && session.remainingComposition == "shijie")
+        preferences.fuzzyPinyinGroups = [.lN, .zZh]
+        check("fuzzy switch replays a selection ending at a separator",
+              session.convertedText == "你好" && session.remainingComposition == "shijie" &&
+              session.segmentedPinyin == "shi'jie" && session.candidates.first == "世界")
+        _ = session.deleteBack()
+        check("replayed selection can still be undone",
+              session.convertedText.isEmpty && session.composition == "nihao'shijie" &&
+              session.segmentedPinyin == "ni'hao'shi'jie")
+        preferences.fuzzyPinyinGroups = []
+        session.cancel()
+        delegate.clear()
         for ch in "nihaohulan" { _ = session.appendLetter(String(ch)) }
         check("partial selection before fuzzy switch succeeds",
-              selectCandidate("你好", in: session) && session.composition == "hulan")
+              selectCandidate("你好", in: session) && session.remainingComposition == "hulan")
         preferences.fuzzyPinyinGroups = [.lN]
         _ = session.selectCurrent()
         check("fuzzy switch retains partial commits and remaining consumption",
@@ -179,7 +195,7 @@ func testFuzzyPinyinPreference() {
         check("fuzzy learning test clears existing data", gboard_user_dict_clear())
         for ch in "ceshi" { _ = session.appendLetter(String(ch)) }
         check("fuzzy learning test selects its first segment",
-              selectCandidate("侧", in: session) && session.composition == "shi")
+              selectCandidate("侧", in: session) && session.remainingComposition == "shi")
         preferences.fuzzyPinyinGroups = [.lN]
         check("fuzzy switch retains pending segmented learning",
               selectCandidate("试", in: session) && delegate.committedText == "侧试" &&
@@ -250,7 +266,7 @@ func testPinyinSchemePreference() {
         preferences.fuzzyPinyinGroups = []
         check("partial shuangpin selection preserves remaining original keys",
               selectCandidate("你", in: session) &&
-              session.composition == "hc" && session.candidates.first == "好" &&
+              session.remainingComposition == "hc" && session.candidates.first == "好" &&
               gboard_get_pinyin_scheme() == HMM_PINYIN_SHUANGPIN_FLYPY)
         _ = session.selectCurrent()
         check("scheme applies only after the entire composition ends",
@@ -309,7 +325,7 @@ func testPinyinSchemePreference() {
         check("shuangpin learning starts empty", gboard_user_dict_clear())
         for ch in "ceui" { _ = session.appendLetter(String(ch)) }
         check("shuangpin learning selects its first segment",
-              selectCandidate("侧", in: session) && session.composition == "ui")
+              selectCandidate("侧", in: session) && session.remainingComposition == "ui")
         check("request full pinyin before finishing learned phrase",
               preferences.applyPinyinScheme(.full))
         check("pending learning finishes before the accessor switches",
@@ -531,6 +547,9 @@ func testPinyinDisplayModePreference() {
                   mode.markedText(for: "").isEmpty)
             check("\(mode.rawValue) preserves the composition anchor when text is invisible",
                   mode == .inline || mode.markedText(for: "ni'hao") == "\u{200B}")
+            check("\(mode.rawValue) always shows selected text before the pinyin",
+                  mode.markedText(for: "shi'jie", converted: "你好") ==
+                    (mode == .inline ? "你好shi'jie" : "你好"))
             session.showPredictions(context: "生日快")
             check("\(mode.rawValue) predictions never show a pinyin strip",
                   session.isPredicting && delegate.candidateReading.isEmpty)
@@ -606,7 +625,7 @@ func testLearningPreference() {
             let (session, delegate) = makeSession(preferences: preferences)
             for ch in "ceshi" { _ = session.appendLetter(String(ch)) }
             check("learning test selects its first segment",
-                  selectCandidate("侧", in: session) && session.composition == "shi")
+                  selectCandidate("侧", in: session) && session.remainingComposition == "shi")
             afterFirstSegment()
             check("learning test completes its phrase",
                   selectCandidate("试", in: session) && delegate.committedText == "侧试")
@@ -732,7 +751,7 @@ func testClearLearningSessionUpdates() {
         }
         check("clear refreshes candidates without committing the remaining composition",
               session.composition == composition && !delegate.shownCandidates.isEmpty &&
-              delegate.committedText == "侧")
+              delegate.committedText.isEmpty && session.convertedText == "侧")
         check("remaining segment still commits normally", selectCandidate("试", in: session))
         check("clear discards previously accumulated learning",
               gboard_user_dict_get_size() == 0)

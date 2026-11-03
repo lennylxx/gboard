@@ -726,6 +726,90 @@ static void test_select_and_continue(void) {
     free_cands(c3, n3);
 }
 
+static int find_partial_candidate(char **cands, int count, const char *text,
+                                  int consumed) {
+    for (int i = 0; i < count; i++) {
+        if (cands[i] && strcmp(cands[i], text) == 0 &&
+            hmm_engine_get_candidate_consumed(i) == consumed) return i;
+    }
+    return -1;
+}
+
+static void test_partial_selection_unconvert(void) {
+    printf("[test_partial_selection_unconvert]\n");
+    enum { MAX = 60 };
+    char *c[MAX] = {0};
+    char reading[128];
+
+    int n = get_candidates_bulk("nihaoshijie", c, MAX);
+    int idx = find_partial_candidate(c, n, "你好", 5);
+    free_cands(c, n);
+    check("nihaoshijie offers partial 你好", idx >= 0);
+    if (idx < 0) return;
+    check("nothing to unconvert before a selection",
+          !hmm_engine_unconvert_last());
+
+    check("partial 你好 is selected", hmm_engine_select(idx));
+    check("one converted selection", hmm_engine_get_converted_count() == 1);
+    n = hmm_engine_get_candidates(c, MAX);
+    check("candidates continue after the selection",
+          n > 0 && strcmp(c[0], "世界") == 0 &&
+          hmm_engine_get_candidate_consumed(0) == 11);
+    free_cands(c, n);
+    hmm_engine_get_segmented_pinyin(reading, sizeof(reading));
+    check("reading omits the converted segment",
+          strcmp(reading, "shi'jie") == 0);
+
+    check("selection is unconverted", hmm_engine_unconvert_last());
+    check("no converted selection remains",
+          hmm_engine_get_converted_count() == 0);
+    n = hmm_engine_get_candidates(c, MAX);
+    check("candidates cover the whole input again",
+          n > 0 && strcmp(c[0], "你好世界") == 0 &&
+          hmm_engine_get_candidate_consumed(0) == 11);
+    free_cands(c, n);
+    hmm_engine_get_segmented_pinyin(reading, sizeof(reading));
+    check("reading restores the unconverted pinyin",
+          strcmp(reading, "ni'hao'shi'jie") == 0);
+
+    // Input appended after a selection extends the remaining segment.
+    n = get_candidates_bulk("nihaoshi", c, MAX);
+    idx = find_partial_candidate(c, n, "你好", 5);
+    free_cands(c, n);
+    check("nihaoshi offers partial 你好", idx >= 0);
+    if (idx < 0) return;
+    hmm_engine_select(idx);
+    check("append after a selection", hmm_engine_append("jie"));
+    n = hmm_engine_get_candidates(c, MAX);
+    check("appended input decodes after the selection",
+          n > 0 && strcmp(c[0], "世界") == 0);
+    free_cands(c, n);
+
+    // Deleting letters keeps the selection and stops at its end.
+    for (int i = 0; i < 6; i++) hmm_engine_delete_last_input();
+    check("delete keeps the converted selection",
+          hmm_engine_get_converted_count() == 1);
+    check("delete stops at the selection end",
+          !hmm_engine_delete_last_input());
+    check("append again after deleting to the selection",
+          hmm_engine_append("shij"));
+    n = hmm_engine_get_candidates(c, MAX);
+    check("deleted input decodes again after the selection",
+          n > 0 && strcmp(c[0], "时间") == 0 &&
+          hmm_engine_get_candidate_consumed(0) == 9);
+    free_cands(c, n);
+    check("selection is unconverted after deletion",
+          hmm_engine_unconvert_last());
+    n = hmm_engine_get_candidates(c, MAX);
+    check("unconverted input decodes as a whole",
+          n > 0 && strncmp(c[0], "你好", strlen("你好")) == 0 &&
+          hmm_engine_get_candidate_consumed(0) == 9);
+    free_cands(c, n);
+    hmm_engine_reset();
+    check("reset clears converted selections",
+          hmm_engine_get_converted_count() == 0);
+}
+
 // ── Candidate range tests ────────────────────────────────────────────────────
 
 static void test_candidate_range(void) {
@@ -2258,6 +2342,7 @@ int main(int argc, char **argv) {
     test_context_language_scoring();
     test_continuous_phrase_language_scoring();
     test_select_and_continue();
+    test_partial_selection_unconvert();
     test_candidate_range();
     test_full_ime_simulation();
     test_brute_force_initials();

@@ -359,10 +359,15 @@ class GboardInputController: IMKInputController, PinyinSessionDelegate {
     }
 
     func sessionSetMarkedText(_ text: String) {
+        sessionSetMarkedText(text, converted: "")
+    }
+
+    func sessionSetMarkedText(_ text: String, converted: String) {
         guard let client = currentClient as? IMKTextInput else { return }
         let markedText = text == SymbolPanel.placeholder
             ? "\u{200B}"
-            : Preferences.shared.pinyinDisplayMode.markedText(for: text)
+            : Preferences.shared.pinyinDisplayMode.markedText(
+                for: text, converted: converted)
         if markedText.isEmpty {
             client.setMarkedText("",
                                  selectionRange: NSRange(location: 0, length: 0),

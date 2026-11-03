@@ -92,9 +92,10 @@ enum PinyinDisplayMode: String, CaseIterable {
         }
     }
 
-    func markedText(for pinyin: String) -> String {
-        guard !pinyin.isEmpty else { return "" }
-        return self == .inline ? pinyin : "\u{200B}"
+    func markedText(for pinyin: String, converted: String = "") -> String {
+        guard !pinyin.isEmpty || !converted.isEmpty else { return "" }
+        if self == .inline { return converted + pinyin }
+        return converted.isEmpty ? "\u{200B}" : converted
     }
 }
 

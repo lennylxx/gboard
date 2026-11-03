@@ -232,6 +232,10 @@ final class SymbolPanel: PinyinSessionDelegate {
         delegate?.sessionSetMarkedText(text)
     }
 
+    func sessionSetMarkedText(_ pinyin: String, converted: String) {
+        delegate?.sessionSetMarkedText(pinyin, converted: converted)
+    }
+
     func sessionShowCandidates(
         _ candidates: [String],
         pinyin: PinyinReading,

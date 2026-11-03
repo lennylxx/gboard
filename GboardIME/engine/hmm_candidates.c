@@ -9,7 +9,8 @@ enum {
     SEPARATOR_SEGMENT = 2,
     END_VERTEX_SENTINEL = 32767,
     CONTEXT_MAX_UTF8_BYTES = 256,
-    PREDICTION_MAX_CANDIDATES = 50
+    PREDICTION_MAX_CANDIDATES = 50,
+    MAX_CONVERTED_RANGES = 64
 };
 
 typedef struct {
@@ -23,6 +24,23 @@ static bool s_context_ends_latin;
 static bool s_context_injected;
 static int s_context_end_vertex;
 static bool s_settings_ready = true;
+
+// Ranges of candidates selected in the active composition, like the
+// selected-range stack of Gboard's AbstractHmmEngineWrapper.
+typedef struct {
+    int start;
+    int end;
+} VertexRange;
+static VertexRange s_converted[MAX_CONVERTED_RANGES];
+static int s_converted_count;
+
+// Candidates cover the input after the last selection, or after the
+// injected context when nothing is selected yet.
+static int candidate_start_vertex(void) {
+    return s_converted_count > 0
+        ? s_converted[s_converted_count - 1].end
+        : s_context_end_vertex;
+}
 
 static size_t utf8_codepoint_length(const unsigned char *s,
                                     size_t remaining) {
@@ -257,7 +275,7 @@ int hmm_engine_get_candidates_page(char **candidates, int offset, int max_count)
     int count = 0;
 
     if (g_fillCandList) {
-        jobject range = jni_create_range(g_env, s_context_end_vertex,
+        jobject range = jni_create_range(g_env, candidate_start_vertex(),
                                          g_end_vertex);
         CRASH_PROTECT_BEGIN()
         jboolean ok = g_fillCandList(g_env, NULL, g_engine, range);
@@ -415,6 +433,18 @@ int hmm_engine_get_segmented_pinyin(char *text, int max_bytes) {
         int start_v = 0, end_v = 0;
         jni_get_range(range, &start_v, &end_v);
         if (start_v < s_context_end_vertex) continue;
+        // Without the native check, converted segments end at the
+        // last selection.
+        if (!g_isSegmentConverted && start_v < candidate_start_vertex()) {
+            continue;
+        }
+        if (g_isSegmentConverted) {
+            jboolean converted = JNI_FALSE;
+            CRASH_PROTECT_BEGIN()
+            converted = g_isSegmentConverted(g_env, NULL, g_engine, seg);
+            CRASH_PROTECT_END("nativeIsSegmentConverted")
+            if (converted) continue;
+        }
 
         jint tokenCount = 0;
         CRASH_PROTECT_BEGIN()
@@ -525,15 +555,65 @@ int hmm_engine_get_corrected_candidate_reading(int index,
 
 bool hmm_engine_select(int index) {
     if (!g_selectCand || !g_engine) return false;
+    if (s_converted_count >= MAX_CONVERTED_RANGES) return false;
+    int start = 0, end = 0;
+    bool has_range = false;
+    if (g_getCandRange) {
+        jobject range = NULL;
+        CRASH_PROTECT_BEGIN()
+        range = g_getCandRange(g_env, NULL, g_engine, (jint)index);
+        CRASH_PROTECT_END("nativeGetCandidateRange(select)")
+        if (range) {
+            jni_get_range(range, &start, &end);
+            has_range = end > start;
+        }
+    }
     jboolean result = JNI_FALSE;
     CRASH_PROTECT_BEGIN()
     result = g_selectCand(g_env, NULL, g_engine, (jint)index);
     CRASH_PROTECT_END("nativeSelectCandidate")
+    if (result && has_range) {
+        s_converted[s_converted_count++] = (VertexRange){ start, end };
+    }
     return (bool)result;
+}
+
+bool hmm_engine_delete_last_input(void) {
+    if (!g_deleteInput || !g_engine) return false;
+    if (g_end_vertex <= candidate_start_vertex()) return false;
+    jobject range = jni_create_range(g_env, (int)g_end_vertex - 1,
+                                     (int)g_end_vertex);
+    jboolean result = JNI_FALSE;
+    CRASH_PROTECT_BEGIN()
+    result = g_deleteInput(g_env, NULL, g_engine, range);
+    CRASH_PROTECT_END("nativeDelete")
+    if (!result) return false;
+    g_end_vertex--;
+    return true;
+}
+
+int hmm_engine_get_converted_count(void) {
+    return s_converted_count;
+}
+
+bool hmm_engine_unconvert_last(void) {
+    if (s_converted_count == 0 || !g_unconvertSegments || !g_engine) {
+        return false;
+    }
+    VertexRange last = s_converted[s_converted_count - 1];
+    jobject range = jni_create_range(g_env, last.start, last.end);
+    jboolean result = JNI_FALSE;
+    CRASH_PROTECT_BEGIN()
+    result = g_unconvertSegments(g_env, NULL, g_engine, range);
+    CRASH_PROTECT_END("nativeUnconvertSegments")
+    if (!result) return false;
+    s_converted_count--;
+    return true;
 }
 
 void hmm_engine_reset(void) {
     g_end_vertex = 0;
+    s_converted_count = 0;
     s_context_injected = false;
     s_context_end_vertex = 0;
     volatile bool reset_ok = false;

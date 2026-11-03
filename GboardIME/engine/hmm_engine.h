@@ -96,10 +96,26 @@ int  hmm_engine_get_candidates_page(char **candidates, int offset, int max_count
 // the normalized context is empty. Caller frees each returned string.
 int  hmm_engine_get_predictions(char **candidates, int max_count);
 
-// Commit candidate at index (0-based) and reset composition.
+// Select candidate at index (0-based). A candidate covering only part of
+// the input converts those segments; later candidates cover the input after
+// the last selection, as in Gboard's AbstractHmmEngineWrapper.
 bool hmm_engine_select(int index);
 
-// Get the vertex range consumed by candidate at index.
+// Delete the last input letter with nativeDelete, keeping converted
+// selections, like Gboard's deleteInputRange. Fails when no unconverted
+// input remains. Refill candidates afterwards.
+bool hmm_engine_delete_last_input(void);
+
+// Number of selections converted in the active composition.
+int hmm_engine_get_converted_count(void);
+
+// Restore the most recent selection to pinyin with nativeUnconvertSegments,
+// like Gboard's Backspace after a partial selection. Refill candidates
+// afterwards. Returns false when nothing is converted.
+bool hmm_engine_unconvert_last(void);
+
+// Get the vertex range consumed by candidate at index, counted from the start
+// of the composition (including any converted part).
 // Returns the end vertex index (number of pinyin chars consumed from start).
 // Returns -1 on failure.
 int hmm_engine_get_candidate_consumed(int index);
@@ -115,6 +131,7 @@ bool hmm_engine_set_separator(int vertex_index, int separator_type);
 // Get the current composing reading using the same segment/token traversal as
 // Gboard's Java AbstractHmmEngineWrapper.e(), with apostrophes inserted between
 // tokens so the candidate window can visualize the engine's actual split.
+// Converted segments are omitted.
 // Must be called after hmm_engine_get_candidates().
 // Returns the number of UTF-8 bytes written, excluding the trailing NUL.
 int hmm_engine_get_segmented_pinyin(char *text, int max_bytes);

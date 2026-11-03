@@ -359,6 +359,120 @@ func testRemainingComposition() {
     }
 }
 
+func testPartialSelectionUndo() {
+    print("[test_partial_selection_undo]")
+    let (s, m) = makeSession()
+
+    for ch in "nihaoshijie" { _ = s.appendLetter(String(ch)) }
+    check("undo: partial 你好 selected", selectCandidate("你好", in: s))
+    check("undo: selection stays in the composition",
+          m.committedText.isEmpty && s.convertedText == "你好" &&
+          s.remainingComposition == "shijie" && s.candidates.first == "世界")
+    check("undo: marked text shows the selection before the pinyin",
+          m.markedText == "你好" + s.segmentedPinyin &&
+          s.segmentedPinyin == "shi'jie")
+    _ = s.deleteBack()
+    check("undo: Backspace restores the selected pinyin",
+          s.convertedText.isEmpty && s.composition == "nihaoshijie" &&
+          s.candidates.first == "你好世界" && m.committedText.isEmpty &&
+          m.markedText == "ni'hao'shi'jie")
+    _ = s.deleteBack()
+    check("undo: next Backspace deletes a letter",
+          s.composition == "nihaoshiji")
+
+    s.cancel()
+    m.clear()
+    for ch in "nihaoshi" { _ = s.appendLetter(String(ch)) }
+    _ = selectCandidate("你好", in: s)
+    for ch in "jie" { _ = s.appendLetter(String(ch)) }
+    check("undo: typing continues after the selection",
+          s.convertedText == "你好" && s.remainingComposition == "shijie" &&
+          s.candidates.first == "世界")
+    for _ in 0..<3 { _ = s.deleteBack() }
+    check("undo: Backspace deletes typed letters before the selection",
+          s.convertedText == "你好" && s.remainingComposition == "shi")
+    _ = s.deleteBack()
+    check("undo: then restores the selection",
+          s.convertedText.isEmpty && s.composition == "nihaoshi")
+    for _ in 0..<8 { _ = s.deleteBack() }
+    check("undo: deleting everything ends the composition",
+          !s.isComposing && m.committedText.isEmpty)
+
+    for ch in "nihaoshijie" { _ = s.appendLetter(String(ch)) }
+    _ = selectCandidate("你好", in: s)
+    _ = s.commitRawPinyin()
+    check("undo: Enter commits the selection and remaining pinyin",
+          m.committedText == "你好shijie" && !s.isComposing)
+
+    m.clear()
+    for ch in "nihaoshijie" { _ = s.appendLetter(String(ch)) }
+    _ = selectCandidate("你好", in: s)
+    s.cancel()
+    check("undo: Escape discards the selection",
+          m.committedText.isEmpty && !s.isComposing && m.markedText == nil)
+
+    for ch in "nihaoshijie" { _ = s.appendLetter(String(ch)) }
+    _ = selectCandidate("你好", in: s)
+    _ = s.selectCurrent()
+    check("undo: completing the input commits all selections",
+          m.committedText == "你好世界" && !s.isComposing)
+
+    s.dismissPredictions()
+    m.clear()
+    for ch in "nihaoshijie" { _ = s.appendLetter(String(ch)) }
+    _ = selectCandidate("你好", in: s)
+    check("undo: a second partial selection", selectCandidate("世", in: s))
+    check("undo: selections accumulate",
+          s.convertedText == "你好世" && s.remainingComposition == "jie" &&
+          m.committedText.isEmpty)
+    _ = s.deleteBack()
+    check("undo: Backspace restores the latest selection first",
+          s.convertedText == "你好" && s.remainingComposition == "shijie" &&
+          s.candidates.first == "世界")
+    _ = s.deleteBack()
+    check("undo: then the earlier selection",
+          s.convertedText.isEmpty && s.composition == "nihaoshijie")
+    s.cancel()
+
+    for ch in "nihaoshi" { _ = s.appendLetter(String(ch)) }
+    _ = selectCandidate("你好", in: s)
+    for ch in "jie" { _ = s.appendLetter(String(ch)) }
+    _ = selectCandidate("世", in: s)
+    _ = s.deleteBack()
+    check("undo: typed input before a later selection comes back",
+          s.convertedText == "你好" && s.remainingComposition == "shijie")
+    _ = s.deleteBack()
+    check("undo: then Backspace deletes that input",
+          s.convertedText == "你好" && s.remainingComposition == "shiji")
+    for ch in "e'" { _ = ch == "'" ? s.handlePunctuation("'") : s.appendLetter(String(ch)) }
+    for _ in 0..<4 { _ = s.deleteBack() }
+    check("undo: separators count as typed input",
+          s.convertedText == "你好" && s.remainingComposition == "shi")
+    _ = s.deleteBack()
+    check("undo: the selection is undone after its input",
+          s.convertedText.isEmpty && s.composition == "nihaoshi")
+    s.cancel()
+
+    for ch in "nihaoshijie" { _ = s.appendLetter(String(ch)) }
+    _ = selectCandidate("你好", in: s)
+    s.handleClientSwitch()
+    check("undo: client switch keeps the selected text",
+          m.committedText == "你好" && !s.isComposing)
+
+    withTestPreferences { preferences, _ in
+        let (t, d) = makeSession(preferences: preferences)
+        t.isTraditional = true
+        for ch in "fazhanshijie" { _ = t.appendLetter(String(ch)) }
+        check("undo: traditional partial 發展 selected", selectCandidate("發展", in: t))
+        t.isTraditional = false
+        check("undo: selected text follows the current script",
+              t.convertedText == "发展" && d.markedText?.hasPrefix("发展") == true)
+        t.isTraditional = true
+        _ = t.selectCurrent()
+        check("undo: commit uses one script", d.committedText == "發展世界")
+    }
+}
+
 func testSelectAndContinue(_ label: String, _ input: String) {
     print("[test_select_continue_\(label)]")
     let (s, m) = makeSession()
@@ -414,7 +528,7 @@ func testSegmentedUserDictionaryLearning() {
         for ch in "ceshi" { _ = session.appendLetter(String(ch)) }
 
         if !selectCandidate("侧", in: session) ||
-           session.composition != "shi" ||
+           session.remainingComposition != "shi" ||
            !selectCandidate("试", in: session) ||
            delegate.committedText != "侧试" {
             allSelectionsSucceeded = false
@@ -1043,7 +1157,9 @@ func testPredictionEdgeCases() {
     // Boundary keys finish a composition left active by a partial pick.
     for ch in "nihao" { _ = s.appendLetter(String(ch)) }
     check("partial: picks 你", selectCandidate("你", in: s))
-    check("partial: remainder composing", s.composition == "hao")
+    check("partial: remainder composing",
+          s.remainingComposition == "hao" && s.convertedText == "你" &&
+          d.committedText.isEmpty)
     let rest = s.candidates.first ?? ""
     _ = s.handlePunctuation(",")
     check("partial: punctuation finishes composition",
@@ -1573,6 +1689,7 @@ func testShortcutsIntegration(_ args: [String]) {
         testCandidatePaging()
         testEnterCommits()
         testRemainingComposition()
+        testPartialSelectionUndo()
         testSelectAndContinue("nihao_shijie", "nihaoshijie")
         testSelectAndContinue("woqunijiaya", "woqunijiaya")
         testSelectAndContinue("zhongwenshuruf", "zhongwenshuruf")

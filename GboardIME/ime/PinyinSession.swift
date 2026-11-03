@@ -8,6 +8,9 @@ protocol PinyinSessionDelegate: AnyObject {
     func sessionContextBeforeInput() -> String
     func sessionInsertText(_ text: String)
     func sessionSetMarkedText(_ text: String)
+    /// Composition with candidates selected but not yet committed before
+    /// the remaining pinyin.
+    func sessionSetMarkedText(_ pinyin: String, converted: String)
     func sessionShowCandidates(
         _ candidates: [String],
         pinyin: PinyinReading,
@@ -20,6 +23,9 @@ protocol PinyinSessionDelegate: AnyObject {
 
 extension PinyinSessionDelegate {
     func sessionContextBeforeInput() -> String { "" }
+    func sessionSetMarkedText(_ pinyin: String, converted: String) {
+        sessionSetMarkedText(converted + pinyin)
+    }
 }
 
 /// Result of handling a key action.
@@ -82,9 +88,9 @@ class PinyinSession {
         lastLearning = nil
         dismissPredictions()
         if isComposing {
-            pendingLearningValid = false
+            invalidatePendingLearning()
             fetchCandidates()
-            delegate?.sessionSetMarkedText(segmentedPinyin)
+            updateMarkedText()
         }
     }
 
@@ -104,7 +110,7 @@ class PinyinSession {
         let displayModeChanged = pinyinDisplayMode != preferences.pinyinDisplayMode
         pinyinDisplayMode = preferences.pinyinDisplayMode
         if !preferences.learningEnabled && isComposing {
-            pendingLearningValid = false
+            invalidatePendingLearning()
         }
         let pageSizeChanged = candidatePageSize != preferences.candidatePageSize.rawValue
         candidatePageSize = preferences.candidatePageSize.rawValue
@@ -140,6 +146,9 @@ class PinyinSession {
         if contextChanged {
             contextBeforeInput = ""
             predictionContext = ""
+            for i in selections.indices {
+                selections[i].predictionContextBefore = ""
+            }
             dismissPredictions()
             if !contextEnabled {
                 _ = gboard_update_input_context("", "", "")
@@ -152,12 +161,12 @@ class PinyinSession {
             if traditionalChanged {
                 candidates = displayCandidates()
             }
-            if displayModeChanged {
-                delegate?.sessionSetMarkedText(segmentedPinyin)
+            if displayModeChanged || traditionalChanged {
+                updateMarkedText()
             }
             if contextChanged || fuzzyChanged || shortcutsChanged {
                 fetchCandidates()
-                delegate?.sessionSetMarkedText(segmentedPinyin)
+                updateMarkedText()
             } else if pageSizeChanged {
                 candidatePage = 0
                 fillCandidatePage()
@@ -262,6 +271,7 @@ class PinyinSession {
     private var pendingLearningTokens: [String] = []
     private var pendingLearningTypes: [Int32] = []
     private var pendingLearningValid = true
+    private var pendingLearningInvalidated = false
 
     // MARK: - Key actions (called by InputController or test harness)
 
@@ -275,14 +285,49 @@ class PinyinSession {
             contextBeforeInput = engineContext(rawContext)
         }
         composition += ch
-        fetchCandidates()
-        delegate?.sessionSetMarkedText(segmentedPinyin)
+        if selections.isEmpty {
+            fetchCandidates()
+        } else {
+            // Extend the input after the converted part, as Gboard does.
+            guard gboard_append(ch) else {
+                composition.removeLast()
+                return .handled
+            }
+            inputsAfterSelection += 1
+            refillCandidates()
+        }
+        updateMarkedText()
         return .handled
     }
 
     func deleteBack() -> KeyResult {
         guard !composition.isEmpty else { return .passThrough }
+        // Like Gboard's operation stack, Backspace undoes the selection
+        // once the input typed after it is deleted.
+        if let last = selections.last,
+           inputsAfterSelection == 0 ||
+            composition.filter({ $0 != "'" }).count <= last.consumedLetters {
+            undoLastSelection()
+            return .handled
+        }
         let removed = composition.removeLast()
+        if !selections.isEmpty {
+            // Delete natively so converted selections survive.
+            if removed == "'" {
+                if !composition.hasSuffix("'") {
+                    let position = Int32(composition.filter { $0 != "'" }.count)
+                    separatorPositions.removeAll { $0 == position }
+                    _ = gboard_set_separator(position, 0)  // 0 = NO_SEPARATOR
+                }
+            } else if !gboard_delete_last_input() {
+                composition.append(removed)
+                return .handled
+            }
+            inputsAfterSelection = max(0, inputsAfterSelection - 1)
+            refillCandidates()
+            updateMarkedText()
+            return .handled
+        }
         if removed == "'" {
             // Recalculate separator positions from remaining composition
             separatorPositions = []
@@ -296,14 +341,14 @@ class PinyinSession {
             cancel()
         } else {
             fetchCandidates()
-            delegate?.sessionSetMarkedText(segmentedPinyin)
+            updateMarkedText()
         }
         return .handled
     }
 
     func commitRawPinyin() -> KeyResult {
         guard !composition.isEmpty else { return .passThrough }
-        delegate?.sessionInsertText(composition)
+        delegate?.sessionInsertText(convertedText + remainingComposition)
         reset()
         return .handled
     }
@@ -315,9 +360,7 @@ class PinyinSession {
         guard !composition.isEmpty else { return .passThrough }
         guard !candidates.isEmpty else {
             // No candidates — commit raw pinyin
-            delegate?.sessionInsertText(composition)
-            reset()
-            return .handled
+            return commitRawPinyin()
         }
         return selectCandidate(index: selectedIndex)
     }
@@ -340,6 +383,19 @@ class PinyinSession {
         let tokenCount = preferences.learningEnabled
             ? gboard_user_dict_extract_token_count(Int32(engineIndex)) : 0
         let letterCount = composition.filter { $0 != "'" }.count
+        let selection = ConvertedSelection(
+            compositionCount: composition.count,
+            preparedLetters: selections.first?.preparedLetters ?? preparedLetterCount,
+            consumedLetters: consumed,
+            engineText: engineText,
+            verbatim: index < verbatimCandidates.count && verbatimCandidates[index],
+            inputsBefore: inputsAfterSelection,
+            committedBefore: committedInComposition,
+            predictionContextBefore: predictionContext,
+            learningTextBefore: pendingLearningText,
+            learningTokensBefore: pendingLearningTokens,
+            learningTypesBefore: pendingLearningTypes,
+            learningValidBefore: pendingLearningValid)
         if committedInComposition.isEmpty {
             predictionContext = contextBeforeInput
         }
@@ -348,41 +404,38 @@ class PinyinSession {
                                   engineIndex: engineIndex,
                                   tokenCount: Int(tokenCount))
 
-        _ = gboard_select(Int32(engineIndex))
+        let convertedBefore = gboard_get_converted_count()
+        let selected = gboard_select(Int32(engineIndex))
 
-        delegate?.sessionInsertText(text)
-
-        // Map vertex count to composition index (skipping apostrophes)
-        let remaining: String
         if consumed > 0 && consumed < letterCount {
-            // Find the position in composition corresponding to `consumed` letters
-            var letters = 0
-            var dropCount = 0
-            for c in composition {
-                if letters >= consumed { break }
-                dropCount += 1
-                if c != "'" { letters += 1 }
+            guard selected else {
+                restore(selection)
+                return .handled
             }
-            remaining = String(composition.dropFirst(dropCount))
-        } else {
-            remaining = ""
-        }
-
-        if !remaining.isEmpty {
-            composition = remaining
-            fetchCandidates()
-            delegate?.sessionSetMarkedText(segmentedPinyin)
+            guard gboard_get_converted_count() == convertedBefore + 1 else {
+                // The engine converted without a recorded range; decode again
+                // so the native state matches the remaining selections.
+                restore(selection)
+                fetchCandidates()
+                updateMarkedText()
+                return .handled
+            }
+            // Keep the selection in the composition, like Gboard, so
+            // Backspace can still restore its pinyin.
+            selections.append(selection)
+            inputsAfterSelection = 0
+            refillCandidates()
             if !candidates.isEmpty {
+                updateMarkedText()
                 return .handled
             }
             // Undecodable remainder: commit its letters rather than drop them.
-            let raw = remaining.filter { $0 != "'" }
-            if !raw.isEmpty {
-                delegate?.sessionInsertText(raw)
-                committedInComposition += raw
-            }
+            let raw = remainingComposition.filter { $0 != "'" }
+            delegate?.sessionInsertText(convertedText + raw)
+            committedInComposition += raw
         } else {
             commitPendingLearning()
+            delegate?.sessionInsertText(convertedText + text)
         }
         let committedContext = predictionContext + committedInComposition
         reset()
@@ -564,6 +617,7 @@ class PinyinSession {
         }
         if (ch == "'" || ch == "\u{2019}" || ch == "\u{2018}") && isComposing {
             composition += "'"
+            if !selections.isEmpty { inputsAfterSelection += 1 }
             // Track separator at the vertex matching the letter count up to this apostrophe
             let vertexPos = Int32(composition.filter { $0 != "'" }.count)
             if !separatorPositions.contains(vertexPos) {
@@ -571,7 +625,7 @@ class PinyinSession {
             }
             _ = gboard_set_separator(vertexPos, 1)  // 1 = TOKEN_SEPARATOR
             refillCandidates()
-            delegate?.sessionSetMarkedText(segmentedPinyin)
+            updateMarkedText()
             return .handled
         }
         guard let punct = chinesePunctuation(for: ch) else { return .passThrough }
@@ -596,9 +650,9 @@ class PinyinSession {
     private func finishComposition() {
         var rounds = 0
         while isComposing && rounds < 32 {
-            let before = composition
+            let before = (composition, selections.count)
             _ = selectCurrent()
-            if composition == before { break }
+            if composition == before.0 && selections.count == before.1 { break }
             rounds += 1
         }
         if isComposing {
@@ -610,7 +664,11 @@ class PinyinSession {
     /// clearing its marked text first. Call while the old client is current.
     func handleClientSwitch() {
         lastLearning = nil
-        if isComposing {
+        if isComposing && !selections.isEmpty {
+            // Selected text was already chosen; keep it like a commit.
+            delegate?.sessionInsertText(convertedText)
+            reset()
+        } else if isComposing {
             cancel()
         } else {
             dismissPredictions()
@@ -636,7 +694,7 @@ class PinyinSession {
         if gboard_get_segmented_pinyin(&buffer, Int32(buffer.count)) > 0 {
             segmentedPinyin = String(cString: buffer)
         } else {
-            segmentedPinyin = String(composition.filter { $0 != "'" })
+            segmentedPinyin = String(remainingComposition.filter { $0 != "'" })
         }
 
         if composition.hasSuffix("'") && !segmentedPinyin.hasSuffix("'") {
@@ -794,7 +852,7 @@ class PinyinSession {
             selectedIndex = max(0, min(selection, candidates.count - 1))
             notifyCandidates()
         }
-        delegate?.sessionSetMarkedText(segmentedPinyin)
+        updateMarkedText()
         return true
     }
 
@@ -814,7 +872,11 @@ class PinyinSession {
         pendingLearningTokens = []
         pendingLearningTypes = []
         pendingLearningValid = true
+        pendingLearningInvalidated = false
         committedInComposition = ""
+        selections = []
+        inputsAfterSelection = 0
+        preparedLetterCount = 0
         predictions = []
         enginePredictions = []
         predictionPage = 0
@@ -830,27 +892,189 @@ class PinyinSession {
     /// Text committed from the current composition across segmented picks.
     private var committedInComposition = ""
 
+    /// A candidate selected for part of the input. Like Gboard's partial
+    /// selection, it stays in the composition before the remaining pinyin
+    /// until everything is selected, and Backspace right after it restores
+    /// its pinyin.
+    private struct ConvertedSelection {
+        let compositionCount: Int
+        /// Input length that chose the engine, kept while selections exist.
+        let preparedLetters: Int
+        let consumedLetters: Int
+        let engineText: String
+        let verbatim: Bool
+        /// Input operations after the previous selection.
+        let inputsBefore: Int
+        let committedBefore: String
+        var predictionContextBefore: String
+        let learningTextBefore: String
+        let learningTokensBefore: [String]
+        let learningTypesBefore: [Int32]
+        let learningValidBefore: Bool
+    }
+    private var selections: [ConvertedSelection] = []
+    /// Letters and separators typed after the last selection.
+    private var inputsAfterSelection = 0
+    /// Input length last used to choose the engine.
+    private var preparedLetterCount = 0
+
+    /// Selected text shown before the remaining pinyin.
+    var convertedText: String {
+        selections.map {
+            $0.verbatim ? $0.engineText : toTraditionalIfEnabled($0.engineText)
+        }.joined()
+    }
+
+    /// Composition after the last selection, without leading separators.
+    var remainingComposition: String {
+        guard let consumed = selections.last?.consumedLetters else {
+            return composition
+        }
+        var letters = 0
+        var rest = Substring(composition)
+        while letters < consumed, let first = rest.first {
+            if first != "'" { letters += 1 }
+            rest = rest.dropFirst()
+        }
+        return String(rest.drop { $0 == "'" })
+    }
+
+    private func updateMarkedText() {
+        delegate?.sessionSetMarkedText(segmentedPinyin, converted: convertedText)
+    }
+
+    private func restore(_ selection: ConvertedSelection) {
+        committedInComposition = selection.committedBefore
+        predictionContext = selection.predictionContextBefore
+        pendingLearningText = selection.learningTextBefore
+        pendingLearningTokens = selection.learningTokensBefore
+        pendingLearningTypes = selection.learningTypesBefore
+        pendingLearningValid = selection.learningValidBefore &&
+            !pendingLearningInvalidated
+    }
+
+    /// Learning can no longer be trusted for this composition, even if a
+    /// selection made before the change is undone.
+    private func invalidatePendingLearning() {
+        pendingLearningValid = false
+        pendingLearningInvalidated = true
+    }
+
+    private func undoLastSelection() {
+        guard let last = selections.popLast() else { return }
+        inputsAfterSelection = last.inputsBefore
+        if gboard_unconvert_last() {
+            restore(last)
+            refillCandidates()
+        } else {
+            restore(selections.first ?? last)
+            selections = []
+            inputsAfterSelection = 0
+            fetchCandidates()
+        }
+        updateMarkedText()
+    }
+
     private func fetchCandidates() {
         contextBeforeInput.withCString { context in
             _ = gboard_set_context(context)
         }
         // Append only letters (skip apostrophes)
-        let letters = String(composition.filter { $0 != "'" })
-        letters.withCString { gboard_prepare_input($0) }
-        gboard_reset()
-        guard gboard_append(letters) else {
+        let letters = Array(composition.filter { $0 != "'" })
+        var appended = 0
+        func restart(preparing count: Int) {
+            String(letters.prefix(count)).withCString { gboard_prepare_input($0) }
+            preparedLetterCount = count
+            gboard_reset()
+            appended = 0
+        }
+
+        // Re-decode in chunks, re-selecting each converted candidate at its
+        // boundary so changed settings keep the selections. The engine chosen
+        // for the first selection stays, so the candidates still match.
+        func appendLetters(upTo end: Int) -> Bool {
+            guard end > appended else { return true }
+            guard gboard_append(String(letters[appended..<end])) else {
+                return false
+            }
+            // Restore user-set separators after reset+append
+            for pos in separatorPositions where Int(pos) > appended && Int(pos) <= end {
+                gboard_set_separator(pos, 1)
+            }
+            appended = end
+            return true
+        }
+        let replayed = selections
+        selections = []
+        restart(preparing: replayed.first.map {
+            min($0.preparedLetters, letters.count)
+        } ?? letters.count)
+        var untracked = false
+        for selection in replayed {
+            guard selection.consumedLetters <= letters.count,
+                  appendLetters(upTo: selection.consumedLetters) else {
+                restore(selection)
+                break
+            }
+            let result = reselect(selection)
+            guard result == .selected else {
+                restore(selection)
+                untracked = result == .untracked
+                break
+            }
+            selections.append(selection)
+        }
+        // Inputs after dropped selections now follow the last kept one.
+        inputsAfterSelection += replayed.dropFirst(selections.count)
+            .reduce(0) { $0 + $1.inputsBefore }
+        if untracked && !replayed.isEmpty {
+            // The engine converted without a recorded range; drop them all.
+            restore(replayed[0])
+            selections = []
+        }
+        if selections.isEmpty {
+            inputsAfterSelection = 0
+        }
+        if selections.isEmpty && !replayed.isEmpty {
+            // Start over without selections from a known state.
+            restart(preparing: letters.count)
+        }
+        guard appendLetters(upTo: letters.count) else {
             candidates = []
             engineCandidates = []
-        verbatimCandidates = []
+            verbatimCandidates = []
             delegate?.sessionHideCandidates()
             return
         }
-        // Restore user-set separators after reset+append
-        for pos in separatorPositions {
-            gboard_set_separator(pos, 1)
-        }
         candidatePage = 0
         fillCandidatePage()
+    }
+
+    /// Selects the candidate matching a converted selection after its
+    /// input is decoded again.
+    private enum ReselectResult { case selected, notFound, untracked }
+
+    private func reselect(_ selection: ConvertedSelection) -> ReselectResult {
+        let pageSize: Int32 = 100
+        let converted = gboard_get_converted_count()
+        var offset: Int32 = 0
+        while true {
+            var bufs = [UnsafeMutablePointer<CChar>?](repeating: nil, count: Int(pageSize))
+            let count = Int(gboard_get_candidates_page(&bufs, offset, pageSize))
+            defer { bufs.prefix(count).forEach { free($0) } }
+            for i in 0..<count {
+                let index = offset + Int32(i)
+                guard let ptr = bufs[i],
+                      String(cString: ptr) == selection.engineText,
+                      Int(gboard_get_candidate_consumed(index)) ==
+                        selection.consumedLetters else { continue }
+                guard gboard_select(index) else { return .notFound }
+                return gboard_get_converted_count() == converted + 1
+                    ? .selected : .untracked
+            }
+            guard count == Int(pageSize) else { return .notFound }
+            offset += pageSize
+        }
     }
 
     /// Refill candidates on current engine state (no reset), used after setting a separator.
