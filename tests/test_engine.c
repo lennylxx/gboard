@@ -476,6 +476,8 @@ static void test_shuangpin(void) {
 
 static void test_init(const char *so, const char *pack) {
     printf("[test_init]\n");
+    check("missing library path fails cleanly",
+          !hmm_engine_init_with_user_data(NULL, pack, "tests/test_user_data"));
     bool ok = hmm_engine_init_with_user_data(so, pack, "tests/test_user_data");
     check("engine initializes", ok);
 }

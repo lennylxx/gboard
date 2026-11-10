@@ -10,6 +10,10 @@
 #include "hmm_internal.h"
 #include "hmm_user_dict.h"
 
+#include <dirent.h>
+#include <pthread.h>
+#include <stdatomic.h>
+
 // ── Global state definitions (declared extern in hmm_internal.h) ────────────
 
 sigjmp_buf s_hmm_jmp;
@@ -470,12 +474,99 @@ bool hmm_engine_init(const char *so_path, const char *pack_dir) {
     return hmm_engine_init_with_user_data(so_path, pack_dir, NULL);
 }
 
+typedef struct {
+    char *so_path;
+    char *pack_dir;
+} PrefetchPaths;
+
+static void prefetch_file(const char *path, void *buf, size_t cap) {
+    // O_NONBLOCK keeps a stray FIFO from blocking the thread in open().
+    int fd = open(path, O_RDONLY | O_CLOEXEC | O_NONBLOCK);
+    if (fd < 0) return;
+    struct stat st;
+    if (fstat(fd, &st) == 0 && S_ISREG(st.st_mode)) {
+        while (read(fd, buf, cap) > 0) {}
+    }
+    close(fd);
+}
+
+static bool prefetch_skips(const char *name) {
+    // Pinyin decoders never read the wubi or stroke tables.
+    return name[0] == '.' || strncmp(name, "wubi_", 5) == 0 ||
+           strncmp(name, "stroke_", 7) == 0;
+}
+
+static void *prefetch_main(void *arg) {
+    PrefetchPaths *paths = arg;
+    const size_t cap = 1 << 20;
+    void *buf = malloc(cap);
+    if (buf) {
+        prefetch_file(paths->so_path, buf, cap);
+        DIR *dir = paths->pack_dir ? opendir(paths->pack_dir) : NULL;
+        if (dir) {
+            struct dirent *e;
+            char path[4096];
+            while ((e = readdir(dir))) {
+                if (prefetch_skips(e->d_name)) continue;
+                int n = snprintf(path, sizeof(path), "%s/%s",
+                                 paths->pack_dir, e->d_name);
+                if (n > 0 && (size_t)n < sizeof(path))
+                    prefetch_file(path, buf, cap);
+            }
+            closedir(dir);
+        }
+        free(buf);
+    }
+    free(paths->so_path);
+    free(paths->pack_dir);
+    free(paths);
+    return NULL;
+}
+
+// The ELF loader maps the library directly, so a cold start otherwise pays
+// for ~1600 scattered synchronous 16 KB page-ins. Sequential reads on a
+// background thread fill the page cache ahead of those faults.
+static void start_prefetch(const char *so_path, const char *pack_dir) {
+    static atomic_bool started = false;
+    if (atomic_exchange(&started, true)) return;
+    PrefetchPaths *paths = calloc(1, sizeof(*paths));
+    if (!paths) return;
+    paths->so_path = strdup(so_path);
+    paths->pack_dir = pack_dir ? strdup(pack_dir) : NULL;
+    if (!paths->so_path || (pack_dir && !paths->pack_dir)) {
+        free(paths->so_path);
+        free(paths->pack_dir);
+        free(paths);
+        return;
+    }
+    // The thread inherits a fully blocked mask so the crash-protection
+    // SIGALRM always lands on the thread that owns s_hmm_jmp.
+    sigset_t all, old;
+    sigfillset(&all);
+    pthread_sigmask(SIG_SETMASK, &all, &old);
+    pthread_t thread;
+    int rc = pthread_create(&thread, NULL, prefetch_main, paths);
+    pthread_sigmask(SIG_SETMASK, &old, NULL);
+    if (rc != 0) {
+        free(paths->so_path);
+        free(paths->pack_dir);
+        free(paths);
+        return;
+    }
+    pthread_detach(thread);
+}
+
 bool hmm_engine_init_with_user_data(const char *so_path, const char *pack_dir,
                                      const char *user_data_dir) {
     JNI_LOCAL_FRAME();
+    if (!so_path) {
+        LOGERR("hmm_engine_init: missing library path");
+        return false;
+    }
     LOG("hmm_engine_init: so=%s pack=%s user_data=%s", so_path, pack_dir,
         user_data_dir ? user_data_dir : "(none)");
 
+    start_prefetch(so_path, pack_dir);
     android_stubs_init(pack_dir);
 
     g_elf = elf_load(so_path);
