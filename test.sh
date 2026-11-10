@@ -51,7 +51,7 @@ if ! "$PROBE_DIR/gen-ctor-probe" "$PROBE_DIR/lib.so" "$PACK_PATH" >/dev/null; th
 fi
 if [ "$(cat "$PROBE_DIR/victim")" != keep ] ||
    [ -L "$PROBE_DIR/lib.so.ctorprobe" ] ||
-   [ "$(head -c 8 "$PROBE_DIR/lib.so.ctorprobe")" != GBCTOR02 ]; then
+   [ "$(head -c 8 "$PROBE_DIR/lib.so.ctorprobe")" != GBCTOR03 ]; then
     echo "FAIL: constructor probe generation"
     exit 1
 fi
@@ -60,6 +60,17 @@ if ! "$PROBE_DIR/gen-ctor-probe" --verify "$PROBE_DIR/lib.so" "$PACK_PATH" >/dev
     echo "FAIL: elf_load ignored a freshly generated constructor probe"
     exit 1
 fi
+# Point the first TPIDR site at the ELF header, outside the code. The sites
+# follow the 56-byte header, one byte per constructor, and a site count.
+cp "$PROBE_DIR/lib.so.ctorprobe" "$PROBE_DIR/good.ctorprobe"
+ctors=$(od -An -tu8 -j16 -N8 "$PROBE_DIR/lib.so.ctorprobe" | tr -d ' ')
+dd if=/dev/zero of="$PROBE_DIR/lib.so.ctorprobe" bs=1 count=4 \
+    seek=$((56 + ctors + 8)) conv=notrunc 2>/dev/null
+if "$PROBE_DIR/gen-ctor-probe" --verify "$PROBE_DIR/lib.so" "$PACK_PATH" >/dev/null 2>&1; then
+    echo "FAIL: elf_load accepted a probe with an invalid TPIDR site"
+    exit 1
+fi
+mv "$PROBE_DIR/good.ctorprobe" "$PROBE_DIR/lib.so.ctorprobe"
 # Flip a digest byte (header: 8-byte magic, size, count, then the digest).
 b=$(od -An -tu1 -j40 -N1 "$PROBE_DIR/lib.so.ctorprobe" | tr -d ' ')
 printf "\\$(printf %03o $((255 - b)))" |

@@ -488,14 +488,69 @@ static void decode_android_rela(ElfHandle *h, const uint8_t *data, size_t size) 
 
 extern uint8_t s_fake_tls[];  // from android_stubs.c
 
-// Segment range for targeted TPIDR scanning
-typedef struct {
-    uint32_t *code;
-    size_t    n_insns;
-} CodeRange;
+#define MRS_TPIDR_MASK 0xFFFFFFE0u
+#define MRS_TPIDR_EL0  0xd53bd040u
 
-static void elf_patch_tpidr(uint8_t *bias, const Elf64_Phdr *phdrs, int phnum,
-                             void *load_base, size_t load_size) {
+// Returns 1 when [vaddr, vaddr + 4) lies in the file-backed part of an
+// executable PT_LOAD segment.
+static int tpidr_site_in_code(const Elf64_Phdr *phdrs, int phnum,
+                              uint64_t vaddr) {
+    if (vaddr & 3) return 0;
+    for (int i = 0; i < phnum; i++) {
+        if (phdrs[i].p_type != PT_LOAD || !(phdrs[i].p_flags & 1)) continue;
+        if (vaddr >= phdrs[i].p_vaddr &&
+            vaddr + 4 <= phdrs[i].p_vaddr + phdrs[i].p_filesz)
+            return 1;
+    }
+    return 0;
+}
+
+// Returns 1 if every cached site is an `mrs xN, TPIDR_EL0` in code. This
+// cannot detect omitted sites; completeness relies on the probe header
+// digest (build ID, file size, and constructor layout).
+static int tpidr_sites_valid(const uint8_t *bias, const Elf64_Phdr *phdrs,
+                             int phnum, const uint32_t *sites, size_t n) {
+    for (size_t i = 0; i < n; i++) {
+        if (!tpidr_site_in_code(phdrs, phnum, sites[i])) return 0;
+        uint32_t insn;
+        memcpy(&insn, bias + sites[i], sizeof(insn));
+        if ((insn & MRS_TPIDR_MASK) != MRS_TPIDR_EL0) return 0;
+    }
+    return 1;
+}
+
+// Scan executable segments for `mrs xN, TPIDR_EL0`. Returns a malloc'd
+// array of link-time addresses (relative to bias), or NULL on failure.
+static uint32_t *tpidr_scan_sites(const uint8_t *bias, const Elf64_Phdr *phdrs,
+                                  int phnum, size_t *out_n) {
+    size_t n = 0, cap = 0;
+    uint32_t *sites = NULL;
+    for (int i = 0; i < phnum; i++) {
+        if (phdrs[i].p_type != PT_LOAD || !(phdrs[i].p_flags & 1)) continue;
+        uint64_t start = (phdrs[i].p_vaddr + 3) & ~3ULL;
+        uint64_t end = phdrs[i].p_vaddr + phdrs[i].p_filesz;
+        if (end > UINT32_MAX) { free(sites); return NULL; }
+        const uint32_t *code = (const uint32_t *)(bias + start);
+        size_t n_insns = (size_t)((end - start) / 4);
+        for (size_t k = 0; k < n_insns; k++) {
+            if ((code[k] & MRS_TPIDR_MASK) != MRS_TPIDR_EL0) continue;
+            if (n == cap) {
+                cap = cap ? cap * 2 : 1024;
+                uint32_t *grown = realloc(sites, cap * sizeof(*sites));
+                if (!grown) { free(sites); return NULL; }
+                sites = grown;
+            }
+            sites[n++] = (uint32_t)(start + k * 4);
+        }
+    }
+    *out_n = n;
+    return sites ? sites : malloc(sizeof(*sites));
+}
+
+// Returns 0 when every listed site was patched. An unpatched site would read
+// the real macOS TPIDR_EL0 and corrupt memory, so any failure is fatal.
+static int elf_patch_tpidr(uint8_t *bias, const uint32_t *sites, size_t n_sites,
+                           void *load_base, size_t load_size) {
 #if defined(__aarch64__) || defined(__arm64__)
     // Strategy: replace every `mrs xN, TPIDR_EL0` with `b trampoline_i`.
     // Each patched instruction gets its own trampoline that:
@@ -504,35 +559,16 @@ static void elf_patch_tpidr(uint8_t *bias, const Elf64_Phdr *phdrs, int phnum,
     //
     // CRITICAL: We use B (not BL) to avoid clobbering LR (x30).
     //
-    // OPTIMIZATION: Only scan executable segments (PF_X), not the entire
-    // load range. Typically ~8-16MB of code vs ~80MB total.
+    // The sites come from the build-time probe file, or from a scan of the
+    // executable segments when that file is missing or stale.
 
     uint64_t tls_addr = (uint64_t)s_fake_tls;
-    size_t page = (size_t)sysconf(_SC_PAGESIZE);
 
-    // Collect executable segment ranges
-    CodeRange ranges[32];
-    int n_ranges = 0;
-    size_t total_code_bytes = 0;
-    for (int i = 0; i < phnum && n_ranges < 32; i++) {
-        if (phdrs[i].p_type != PT_LOAD) continue;
-        if (!(phdrs[i].p_flags & 1)) continue;  // PF_X = 1
-        Elf64_Addr seg_start = phdrs[i].p_vaddr & ~(page - 1);
-        Elf64_Addr seg_end = (phdrs[i].p_vaddr + phdrs[i].p_memsz + page - 1) & ~(page - 1);
-        size_t seg_size = (size_t)(seg_end - seg_start);
-        ranges[n_ranges].code = (uint32_t *)(bias + seg_start);
-        ranges[n_ranges].n_insns = seg_size / 4;
-        total_code_bytes += seg_size;
-        n_ranges++;
-    }
-
-    if (n_ranges == 0) return;
-
-    // Single pass: pre-allocate generous trampoline area.
-    // Each trampoline takes 12 bytes (16 for the literal-pool form).
-    // Realistic: ~100 mrs in ~16MB code → need ~1200 bytes.
-    // Pre-allocate 64KB which handles up to ~5400 trampolines.
-    size_t tramp_size = 0x10000;  // 64KB
+    // Each trampoline takes 12 bytes, or 16 for the literal-pool form used
+    // when the fake TLS is beyond adrp range; size for the worst case.
+    size_t tramp_page_size = (size_t)getpagesize();
+    size_t tramp_size = (n_sites * 16 + 16 + tramp_page_size - 1) &
+                        ~(tramp_page_size - 1);
 
     uintptr_t hint = (uintptr_t)load_base + load_size;
     hint = (hint + 0x3FFF) & ~0x3FFFULL;
@@ -544,87 +580,80 @@ static void elf_patch_tpidr(uint8_t *bias, const Elf64_Phdr *phdrs, int phnum,
     }
     if (tramp_page == MAP_FAILED) {
         elf_log("TPIDR patch: failed to alloc trampoline area\n");
-        return;
+        return -1;
     }
 
-    elf_log("TPIDR patch: scanning %d exec segments (%zu bytes of %zu total), tramp at %p\n",
-            n_ranges, total_code_bytes, load_size, tramp_page);
+    elf_log("TPIDR patch: %zu sites, tramp at %p\n", n_sites, tramp_page);
 
-    // Single pass: scan and patch simultaneously
     uint32_t *tp = (uint32_t *)tramp_page;
     uint32_t *tp_end = (uint32_t *)((uint8_t *)tramp_page + tramp_size - 16);
     int patched = 0, unreachable = 0;
 
-    for (int r = 0; r < n_ranges; r++) {
-        uint32_t *code = ranges[r].code;
-        size_t n_insns = ranges[r].n_insns;
+    for (size_t s = 0; s < n_sites; s++) {
+        uint32_t *code = (uint32_t *)(bias + sites[s]);
+        uint32_t insn = *code;
+        if ((insn & MRS_TPIDR_MASK) != MRS_TPIDR_EL0) continue;
 
-        for (size_t i = 0; i < n_insns; i++) {
-            uint32_t insn = code[i];
-            if ((insn & 0xFFFFFFE0) != 0xd53bd040) continue;
+        if (tp > tp_end) { unreachable++; continue; }
 
-            if (tp > tp_end) { unreachable++; continue; }
+        int rd = insn & 0x1F;
+        uintptr_t insn_pc = (uintptr_t)code;
+        uintptr_t tramp_pc = (uintptr_t)&tp[0];
+        uintptr_t return_pc = insn_pc + 4;
 
-            int rd = insn & 0x1F;
-            uintptr_t insn_pc = (uintptr_t)&code[i];
-            uintptr_t tramp_pc = (uintptr_t)&tp[0];
-            uintptr_t return_pc = insn_pc + 4;
-
-            // Check branch ranges (±128MB)
-            intptr_t fwd_offset = (intptr_t)(tramp_pc - insn_pc);
-            if (fwd_offset < -0x8000000 || fwd_offset > 0x7FFFFFC) {
-                unreachable++;
-                continue;
-            }
-            // adrp reaches ±4GB (signed 21-bit page offset); otherwise load
-            // the TLS address from a literal stored after the branch.
-            intptr_t page_diff = (intptr_t)((tls_addr & ~0xFFFULL) - (tramp_pc & ~0xFFFULL));
-            int64_t immval = page_diff >> 12;
-            int use_adrp = immval >= -(1LL << 20) && immval < (1LL << 20);
-            uint32_t *b_slot = use_adrp ? &tp[2] : &tp[1];
-            intptr_t ret_offset = (intptr_t)(return_pc - (uintptr_t)b_slot);
-            if (ret_offset < -0x8000000 || ret_offset > 0x7FFFFFC) {
-                unreachable++;
-                continue;
-            }
-            uint32_t b_ret = 0x14000000 | ((uint32_t)((ret_offset >> 2) & 0x3FFFFFF));
-
-            if (use_adrp) {
-                // adrp + add + b_return
-                tp[0] = 0x90000000 | (((uint32_t)(immval & 3)) << 29) |
-                        (((uint32_t)((immval >> 2) & 0x7FFFF)) << 5) | (uint32_t)rd;
-                tp[1] = 0x91000000 | (((uint32_t)(tls_addr & 0xFFF)) << 10) |
-                        ((uint32_t)rd << 5) | (uint32_t)rd;
-                tp[2] = b_ret;
-                tp += 3;
-            } else {
-                // ldr xRd, #8 ; b return ; .quad tls_addr
-                tp[0] = 0x58000000 | (2u << 5) | (uint32_t)rd;
-                tp[1] = b_ret;
-                uint64_t lit = (uint64_t)tls_addr;
-                memcpy(&tp[2], &lit, sizeof(lit));
-                tp += 4;
-            }
-
-            // Patch mrs → B trampoline
-            code[i] = 0x14000000 | ((uint32_t)((fwd_offset >> 2) & 0x3FFFFFF));
-            patched++;
+        // Check branch ranges (±128MB)
+        intptr_t fwd_offset = (intptr_t)(tramp_pc - insn_pc);
+        if (fwd_offset < -0x8000000 || fwd_offset > 0x7FFFFFC) {
+            unreachable++;
+            continue;
         }
+        // adrp reaches ±4GB (signed 21-bit page offset); otherwise load
+        // the TLS address from a literal stored after the branch.
+        intptr_t page_diff = (intptr_t)((tls_addr & ~0xFFFULL) - (tramp_pc & ~0xFFFULL));
+        int64_t immval = page_diff >> 12;
+        int use_adrp = immval >= -(1LL << 20) && immval < (1LL << 20);
+        uint32_t *b_slot = use_adrp ? &tp[2] : &tp[1];
+        intptr_t ret_offset = (intptr_t)(return_pc - (uintptr_t)b_slot);
+        if (ret_offset < -0x8000000 || ret_offset > 0x7FFFFFC) {
+            unreachable++;
+            continue;
+        }
+        uint32_t b_ret = 0x14000000 | ((uint32_t)((ret_offset >> 2) & 0x3FFFFFF));
+
+        if (use_adrp) {
+            // adrp + add + b_return
+            tp[0] = 0x90000000 | (((uint32_t)(immval & 3)) << 29) |
+                    (((uint32_t)((immval >> 2) & 0x7FFFF)) << 5) | (uint32_t)rd;
+            tp[1] = 0x91000000 | (((uint32_t)(tls_addr & 0xFFF)) << 10) |
+                    ((uint32_t)rd << 5) | (uint32_t)rd;
+            tp[2] = b_ret;
+            tp += 3;
+        } else {
+            // ldr xRd, #8 ; b return ; .quad tls_addr
+            tp[0] = 0x58000000 | (2u << 5) | (uint32_t)rd;
+            tp[1] = b_ret;
+            uint64_t lit = (uint64_t)tls_addr;
+            memcpy(&tp[2], &lit, sizeof(lit));
+            tp += 4;
+        }
+
+        // Patch mrs → B trampoline
+        *code = 0x14000000 | ((uint32_t)((fwd_offset >> 2) & 0x3FFFFFF));
+        __builtin___clear_cache((char *)code, (char *)(code + 1));
+        patched++;
     }
 
-    // Make trampoline area executable
-    mprotect(tramp_page, tramp_size, PROT_READ | PROT_EXEC);
-
-    // Flush instruction cache (only for exec segments + trampoline)
-    for (int r = 0; r < n_ranges; r++) {
-        __builtin___clear_cache((char *)ranges[r].code,
-                                (char *)ranges[r].code + ranges[r].n_insns * 4);
+    elf_log("TPIDR patch: %d patched, %d unreachable\n", patched, unreachable);
+    if (unreachable > 0 ||
+        mprotect(tramp_page, tramp_size, PROT_READ | PROT_EXEC) != 0) {
+        munmap(tramp_page, tramp_size);
+        return -1;
     }
     __builtin___clear_cache((char *)tramp_page, (char *)tramp_page + tramp_size);
-
-    elf_log("TPIDR patch: %d patched, %d unreachable (scanned %zu bytes of code)\n",
-            patched, unreachable, total_code_bytes);
+#else
+    (void)bias; (void)sites; (void)n_sites; (void)load_base; (void)load_size;
 #endif
+    return 0;
 }
 
 // ── Constructor probe results ────────────────────────────────────────────────
@@ -632,7 +661,11 @@ static void elf_patch_tpidr(uint8_t *bias, const Elf64_Phdr *phdrs, int phnum,
 // one is first run in a forked child. Probe values: 1 = ok, 2 = crashed,
 // 3 = hung. The build stores the results next to the library as
 // "<so>.ctorprobe"; the header binds them to this library's GNU build ID and
-// constructor table.
+// constructor table. The file also lists the `mrs xN, TPIDR_EL0` sites so
+// elf_load() can patch them without scanning ~33MB of code.
+//
+// Layout: CtorProbeHeader, uint8_t ctor_safe[count], uint64_t site_count,
+// uint32_t sites[site_count] (link-time addresses).
 //
 // The build-time probe runs in a command-line tool rather than inside the IME.
 // This assumes the constructors behave the same in both processes: they run
@@ -640,7 +673,7 @@ static void elf_patch_tpidr(uint8_t *bias, const Elf64_Phdr *phdrs, int phnum,
 // the loader and android_stubs, which are shared. Re-check this assumption
 // (compare against an in-IME probe) if a constructor is ever marked unsafe.
 
-#define CTOR_PROBE_MAGIC  "GBCTOR02"
+#define CTOR_PROBE_MAGIC  "GBCTOR03"
 #define CTOR_PROBE_SUFFIX ".ctorprobe"
 
 typedef struct {
@@ -732,8 +765,14 @@ static int write_full(int fd, const void *buf, size_t len) {
     return 1;
 }
 
+// Reads constructor results into ctor_safe and returns the TPIDR sites in a
+// malloc'd array (*sites, *n_sites). Returns 0 when the file is missing,
+// stale, or invalid.
 static int ctor_probe_read(const char *so_path, const CtorProbeHeader *want,
-                           uint8_t *ctor_safe, size_t n) {
+                           uint8_t *ctor_safe, size_t n,
+                           uint32_t **sites, size_t *n_sites) {
+    *sites = NULL;
+    *n_sites = 0;
     char path[PATH_MAX];
     if (!ctor_probe_path(so_path, path, sizeof(path))) return 0;
     int fd = open(path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
@@ -741,21 +780,38 @@ static int ctor_probe_read(const char *so_path, const CtorProbeHeader *want,
 
     CtorProbeHeader got;
     struct stat st;
+    uint64_t count = 0;
+    size_t fixed = sizeof(got) + n + sizeof(count);
     int ok = fstat(fd, &st) == 0 && S_ISREG(st.st_mode) &&
-             (uint64_t)st.st_size == sizeof(got) + n &&
+             (uint64_t)st.st_size >= fixed &&
              read_full(fd, &got, sizeof(got)) &&
              memcmp(&got, want, sizeof(got)) == 0 &&
-             read_full(fd, ctor_safe, n);
+             (n == 0 || read_full(fd, ctor_safe, n)) &&
+             read_full(fd, &count, sizeof(count)) &&
+             count <= ((uint64_t)st.st_size - fixed) / sizeof(uint32_t) &&
+             (uint64_t)st.st_size == fixed + count * sizeof(uint32_t);
+    uint32_t *buf = NULL;
+    if (ok) {
+        buf = malloc(count ? count * sizeof(*buf) : 1);
+        ok = buf && (count == 0 || read_full(fd, buf, count * sizeof(*buf)));
+    }
     close(fd);
     for (size_t i = 0; ok && i < n; i++)
         if (ctor_safe[i] < 1 || ctor_safe[i] > 3) ok = 0;
-    if (!ok) elf_log("DT_INIT_ARRAY: ignoring stale or invalid %s\n", path);
-    return ok;
+    if (!ok) {
+        free(buf);
+        elf_log("DT_INIT_ARRAY: ignoring stale or invalid %s\n", path);
+        return 0;
+    }
+    *sites = buf;
+    *n_sites = (size_t)count;
+    return 1;
 }
 
 // Write to a unique temporary file, then rename it into place atomically.
 static int ctor_probe_write(const char *so_path, const CtorProbeHeader *hdr,
-                            const uint8_t *ctor_safe, size_t n) {
+                            const uint8_t *ctor_safe, size_t n,
+                            const uint32_t *sites, size_t n_sites) {
     char path[PATH_MAX], tmp[PATH_MAX];
     if (!ctor_probe_path(so_path, path, sizeof(path))) return 0;
     if (snprintf(tmp, sizeof(tmp), "%s.XXXXXX", path) >= (int)sizeof(tmp))
@@ -764,6 +820,9 @@ static int ctor_probe_write(const char *so_path, const CtorProbeHeader *hdr,
     if (fd < 0) return 0;
     int ok = write_full(fd, hdr, sizeof(*hdr)) &&
              (n == 0 || write_full(fd, ctor_safe, n)) &&
+             write_full(fd, &(uint64_t){n_sites}, sizeof(uint64_t)) &&
+             (n_sites == 0 ||
+              write_full(fd, sites, n_sites * sizeof(*sites))) &&
              fchmod(fd, 0644) == 0;
     if (close(fd) != 0) ok = 0;
     if (ok && rename(tmp, path) != 0) ok = 0;
@@ -1022,10 +1081,52 @@ static ElfHandle *elf_load_impl(const char *path, int generate_probe,
     if (android_rela_off && android_rela_sz)
         decode_android_rela(h, bias + android_rela_off, android_rela_sz);
 
+    // Read the build-time "<so>.ctorprobe" file from the signed bundle. It
+    // holds the constructor results and the TPIDR sites; when it is missing
+    // or stale, scan the code and probe the constructors in memory instead.
+    CtorProbeHeader probe_hdr;
+    ctor_probe_header(h, file, file_size, phdrs, ehdr->e_phnum, &probe_hdr);
+    size_t n_ctors = h->init_array ? h->init_array_count : 0;
+    uint8_t *ctor_safe = NULL;
+    if (n_ctors > 0) {
+        ctor_safe = mmap(NULL, n_ctors, PROT_READ | PROT_WRITE,
+                         MAP_SHARED | MAP_ANON, -1, 0);
+        if (ctor_safe == MAP_FAILED) ctor_safe = NULL;
+    }
+    uint32_t *tpidr_sites = NULL;
+    size_t n_tpidr_sites = 0;
+    int cached = !generate_probe && (n_ctors == 0 || ctor_safe) &&
+                 ctor_probe_read(path, &probe_hdr, ctor_safe, n_ctors,
+                                 &tpidr_sites, &n_tpidr_sites) &&
+                 tpidr_sites_valid(bias, phdrs, ehdr->e_phnum,
+                                   tpidr_sites, n_tpidr_sites);
+    if (!cached) {
+        free(tpidr_sites);
+        tpidr_sites = tpidr_scan_sites(bias, phdrs, ehdr->e_phnum,
+                                       &n_tpidr_sites);
+        if (!tpidr_sites) {
+            elf_log("FATAL: TPIDR site scan failed\n");
+            if (ctor_safe) munmap(ctor_safe, n_ctors);
+            munmap(file, file_size); close(fd);
+            munmap(load_base, load_size); free(h);
+            return NULL;
+        }
+    }
+    h->ctor_probe_cached = cached;
+
     // Patch TPIDR_EL0 accesses BEFORE setting segment permissions.
     // Pages are still rw from the initial load, so we can write freely.
     bionic_tls_setup();
-    elf_patch_tpidr(bias, phdrs, ehdr->e_phnum, load_base, load_size);
+    int tpidr_ok = elf_patch_tpidr(bias, tpidr_sites, n_tpidr_sites,
+                                   load_base, load_size) == 0;
+    if (!tpidr_ok) {
+        elf_log("FATAL: TPIDR patch failed\n");
+        free(tpidr_sites);
+        if (ctor_safe) munmap(ctor_safe, n_ctors);
+        munmap(file, file_size); close(fd);
+        munmap(load_base, load_size); free(h);
+        return NULL;
+    }
 
     // Now set proper segment permissions (rx for code, rw for data).
     for (int i = 0; i < ehdr->e_phnum; i++) {
@@ -1042,6 +1143,8 @@ static ElfHandle *elf_load_impl(const char *path, int generate_probe,
                 mp_ret == 0 ? "OK" : strerror(errno));
         if (mp_ret != 0 && (prot & PROT_EXEC)) {
             elf_log("FATAL: cannot make code executable\n");
+            free(tpidr_sites);
+            if (ctor_safe) munmap(ctor_safe, n_ctors);
             munmap(file, file_size); close(fd);
             munmap(load_base, load_size); free(h);
             return NULL;
@@ -1058,33 +1161,26 @@ static ElfHandle *elf_load_impl(const char *path, int generate_probe,
     elf_log("Bionic TLS: TPIDR_EL0 set to fake TLS block\n");
 
     // Run constructors, skipping any the probe marked as crashing or hanging.
-    // Results come from the build-time "<so>.ctorprobe" file in the signed
-    // bundle; when it is missing or stale, probe in memory without caching.
-    CtorProbeHeader probe_hdr;
-    ctor_probe_header(h, file, file_size, phdrs, ehdr->e_phnum, &probe_hdr);
-    if (generate_probe && h->init_array_count == 0)
-        *probe_ok = ctor_probe_write(path, &probe_hdr, NULL, 0);
-    if (h->init_array && h->init_array_count > 0) {
-        size_t n = h->init_array_count;
-        uint8_t *ctor_safe = mmap(NULL, n, PROT_READ | PROT_WRITE,
-                                   MAP_SHARED | MAP_ANON, -1, 0);
-        if (ctor_safe == MAP_FAILED) {
+    if (generate_probe && n_ctors == 0)
+        *probe_ok = ctor_probe_write(path, &probe_hdr, NULL, 0,
+                                     tpidr_sites, n_tpidr_sites);
+    if (n_ctors > 0) {
+        size_t n = n_ctors;
+        if (!ctor_safe) {
             // Without probe results no constructor is known to be safe; in
             // generate mode *probe_ok stays 0 so the build fails.
             elf_log("DT_INIT_ARRAY: mmap failed, skipping %zu ctors\n", n);
             goto ctors_done;
         }
 
-        int cached = !generate_probe &&
-                     ctor_probe_read(path, &probe_hdr, ctor_safe, n);
-        h->ctor_probe_cached = cached;
         if (cached) {
             elf_log("DT_INIT_ARRAY: loaded probe results (%zu ctors)\n", n);
         } else {
             int complete = ctor_probe_run(h, ctor_safe);
             if (generate_probe)
                 *probe_ok = complete &&
-                            ctor_probe_write(path, &probe_hdr, ctor_safe, n);
+                            ctor_probe_write(path, &probe_hdr, ctor_safe, n,
+                                             tpidr_sites, n_tpidr_sites);
         }
 
         // Run only safe constructors. The generator exits right after writing
@@ -1102,6 +1198,7 @@ static ElfHandle *elf_load_impl(const char *path, int generate_probe,
         munmap(ctor_safe, n);
     }
 ctors_done:
+    free(tpidr_sites);
 
     // Release file mapping and close fd (no longer needed after constructors)
     munmap(file, file_size);
