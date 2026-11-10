@@ -217,6 +217,7 @@ uint32_t hmm_engine_get_fuzzy_pinyin(void) {
 }
 
 bool hmm_engine_set_fuzzy_pinyin(uint32_t groups) {
+    JNI_LOCAL_FRAME();
     if ((groups & ~HMM_FUZZY_ALL) || !g_engine || !g_refreshData) {
         LOGERR("Cannot set fuzzy pinyin (mask=%u, engine=%lld)",
                groups, (long long)g_engine);
@@ -251,6 +252,7 @@ HmmPinyinScheme hmm_engine_get_pinyin_scheme(void) {
 }
 
 bool hmm_engine_set_pinyin_scheme(HmmPinyinScheme scheme) {
+    JNI_LOCAL_FRAME();
     if (scheme < HMM_PINYIN_FULL || scheme > HMM_PINYIN_SHUANGPIN_ZIRANMA ||
         !g_engine || !g_refreshData) {
         LOGERR("Cannot set pinyin scheme: %d", scheme);
@@ -286,6 +288,7 @@ bool hmm_engine_get_shortcuts_enabled(void) {
 // decoder and user dictionary accessor, and hbd.n() adds
 // shortcuts_dict_3_3 to the decoder's dictionaries (here, both decoders).
 bool hmm_engine_set_shortcuts_enabled(bool enabled) {
+    JNI_LOCAL_FRAME();
     if (!g_engine || !g_refreshData) {
         LOGERR("Cannot set shortcuts dictionary: engine not ready");
         return false;
@@ -328,6 +331,7 @@ static bool settings_valid(void) {
 }
 
 bool hmm_engine_refresh_settings_after_reset(void) {
+    JNI_LOCAL_FRAME();
     if (!settings_valid()) {
         LOGERR("Decoder refresh blocked: configuration rollback failed; retry settings");
         return false;
@@ -368,6 +372,7 @@ void hmm_engine_prepare_input(const char *pinyin_input) {
 bool hmm_engine_update_input_context(const char *before_selection,
                                      const char *selected_text,
                                      const char *after_selection) {
+    JNI_LOCAL_FRAME();
     if (!s_session_active || !g_handleInputCtx ||
         !s_personalized_engine || !s_context_engine) return false;
 
@@ -428,6 +433,7 @@ bool hmm_engine_update_input_context(const char *before_selection,
 }
 
 bool hmm_engine_refresh_user_dictionary(void) {
+    JNI_LOCAL_FRAME();
     if (!g_engine || !g_refreshData) return false;
     if (!settings_valid()) {
         LOGERR("User dictionary refresh blocked: configuration requires a successful retry");
@@ -466,6 +472,7 @@ bool hmm_engine_init(const char *so_path, const char *pack_dir) {
 
 bool hmm_engine_init_with_user_data(const char *so_path, const char *pack_dir,
                                      const char *user_data_dir) {
+    JNI_LOCAL_FRAME();
     LOG("hmm_engine_init: so=%s pack=%s user_data=%s", so_path, pack_dir,
         user_data_dir ? user_data_dir : "(none)");
 
@@ -549,6 +556,7 @@ bool hmm_engine_init_with_user_data(const char *so_path, const char *pack_dir,
 }
 
 void hmm_engine_destroy(void) {
+    JNI_LOCAL_FRAME();
     finish_native_session(s_personalized_engine);
     finish_native_session(s_context_engine);
     s_session_active = false;

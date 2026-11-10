@@ -5,6 +5,7 @@
 #include <string.h>
 #include <stdio.h>
 #include <stdarg.h>
+#include <assert.h>
 
 #include <unistd.h>
 #include <fcntl.h>
@@ -35,13 +36,146 @@ static os_log_t jni_os_log(void) {
 #define KIND_RANGE 9
 #define KIND_DICT_ENTRY 10
 
-// `bytes` caches a string's String.getBytes() result. DeleteLocalRef is a
-// no-op here, so a fresh array per call would leak on every native lookup
-// that reads a Java string this way (e.g. nativeGetDataSourceIndex).
+// `bytes` caches a string's String.getBytes() result, so repeated native
+// lookups that read a Java string this way (e.g. nativeGetDataSourceIndex)
+// reuse one array.
 typedef struct { uint8_t kind; uint32_t len; void *bytes; char data[]; } FakeObj;
 
+// ── Local references ────────────────────────────────────────────────────────
+// ART frees a native method's local references when it returns to Java. The
+// engine wrappers open a local frame per call (JNI_LOCAL_FRAME); objects
+// created while a frame is open are freed when it closes, unless
+// NewGlobalRef or jni_pin keeps them. Objects created outside any frame
+// live until released explicitly. A hidden header before each object
+// records its slot in the creating thread's list of local objects.
+typedef struct {
+    void **objs;
+    size_t count, capacity;
+    size_t *marks;  // marks[i] is the first slot of open frame i
+    int depth, marks_capacity;
+} LocalRefs;
+static _Thread_local LocalRefs s_locals;
+
+#define OBJ_MAGIC 0x4A4E494Fu  // "JNIO"
+// Slots at or above OBJ_PINNED mean the object is not in a local frame.
+#define OBJ_PINNED (UINT32_MAX - 1)     // kept by NewGlobalRef or jni_pin
+#define OBJ_UNTRACKED UINT32_MAX        // lives until released explicitly
+typedef struct {
+    LocalRefs *owner;
+    uint32_t slot;
+    uint32_t magic;
+} ObjHeader;
+_Static_assert(sizeof(ObjHeader) == 16, "keep objects 16-byte aligned");
+
+static size_t s_live_objects;
+
+static ObjHeader *obj_header(const void *p) {
+    // Class, method and field IDs are small constants, not objects.
+    if (!p || (uintptr_t)p < 0x100000 || ((uintptr_t)p & 15)) return NULL;
+    ObjHeader *h = (ObjHeader *)p - 1;
+    return h->magic == OBJ_MAGIC ? h : NULL;
+}
+
+static void *obj_calloc(size_t size) {
+    ObjHeader *h = calloc(1, sizeof(ObjHeader) + size);
+    if (!h) abort();
+    __atomic_fetch_add(&s_live_objects, 1, __ATOMIC_RELAXED);
+    h->magic = OBJ_MAGIC;
+    h->slot = OBJ_UNTRACKED;
+    LocalRefs *l = &s_locals;
+    if (l->depth > 0 && l->count < OBJ_PINNED) {
+        if (l->count == l->capacity) {
+            size_t capacity = l->capacity ? l->capacity * 2 : 256;
+            void **objs = realloc(l->objs, capacity * sizeof(*objs));
+            if (!objs) abort();
+            l->objs = objs;
+            l->capacity = capacity;
+        }
+        h->owner = l;
+        h->slot = (uint32_t)l->count;
+        l->objs[l->count++] = h + 1;
+    }
+    return h + 1;
+}
+
+static void obj_destroy(ObjHeader *h) {
+    h->magic = 0;
+    free(h);
+    __atomic_fetch_sub(&s_live_objects, 1, __ATOMIC_RELAXED);
+}
+
+static bool obj_pinned(const void *p) {
+    ObjHeader *h = obj_header(p);
+    return h && h->slot == OBJ_PINNED;
+}
+
+static void obj_untrack(void *p) {
+    ObjHeader *h = obj_header(p);
+    if (!h || h->slot >= OBJ_PINNED) return;
+    h->owner->objs[h->slot] = NULL;
+    h->slot = OBJ_UNTRACKED;
+}
+
+static void obj_free(void *p) {
+    ObjHeader *h = obj_header(p);
+    if (!h) return;
+    obj_untrack(p);
+    obj_destroy(h);
+}
+
+// A string's getBytes cache lives as long as the string, unless native code
+// pinned the array with NewGlobalRef.
+static void free_string_bytes(FakeObj *string) {
+    if (!obj_pinned(string->bytes)) obj_free(string->bytes);
+    string->bytes = NULL;
+}
+
+size_t jni_live_object_count(void) {
+    return __atomic_load_n(&s_live_objects, __ATOMIC_RELAXED);
+}
+
+size_t jni_local_frame_push(void) {
+    LocalRefs *l = &s_locals;
+    if (l->depth == l->marks_capacity) {
+        int capacity = l->marks_capacity ? l->marks_capacity * 2 : 16;
+        size_t *marks = realloc(l->marks, (size_t)capacity * sizeof(*marks));
+        if (!marks) abort();
+        l->marks = marks;
+        l->marks_capacity = capacity;
+    }
+    l->marks[l->depth++] = l->count;
+    return l->count;
+}
+
+// True if `inner` would be freed while `outer` still references it: it is
+// tracked by another thread, or a frame opened after `outer` owns it.
+static bool freed_before(const void *inner, const void *outer) {
+    ObjHeader *hi = obj_header(inner), *ho = obj_header(outer);
+    if (!hi || hi->slot >= OBJ_PINNED) return false;
+    if (!ho || ho->slot >= OBJ_PINNED || hi->owner != ho->owner) return true;
+    const LocalRefs *l = hi->owner;
+    for (int i = 0; i < l->depth; ++i) {
+        if (l->marks[i] > ho->slot && l->marks[i] <= hi->slot) return true;
+    }
+    return false;
+}
+
+void jni_local_frame_pop(size_t mark) {
+    LocalRefs *l = &s_locals;
+    // Frames must close innermost first.
+    assert(l->depth > 0 && l->marks[l->depth - 1] == mark);
+    while (l->count > mark) {
+        void *p = l->objs[--l->count];
+        if (p) {
+            if (((FakeObj *)p)->kind == KIND_STRING) free_string_bytes(p);
+            obj_destroy((ObjHeader *)p - 1);
+        }
+    }
+    if (l->depth > 0) l->depth--;
+}
+
 static FakeObj *alloc_obj(uint8_t kind, size_t sz) {
-    FakeObj *o = calloc(1, sizeof(FakeObj) + sz);
+    FakeObj *o = obj_calloc(sizeof(FakeObj) + sz);
     o->kind = kind; o->len = (uint32_t)sz;
     return o;
 }
@@ -57,7 +191,7 @@ typedef struct {
 } FakeScoredInput;
 
 jobject jni_create_scored_input(JNIEnv *env, const char *input, float score) {
-    FakeScoredInput *si = calloc(1, sizeof(FakeScoredInput));
+    FakeScoredInput *si = obj_calloc(sizeof(FakeScoredInput));
     si->kind = KIND_SCORED_INPUT;
     si->input = jni_new_string(env, input);
     si->score = score;
@@ -82,7 +216,7 @@ typedef struct {
 
 jobject jni_create_file_descriptor(JNIEnv *env, int fd) {
     (void)env;
-    FakeFileDescriptor *f = calloc(1, sizeof(FakeFileDescriptor));
+    FakeFileDescriptor *f = obj_calloc(sizeof(FakeFileDescriptor));
     f->kind = KIND_FILE_DESCRIPTOR;
     f->fd = fd;
     return (jobject)f;
@@ -98,7 +232,7 @@ typedef struct {
 
 jobject jni_create_range(JNIEnv *env, int start, int end) {
     (void)env;
-    FakeRange *r = calloc(1, sizeof(FakeRange));
+    FakeRange *r = obj_calloc(sizeof(FakeRange));
     r->kind = KIND_RANGE;
     r->start = start;
     r->end = end;
@@ -127,6 +261,34 @@ typedef struct {
     jint match_type;      // f: 0 full, 1 partial, 2 derived key
 } FakeDictEntry;
 
+void jni_pin(jobject obj) {
+    FakeObj *o = (FakeObj *)obj;
+    ObjHeader *h = obj_header(o);
+    if (!h || h->slot == OBJ_PINNED) return;
+    obj_untrack(o);
+    h->slot = OBJ_PINNED;
+    switch (o->kind) {
+    case KIND_STRING:
+        jni_pin(o->bytes);
+        break;
+    case KIND_OBJARRAY:
+        for (uint32_t i = 0; i < o->len; ++i) jni_pin(((jobject *)o->data)[i]);
+        break;
+    case KIND_SCORED_INPUT:
+        jni_pin(((FakeScoredInput *)o)->input);
+        break;
+    case KIND_DICT_ENTRY: {
+        FakeDictEntry *d = (FakeDictEntry *)o;
+        jni_pin(d->tokens);
+        jni_pin(d->languages);
+        jni_pin(d->value);
+        break;
+    }
+    default:
+        break;
+    }
+}
+
 // Forward declarations for object array exports (implemented below)
 
 const char *jni_get_string(jstring s) {
@@ -138,8 +300,8 @@ const char *jni_get_string(jstring s) {
 void jni_release_string(jstring s) {
     FakeObj *o = (FakeObj *)s;
     if (o && o->kind == KIND_STRING) {
-        free(o->bytes);
-        free(o);
+        free_string_bytes(o);
+        obj_free(o);
     }
 }
 jstring jni_new_string(JNIEnv *e, const char *s) {
@@ -190,7 +352,7 @@ static jfieldID fn_GetFieldID(JNIEnv *e, jclass c, const char *n, const char *s)
     return (jfieldID)n;  // return pointer to the name string (in ELF .rodata)
 }
 static jfieldID fn_GetStaticFieldID(JNIEnv *e, jclass c, const char *n, const char *s) { (void)e;(void)c;(void)n;(void)s; return (jfieldID)(uintptr_t)0xF1E1D; }
-static jobject  fn_NewGlobalRef(JNIEnv *e, jobject o)            { (void)e; return o; }
+static jobject  fn_NewGlobalRef(JNIEnv *e, jobject o)            { (void)e; jni_pin(o); return o; }
 static void     fn_DeleteGlobalRef(JNIEnv *e, jobject o)         { (void)e;(void)o; }
 static jobject  fn_NewLocalRef(JNIEnv *e, jobject o)             { (void)e; return o; }
 static void     fn_DeleteLocalRef(JNIEnv *e, jobject o)          { (void)e;(void)o; }
@@ -354,7 +516,10 @@ static const jchar *fn_GetStringChars(JNIEnv *e, jstring s, jboolean *cp) {
     }
     return buf;
 }
-static void    fn_ReleaseStringChars(JNIEnv *e, jstring s, const jchar *c) { (void)e;(void)s;(void)c; }
+static void    fn_ReleaseStringChars(JNIEnv *e, jstring s, const jchar *c) {
+    (void)e; (void)s;
+    free((void *)c);  // GetStringChars always returns a fresh copy
+}
 static void    fn_GetStringRegion(JNIEnv *e, jstring s, jsize st, jsize l, jchar *b) {
     (void)e;
     if (!b || !s) return;
@@ -417,8 +582,12 @@ static jobject fn_GetObjectArrayElement(JNIEnv *e, jobject a, jsize i) {
 static void fn_SetObjectArrayElement(JNIEnv *e, jobject a, jsize i, jobject v) {
     (void)e;
     FakeObj *o = (FakeObj*)a;
-    if (i >= 0 && (uint32_t)i < o->len)
+    if (i >= 0 && (uint32_t)i < o->len) {
         ((jobject*)o->data)[i] = v;
+        // Java keeps array elements reachable. Pin an element that its own
+        // frame would free first, e.g. any element of a persistent array.
+        if (obj_header(o) && freed_before(v, o)) jni_pin(v);
+    }
 }
 
 // Exported wrappers for object arrays
@@ -484,7 +653,7 @@ static jobject new_object_dispatch(const char *mid, va_list args) {
             // Range constructor: new Range(int, int)
             int a1 = va_arg(args, int);
             int a2 = va_arg(args, int);
-            FakeRange *r = calloc(1, sizeof(FakeRange));
+            FakeRange *r = obj_calloc(sizeof(FakeRange));
             r->kind = KIND_RANGE;
             r->start = a1;
             r->end = a2;
@@ -554,7 +723,7 @@ static jobject fn_NewObjectV(JNIEnv *e, jclass c, jmethodID m, va_list args) {
         if (strstr(sig, "IZZI)V")) {
             // MutableDictionaryAccessor$Entry, from nativeExportAllEntries
             void *vl_ptr = (void *)args;
-            FakeDictEntry *d = calloc(1, sizeof(*d));
+            FakeDictEntry *d = obj_calloc(sizeof(*d));
             d->kind = KIND_DICT_ENTRY;
             d->tokens = android_va_arg_ptr(vl_ptr);
             d->languages = android_va_arg_ptr(vl_ptr);
@@ -570,7 +739,7 @@ static jobject fn_NewObjectV(JNIEnv *e, jclass c, jmethodID m, va_list args) {
             // Extract two ints from Android va_list
             int a1 = (int)(intptr_t)android_va_arg_ptr(vl_ptr);
             int a2 = (int)(intptr_t)android_va_arg_ptr(vl_ptr);
-            FakeRange *r = calloc(1, sizeof(FakeRange));
+            FakeRange *r = obj_calloc(sizeof(FakeRange));
             r->kind = KIND_RANGE;
             r->start = a1;
             r->end = a2;
@@ -594,7 +763,11 @@ static jobject fn_CallObjectMethodV(JNIEnv *e, jobject o, jmethodID m, va_list a
             if (fo->kind == KIND_STRING) {
                 const char *s = fo->data;
                 size_t len = strlen(s);
-                if (!fo->bytes) fo->bytes = jni_NewByteArray(e, (jsize)len);
+                if (!fo->bytes) {
+                    fo->bytes = jni_NewByteArray(e, (jsize)len);
+                    // Freed with the string, not with the current frame.
+                    obj_untrack(fo->bytes);
+                }
                 // Recopy each call: Get*ArrayElements exposes the storage, so
                 // a native caller that edited it must not affect later reads.
                 jni_SetByteArrayRegion(e, fo->bytes, 0, (jsize)len, (const jbyte*)s);
@@ -962,12 +1135,12 @@ void jni_release_string_array(jobject a) {
     for (uint32_t i = 0; i < o->len; ++i) {
         jni_release_string(((jobject *)o->data)[i]);
     }
-    free(o);
+    obj_free(o);
 }
 
 void jni_release_array(jobject a) {
     FakeObj *o = (FakeObj *)a;
-    if (o && o->kind != KIND_STRING) free(o);
+    if (o && o->kind != KIND_STRING) obj_free(o);
 }
 
 void jni_release_dict_entries(jobject a) {
@@ -979,7 +1152,7 @@ void jni_release_dict_entries(jobject a) {
         jni_release_string_array(d->tokens);
         jni_release_array(d->languages);
         jni_release_string(d->value);
-        free(d);
+        obj_free(d);
     }
-    free(o);
+    obj_free(o);
 }

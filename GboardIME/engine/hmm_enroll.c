@@ -549,7 +549,7 @@ static bool enroll_decoder_setting(const uint8_t *bytes, size_t length,
     CRASH_PROTECT_BEGIN()
     ok = g_enrollSettingScheme(g_env, NULL, g_sm, type, locale, payload);
     CRASH_PROTECT_END("nativeEnrollSettingScheme(decoder)")
-    free(payload);
+    jni_release_array(payload);
     jni_release_string(type);
     jni_release_string(locale);
     if (!ok) LOGERR("Failed to enroll decoder setting '%s'", identifier);

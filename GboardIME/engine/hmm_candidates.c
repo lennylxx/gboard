@@ -83,6 +83,7 @@ static int context_language(uint32_t cp) {
 }
 
 bool hmm_engine_set_context(const char *text_before_cursor) {
+    JNI_LOCAL_FRAME();
     const unsigned char *text =
         (const unsigned char *)(text_before_cursor ? text_before_cursor : "");
     size_t byte_length = strlen((const char *)text);
@@ -239,6 +240,7 @@ static bool append_context(void) {
 }
 
 bool hmm_engine_append(const char *pinyin_input) {
+    JNI_LOCAL_FRAME();
     LOG("append: input='%s' g_append=%p g_engine=%lld", pinyin_input, (void*)g_append, (long long)g_engine);
     if (!g_append || !g_engine) { LOG("append: SKIP (null)"); return false; }
     if (!s_settings_ready) {
@@ -271,6 +273,7 @@ bool hmm_engine_append(const char *pinyin_input) {
 }
 
 int hmm_engine_get_candidates_page(char **candidates, int offset, int max_count) {
+    JNI_LOCAL_FRAME();
     if (!g_engine || !candidates || offset < 0 || max_count < 1) return 0;
 
     int count = 0;
@@ -314,10 +317,12 @@ int hmm_engine_get_candidates_page(char **candidates, int offset, int max_count)
 }
 
 int hmm_engine_get_candidates(char **candidates, int max_count) {
+    JNI_LOCAL_FRAME();
     return hmm_engine_get_candidates_page(candidates, 0, max_count);
 }
 
 int hmm_engine_get_predictions(char **candidates, int max_count) {
+    JNI_LOCAL_FRAME();
     if (!candidates || max_count < 1 || !g_fillPredictionCandList ||
         !g_getPredictionCandCount || !g_getPredictionCandString) {
         hmm_engine_reset();
@@ -367,6 +372,7 @@ int hmm_engine_get_predictions(char **candidates, int max_count) {
 }
 
 int hmm_engine_get_candidate_consumed(int index) {
+    JNI_LOCAL_FRAME();
     if (!g_getCandRange || !g_engine) return -1;
     jobject range = NULL;
     CRASH_PROTECT_BEGIN()
@@ -381,6 +387,7 @@ int hmm_engine_get_candidate_consumed(int index) {
 }
 
 int hmm_engine_get_separator(int vertex_index) {
+    JNI_LOCAL_FRAME();
     if (!g_getSeparator || !g_engine) return -1;
     jint result = 0;
     CRASH_PROTECT_BEGIN()
@@ -391,6 +398,7 @@ int hmm_engine_get_separator(int vertex_index) {
 }
 
 bool hmm_engine_set_separator(int vertex_index, int separator_type) {
+    JNI_LOCAL_FRAME();
     if (!g_setSeparator || !g_engine) return false;
     jboolean result = JNI_FALSE;
     CRASH_PROTECT_BEGIN()
@@ -402,6 +410,7 @@ bool hmm_engine_set_separator(int vertex_index, int separator_type) {
 }
 
 int hmm_engine_get_segmented_pinyin(char *text, int max_bytes) {
+    JNI_LOCAL_FRAME();
     if (!text || max_bytes < 1) return 0;
     text[0] = '\0';
     if (!g_getSegmentCount || !g_getSegment || !g_getSegmentRange ||
@@ -508,6 +517,7 @@ static void copy_token_text(char *dst, size_t max, jstring js) {
 int hmm_engine_get_corrected_candidate_reading(int index,
                                                HmmTokenReading *tokens,
                                                int max_tokens) {
+    JNI_LOCAL_FRAME();
     const HmmUserDictNatives *natives = hmm_get_user_dict_natives();
     if (!tokens || max_tokens < 1 || !g_engine || !g_isCandidateCorrected ||
         !g_getTokenString || !natives || !natives->getCandidateTokenCount ||
@@ -555,6 +565,7 @@ int hmm_engine_get_corrected_candidate_reading(int index,
 }
 
 bool hmm_engine_select(int index) {
+    JNI_LOCAL_FRAME();
     if (!g_selectCand || !g_engine) return false;
     if (s_converted_count >= MAX_CONVERTED_RANGES) return false;
     int start = 0, end = 0;
@@ -580,6 +591,7 @@ bool hmm_engine_select(int index) {
 }
 
 bool hmm_engine_delete_last_input(void) {
+    JNI_LOCAL_FRAME();
     if (!g_deleteInput || !g_engine) return false;
     if (g_end_vertex <= candidate_start_vertex()) return false;
     jobject range = jni_create_range(g_env, (int)g_end_vertex - 1,
@@ -612,6 +624,7 @@ int hmm_engine_get_converted_count(void) {
 }
 
 bool hmm_engine_unconvert_last(void) {
+    JNI_LOCAL_FRAME();
     if (s_converted_count == 0 || !g_unconvertSegments || !g_engine) {
         return false;
     }
@@ -627,6 +640,7 @@ bool hmm_engine_unconvert_last(void) {
 }
 
 void hmm_engine_reset(void) {
+    JNI_LOCAL_FRAME();
     s_input_generation++;
     g_end_vertex = 0;
     s_converted_count = 0;

@@ -195,6 +195,7 @@ static bool enroll_shortcuts_file(const ShortcutDict *dict) {
 // ── Init ────────────────────────────────────────────────────────────────────
 
 bool hmm_user_dict_init(const char *user_data_dir, const char *pack_dir) {
+    JNI_LOCAL_FRAME();
     if (s_ready) return true;
 
     s_natives = hmm_get_user_dict_natives();
@@ -231,6 +232,7 @@ bool hmm_user_dict_init(const char *user_data_dir, const char *pack_dir) {
 // ── Learn / unlearn ─────────────────────────────────────────────────────────
 
 bool hmm_user_dict_pinyin_settings_valid(void) {
+    JNI_LOCAL_FRAME();
     return s_pinyin_settings_valid;
 }
 
@@ -246,6 +248,7 @@ static bool refresh_pinyin_accessor(void) {
 
 bool hmm_user_dict_configure_pinyin_accessor(HmmPinyinScheme scheme,
                                              bool shortcuts) {
+    JNI_LOCAL_FRAME();
     if (!s_ready) return true;
     if (!g_refreshData) {
         LOGERR("Cannot refresh user dictionary accessor settings");
@@ -296,6 +299,7 @@ static bool build_token_arrays(const char **tokens, const int *token_types,
 bool hmm_user_dict_learn(const char **tokens, const int *token_types,
                          int token_count, const char *value,
                          bool is_full_match) {
+    JNI_LOCAL_FRAME();
     if (!s_pinyin_settings_valid) {
         LOGERR("Cannot learn: pinyin accessor settings require a successful retry");
         return false;
@@ -335,6 +339,7 @@ bool hmm_user_dict_learn(const char **tokens, const int *token_types,
 
 bool hmm_user_dict_unlearn(const char **tokens, const int *token_types,
                            int token_count, const char *value) {
+    JNI_LOCAL_FRAME();
     if (!s_pinyin_settings_valid) {
         LOGERR("Cannot unlearn: pinyin accessor settings require a successful retry");
         return false;
@@ -452,6 +457,7 @@ static bool copy_exported_entry(HmmUserDictKind kind, const JniDictEntry *src,
 }
 
 int hmm_user_dict_export_entries(HmmUserDictEntry **out) {
+    JNI_LOCAL_FRAME();
     if (!out) return -1;
     *out = NULL;
     if (!s_ready || !s_natives->exportAllEntries) return -1;
@@ -515,6 +521,7 @@ static bool entry_arrays(const HmmUserDictEntry *entry, jobject *token_array,
 }
 
 bool hmm_user_dict_remove_entry(const HmmUserDictEntry *entry) {
+    JNI_LOCAL_FRAME();
     if (!usable_entry(entry) || !s_natives->removeByTokenAndValue) return false;
     jobject tokens;
     jintArray types;
@@ -553,6 +560,7 @@ static bool insert_entry(const HmmUserDictEntry *entry, int count,
 
 bool hmm_user_dict_set_entry_count(const HmmUserDictEntry *entry, int count,
                                    bool full_match) {
+    JNI_LOCAL_FRAME();
     if (count <= 0 || !learnable_entry(entry) || !s_natives->insertOrUpdate) {
         return false;
     }
@@ -578,17 +586,18 @@ bool hmm_user_dict_set_entry_count(const HmmUserDictEntry *entry, int count,
 // Mirrors Gboard's candidate iterator (hbm): a candidate offers "remove
 // suggestion" only when its primary data source is a user dictionary and no
 // other source (e.g. the system dictionary) contributed to it.
-// Emulated JNI strings are heap objects that DeleteLocalRef never frees.
 // This check runs on every selection change, so reuse one name per file.
 static jstring dictionary_filename_string(int index) {
     static jstring names[DICT_COUNT];
     if (!names[index]) {
         names[index] = jni_NewStringUTF(g_env, s_dicts[index].filename);
+        jni_pin(names[index]);
     }
     return names[index];
 }
 
 bool hmm_user_dict_is_candidate_removable(int candidate_index) {
+    JNI_LOCAL_FRAME();
     if (!s_ready || !g_engine || candidate_index < 0 ||
         !s_natives->getDataSourceIndex ||
         !s_natives->getCandidatePrimaryDataSource ||
@@ -618,6 +627,7 @@ bool hmm_user_dict_is_candidate_removable(int candidate_index) {
 // by value from both user dictionaries, then drop it from the decoder's
 // current list. Like Gboard, this does not persist immediately.
 bool hmm_user_dict_remove_candidate(int candidate_index) {
+    JNI_LOCAL_FRAME();
     if (!hmm_user_dict_is_candidate_removable(candidate_index) ||
         !s_natives->removeByValue || !s_natives->deleteCandidate ||
         !g_getCandString) {
@@ -740,6 +750,7 @@ static bool persist_dictionary(const UserDict *dict) {
 }
 
 bool hmm_user_dict_persist(void) {
+    JNI_LOCAL_FRAME();
     if (!s_ready || !s_user_data_dir[0] || !s_natives->persist) {
         return false;
     }
@@ -763,6 +774,7 @@ bool hmm_user_dict_decoder_refresh_pending(void) {
 }
 
 void hmm_user_dict_refresh_decoder_if_needed(void) {
+    JNI_LOCAL_FRAME();
     if (!atomic_load(&s_decoder_refresh_pending) || !PINYIN_DICT->accessor) {
         return;
     }
@@ -781,6 +793,7 @@ void hmm_user_dict_refresh_decoder_if_needed(void) {
 // ── Query ───────────────────────────────────────────────────────────────────
 
 int hmm_user_dict_get_size(void) {
+    JNI_LOCAL_FRAME();
     if (!s_ready || !s_natives->getDictionarySize) return 0;
     int total = 0;
     for (int i = 0; i < DICT_COUNT; ++i) {
@@ -821,6 +834,7 @@ static bool remove_cleared_files(void) {
 }
 
 bool hmm_user_dict_clear(void) {
+    JNI_LOCAL_FRAME();
     if (!s_ready) return false;
 
     // Clear every dictionary before persisting so a single failure does not
@@ -875,6 +889,7 @@ static size_t utf8_sequence_length(const unsigned char *s) {
 }
 
 bool hmm_shortcut_is_valid(const char *shortcut, const char *phrase) {
+    JNI_LOCAL_FRAME();
     if (!shortcut || !phrase || !phrase[0]) return false;
     size_t letters = strlen(shortcut);
     if (letters == 0 || letters > HMM_SHORTCUT_MAX_LETTERS) return false;
@@ -968,6 +983,7 @@ static bool write_shortcuts_file(const HmmShortcut *entries, int count,
 }
 
 bool hmm_user_dict_replace_shortcuts(const HmmShortcut *entries, int count) {
+    JNI_LOCAL_FRAME();
     if (!s_ready || !s_user_data_dir[0] || count < 0 || (count > 0 && !entries) ||
         !s_natives->createAccessor || !s_natives->newEmptyDictionary ||
         !s_natives->insertOrUpdate ||
@@ -1005,6 +1021,7 @@ bool hmm_user_dict_replace_shortcuts(const HmmShortcut *entries, int count) {
 }
 
 bool hmm_user_dict_is_shortcut_candidate(int candidate_index) {
+    JNI_LOCAL_FRAME();
     char tokens[HMM_SHORTCUT_MAX_LETTERS][16];
     int types[HMM_SHORTCUT_MAX_LETTERS];
     int count = hmm_user_dict_extract_tokens(
@@ -1021,6 +1038,7 @@ bool hmm_user_dict_is_shortcut_candidate(int candidate_index) {
 
 int hmm_user_dict_extract_tokens(int candidate_index,
                                  char tokens[][16], int *types, int max_tokens) {
+    JNI_LOCAL_FRAME();
     if (!s_natives ||
         !s_natives->getCandidateTokenCount ||
         !s_natives->getCandidateToken || !g_engine) {
@@ -1075,6 +1093,7 @@ int hmm_user_dict_extract_tokens(int candidate_index,
 // ── Teardown ────────────────────────────────────────────────────────────────
 
 void hmm_user_dict_destroy(void) {
+    JNI_LOCAL_FRAME();
     if (!s_ready) return;
     if (s_user_data_dir[0]) hmm_user_dict_persist();
     for (int i = 0; i < DICT_COUNT; ++i) {

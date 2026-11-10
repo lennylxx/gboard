@@ -132,6 +132,51 @@ static jboolean fail_context_setting(JNIEnv *env, jclass cls, jlong manager,
     return s_real_enroll_setting(env, cls, manager, type, locale, bytes);
 }
 
+static void test_jni_local_frames(void) {
+    printf("[test_jni_local_frames]\n");
+    JNIEnv *env = jni_env_create();
+    void **fns = (void **)*env;
+    typedef jmethodID (*GetMethodID)(JNIEnv *, jclass, const char *,
+                                     const char *);
+    typedef jobject (*CallObjectMethod)(JNIEnv *, jobject, jmethodID, ...);
+    typedef jobject (*NewGlobalRef)(JNIEnv *, jobject);
+    jmethodID get_bytes =
+        ((GetMethodID)fns[33])(env, NULL, "getBytes", "()[B");
+    CallObjectMethod call = (CallObjectMethod)fns[34];
+
+    size_t base = jni_live_object_count();
+    size_t outer = jni_local_frame_push();
+    jstring string = jni_NewStringUTF(env, "abc");
+    jobject array = jni_NewObjectArray(env, 1, NULL, NULL);
+    size_t inner = jni_local_frame_push();
+    jobject bytes = call(env, string, get_bytes);
+    jni_SetObjectArrayElement(env, array, 0,
+                              jni_NewStringUTF(env, "element"));
+    jni_local_frame_pop(inner);
+    check("nested frame keeps a getBytes cache and an outer array element",
+          bytes && jni_live_object_count() == base + 4);
+    jni_local_frame_pop(outer);
+    check("frame frees a string with its cache; the element stays pinned",
+          jni_live_object_count() == base + 1);
+
+    base = jni_live_object_count();
+    outer = jni_local_frame_push();
+    array = jni_NewObjectArray(env, 1, NULL, NULL);
+    jni_SetObjectArrayElement(env, array, 0,
+                              jni_NewStringUTF(env, "element"));
+    jni_local_frame_pop(outer);
+    check("frame frees an array with elements from the same frame",
+          jni_live_object_count() == base);
+
+    base = jni_live_object_count();
+    outer = jni_local_frame_push();
+    string = jni_NewStringUTF(env, "abc");
+    ((NewGlobalRef)fns[21])(env, call(env, string, get_bytes));
+    jni_local_frame_pop(outer);
+    check("a global ref keeps a getBytes cache after its string is freed",
+          jni_live_object_count() == base + 1);
+}
+
 static void test_fuzzy_pinyin(void) {
     printf("[test_fuzzy_pinyin]\n");
     static const struct {
@@ -2323,6 +2368,7 @@ int main(int argc, char **argv) {
     unlink("tests/test_user_data/user_dict_3_3_english_bak");
 
     test_jni_native_lookup();
+    test_jni_local_frames();
     test_init(so, pack);
     if (g_fail > 0) { printf("\nEngine init failed — cannot continue.\n"); return 1; }
 

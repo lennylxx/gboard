@@ -47,6 +47,25 @@ JNIEnv *jni_env_create(void);
 JavaVM  *jni_vm_get(void);
 void     jni_env_destroy(JNIEnv *env);
 
+// Local frames free the objects created while they are open, as ART frees
+// a native method's local references when it returns. Engine entry points
+// open one with JNI_LOCAL_FRAME(); frames nest.
+size_t jni_local_frame_push(void);
+void   jni_local_frame_pop(size_t mark);
+// Keeps an object, and the objects it references, after its frame closes.
+void   jni_pin(jobject obj);
+// Number of emulated objects currently allocated, for leak tests.
+size_t jni_live_object_count(void);
+
+typedef struct { size_t mark; } JniLocalFrame;
+static inline void jni_local_frame_close(JniLocalFrame *frame) {
+    jni_local_frame_pop(frame->mark);
+}
+#define JNI_LOCAL_FRAME() \
+    JniLocalFrame jni_local_frame_ \
+        __attribute__((cleanup(jni_local_frame_close), unused)) = \
+        { jni_local_frame_push() }
+
 // Helper: unwrap a jstring back to C string (works with our fake strings)
 const char *jni_get_string(jstring s);
 jstring     jni_new_string(JNIEnv *env, const char *s);
