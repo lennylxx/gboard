@@ -23,3 +23,19 @@ rm -rf "$PACK_DESTINATION"
 mkdir -p "$PACK_DESTINATION"
 cp -f "$SO_SOURCE" "$RESOURCES/libintegrated_shared_object.so"
 cp -R "$PACK_SOURCE/." "$PACK_DESTINATION/"
+
+# Probe the native constructors once at build time so the IME can skip the
+# fork probe at launch. The loader verifies the result matches the library.
+ENGINE_DIR="$ROOT_DIR/GboardIME/engine"
+PROBE_TOOL_DIR="$(mktemp -d)"
+trap 'rm -rf "$PROBE_TOOL_DIR"' EXIT
+rm -f "$RESOURCES"/libintegrated_shared_object.so.ctorprobe*
+xcrun clang -O2 -arch arm64 -I"$ROOT_DIR/GboardIME" \
+    -o "$PROBE_TOOL_DIR/gen-ctor-probe" \
+    "$ROOT_DIR/scripts/gen-ctor-probe.c" \
+    "$ENGINE_DIR/elf_loader.c" \
+    "$ENGINE_DIR/android_stubs.c" \
+    "$ENGINE_DIR/linux_abi.c" \
+    -lpthread
+"$PROBE_TOOL_DIR/gen-ctor-probe" \
+    "$RESOURCES/libintegrated_shared_object.so" "$PACK_DESTINATION" >/dev/null

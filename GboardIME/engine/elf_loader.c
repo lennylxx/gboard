@@ -21,7 +21,10 @@
 #include <setjmp.h>
 #include <pthread.h>
 #include <sys/time.h>
+#include <time.h>
 #include <sys/wait.h>
+#include <limits.h>
+#include <CommonCrypto/CommonDigest.h>
 
 // ── ELF types ────────────────────────────────────────────────────────────────
 typedef uint64_t Elf64_Addr;
@@ -83,6 +86,8 @@ typedef struct {
 
 #define PT_LOAD    1
 #define PT_DYNAMIC 2
+#define PT_NOTE    4
+#define NT_GNU_BUILD_ID 3
 #define DT_NULL     0
 #define DT_NEEDED   1
 #define DT_PLTRELSZ 2
@@ -143,6 +148,7 @@ struct ElfHandle {
 
     void (**init_array)(void);
     size_t init_array_count;
+    int    ctor_probe_cached;  // constructors used the build-time probe file
 };
 
 // ── Constructor crash protection (sigsetjmp-based, used in fork child) ───────
@@ -621,9 +627,233 @@ static void elf_patch_tpidr(uint8_t *bias, const Elf64_Phdr *phdrs, int phnum,
 #endif
 }
 
+// ── Constructor probe results ────────────────────────────────────────────────
+// Some Android constructors may crash or hang under the macOS shims, so each
+// one is first run in a forked child. Probe values: 1 = ok, 2 = crashed,
+// 3 = hung. The build stores the results next to the library as
+// "<so>.ctorprobe"; the header binds them to this library's GNU build ID and
+// constructor table.
+//
+// The build-time probe runs in a command-line tool rather than inside the IME.
+// This assumes the constructors behave the same in both processes: they run
+// during elf_load(), before the engine sees any IME state, and only depend on
+// the loader and android_stubs, which are shared. Re-check this assumption
+// (compare against an in-IME probe) if a constructor is ever marked unsafe.
+
+#define CTOR_PROBE_MAGIC  "GBCTOR02"
+#define CTOR_PROBE_SUFFIX ".ctorprobe"
+
+typedef struct {
+    char     magic[8];
+    uint64_t so_size;
+    uint64_t count;
+    uint8_t  digest[CC_SHA256_DIGEST_LENGTH];
+} CtorProbeHeader;
+
+// Hash the NT_GNU_BUILD_ID note, if present, so a rebuilt library with the
+// same size and constructor layout does not reuse stale results.
+static void hash_build_id(CC_SHA256_CTX *ctx, const uint8_t *file,
+                          size_t file_size, const Elf64_Phdr *phdrs, int phnum) {
+    for (int i = 0; i < phnum; i++) {
+        if (phdrs[i].p_type != PT_NOTE) continue;
+        if (phdrs[i].p_offset > file_size ||
+            phdrs[i].p_filesz > file_size - phdrs[i].p_offset) continue;
+        const uint8_t *p = file + phdrs[i].p_offset;
+        const uint8_t *end = p + phdrs[i].p_filesz;
+        while ((size_t)(end - p) >= 12) {
+            uint32_t namesz, descsz, type;
+            memcpy(&namesz, p, 4); memcpy(&descsz, p + 4, 4); memcpy(&type, p + 8, 4);
+            size_t name_len = ((size_t)namesz + 3) & ~(size_t)3;
+            size_t desc_len = ((size_t)descsz + 3) & ~(size_t)3;
+            if (name_len > (size_t)(end - p) - 12 ||
+                desc_len > (size_t)(end - p) - 12 - name_len) break;
+            const uint8_t *name = p + 12, *desc = name + name_len;
+            if (type == NT_GNU_BUILD_ID && namesz == 4 &&
+                memcmp(name, "GNU", 4) == 0) {
+                uint32_t len = descsz;
+                CC_SHA256_Update(ctx, &len, sizeof(len));
+                CC_SHA256_Update(ctx, desc, descsz);
+                return;
+            }
+            p = desc + desc_len;
+        }
+    }
+}
+
+static void ctor_probe_header(const ElfHandle *h, const uint8_t *file,
+                              size_t so_size, const Elf64_Phdr *phdrs,
+                              int phnum, CtorProbeHeader *hdr) {
+    memset(hdr, 0, sizeof(*hdr));
+    memcpy(hdr->magic, CTOR_PROBE_MAGIC, sizeof(hdr->magic));
+    hdr->so_size = so_size;
+    hdr->count = h->init_array_count;
+
+    CC_SHA256_CTX ctx;
+    CC_SHA256_Init(&ctx);
+    hash_build_id(&ctx, file, so_size, phdrs, phnum);
+
+    // Hash link-time constructor addresses, which do not depend on ASLR.
+    // Entries outside the image (null, sentinels, host symbols) hash as a
+    // fixed marker so their runtime address cannot change the digest.
+    uintptr_t base = (uintptr_t)h->load_base;
+    for (size_t i = 0; i < h->init_array_count; i++) {
+        uintptr_t v = (uintptr_t)h->init_array[i];
+        uint64_t addr = (v >= base && v < base + h->load_size)
+                        ? (uint64_t)(v - (uintptr_t)h->bias) : UINT64_MAX;
+        CC_SHA256_Update(&ctx, &addr, sizeof(addr));
+    }
+    CC_SHA256_Final(hdr->digest, &ctx);
+}
+
+static int ctor_probe_path(const char *so_path, char *out, size_t cap) {
+    int len = snprintf(out, cap, "%s%s", so_path, CTOR_PROBE_SUFFIX);
+    return len > 0 && (size_t)len < cap;
+}
+
+static int read_full(int fd, void *buf, size_t len) {
+    uint8_t *p = buf;
+    while (len > 0) {
+        ssize_t r = read(fd, p, len);
+        if (r < 0 && errno == EINTR) continue;
+        if (r <= 0) return 0;
+        p += r; len -= (size_t)r;
+    }
+    return 1;
+}
+
+static int write_full(int fd, const void *buf, size_t len) {
+    const uint8_t *p = buf;
+    while (len > 0) {
+        ssize_t w = write(fd, p, len);
+        if (w < 0 && errno == EINTR) continue;
+        if (w <= 0) return 0;
+        p += w; len -= (size_t)w;
+    }
+    return 1;
+}
+
+static int ctor_probe_read(const char *so_path, const CtorProbeHeader *want,
+                           uint8_t *ctor_safe, size_t n) {
+    char path[PATH_MAX];
+    if (!ctor_probe_path(so_path, path, sizeof(path))) return 0;
+    int fd = open(path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
+    if (fd < 0) return 0;
+
+    CtorProbeHeader got;
+    struct stat st;
+    int ok = fstat(fd, &st) == 0 && S_ISREG(st.st_mode) &&
+             (uint64_t)st.st_size == sizeof(got) + n &&
+             read_full(fd, &got, sizeof(got)) &&
+             memcmp(&got, want, sizeof(got)) == 0 &&
+             read_full(fd, ctor_safe, n);
+    close(fd);
+    for (size_t i = 0; ok && i < n; i++)
+        if (ctor_safe[i] < 1 || ctor_safe[i] > 3) ok = 0;
+    if (!ok) elf_log("DT_INIT_ARRAY: ignoring stale or invalid %s\n", path);
+    return ok;
+}
+
+// Write to a unique temporary file, then rename it into place atomically.
+static int ctor_probe_write(const char *so_path, const CtorProbeHeader *hdr,
+                            const uint8_t *ctor_safe, size_t n) {
+    char path[PATH_MAX], tmp[PATH_MAX];
+    if (!ctor_probe_path(so_path, path, sizeof(path))) return 0;
+    if (snprintf(tmp, sizeof(tmp), "%s.XXXXXX", path) >= (int)sizeof(tmp))
+        return 0;
+    int fd = mkstemp(tmp);
+    if (fd < 0) return 0;
+    int ok = write_full(fd, hdr, sizeof(*hdr)) &&
+             (n == 0 || write_full(fd, ctor_safe, n)) &&
+             fchmod(fd, 0644) == 0;
+    if (close(fd) != 0) ok = 0;
+    if (ok && rename(tmp, path) != 0) ok = 0;
+    if (!ok) unlink(tmp);
+    return ok;
+}
+
+// Returns 1 when the child probed every constructor and exited cleanly.
+static int ctor_probe_run(ElfHandle *h, uint8_t *ctor_safe) {
+    size_t n = h->init_array_count;
+    memset(ctor_safe, 0, n);
+    elf_log("DT_INIT_ARRAY: probing %zu constructors via fork...\n", n);
+
+    pid_t pid = fork();
+    if (pid == 0) {
+        for (size_t i = 0; i < n; i++) {
+            void (*ctor)(void) = h->init_array[i];
+            if (!ctor || (uintptr_t)ctor < 0x10000) { ctor_safe[i] = 1; continue; }
+
+            int sig = sigsetjmp(s_ctor_jmp, 1);
+            if (sig != 0) {
+                struct itimerval zero = {{0,0},{0,0}};
+                setitimer(ITIMER_REAL, &zero, NULL);
+                ctor_safe[i] = (sig == SIGALRM) ? 3 : 2;
+                elf_log("  ctor[%zu] at %p: %s (sig=%d)\n", i, (void*)ctor,
+                        sig == SIGALRM ? "HUNG" : "CRASHED", sig);
+                continue;
+            }
+
+            struct sigaction csa = {0};
+            csa.sa_handler = ctor_crash_handler;
+            sigemptyset(&csa.sa_mask);
+            struct sigaction old_segv, old_bus, old_ill, old_alrm, old_abrt;
+            sigaction(SIGSEGV, &csa, &old_segv);
+            sigaction(SIGBUS,  &csa, &old_bus);
+            sigaction(SIGILL,  &csa, &old_ill);
+            sigaction(SIGALRM, &csa, &old_alrm);
+            sigaction(SIGABRT, &csa, &old_abrt);
+
+            struct itimerval timer = {{0,0},{2,0}};
+            setitimer(ITIMER_REAL, &timer, NULL);
+            ctor();
+            struct itimerval zero = {{0,0},{0,0}};
+            setitimer(ITIMER_REAL, &zero, NULL);
+            ctor_safe[i] = 1;
+
+            sigaction(SIGSEGV, &old_segv, NULL);
+            sigaction(SIGBUS,  &old_bus,  NULL);
+            sigaction(SIGILL,  &old_ill,  NULL);
+            sigaction(SIGALRM, &old_alrm, NULL);
+            sigaction(SIGABRT, &old_abrt, NULL);
+        }
+        _exit(0);
+    }
+    if (pid < 0) return 0;
+
+    // Each constructor has a 2s SIGALRM timer in the child, but a constructor
+    // that blocks SIGALRM would hang it forever. Kill the child if it makes no
+    // progress for CTOR_PROBE_STALL_MS; unprobed constructors stay skipped.
+    enum { CTOR_PROBE_STALL_MS = 5000, CTOR_PROBE_POLL_US = 1000 };
+    const volatile uint8_t *progress = ctor_safe;
+    size_t done = 0;
+    uint64_t last_ns = clock_gettime_nsec_np(CLOCK_MONOTONIC);
+    int status;
+    pid_t r;
+    while ((r = waitpid(pid, &status, WNOHANG)) == 0) {
+        size_t now = done;
+        while (now < n && progress[now] != 0) now++;
+        uint64_t t = clock_gettime_nsec_np(CLOCK_MONOTONIC);
+        if (now != done) { done = now; last_ns = t; }
+        else if (t - last_ns >= (uint64_t)CTOR_PROBE_STALL_MS * 1000000) {
+            elf_log("DT_INIT_ARRAY probe: child stalled at ctor %zu, killing\n", done);
+            kill(pid, SIGKILL);
+            while (waitpid(pid, &status, 0) < 0 && errno == EINTR) {}
+            return 0;
+        }
+        usleep(CTOR_PROBE_POLL_US);
+    }
+    if (r != pid) return 0;
+    elf_log("DT_INIT_ARRAY probe: child exit=%d\n", WEXITSTATUS(status));
+    if (!WIFEXITED(status) || WEXITSTATUS(status) != 0) return 0;
+    for (size_t i = 0; i < n; i++)
+        if (ctor_safe[i] == 0) return 0;
+    return 1;
+}
+
 // ── Main loader ───────────────────────────────────────────────────────────────
 
-ElfHandle *elf_load(const char *path) {
+static ElfHandle *elf_load_impl(const char *path, int generate_probe,
+                                 int *probe_ok) {
     stub_ht_init();
 
     int fd = open(path, O_RDONLY);
@@ -827,94 +1057,40 @@ ElfHandle *elf_load(const char *path) {
     }
     elf_log("Bionic TLS: TPIDR_EL0 set to fake TLS block\n");
 
-    // Run constructors — use cached probe results when available.
-    // Cache key: file size + mtime + constructor count.
-    // Cache file: /tmp/gboard_ctor_cache_<size>_<mtime>_<count>
+    // Run constructors, skipping any the probe marked as crashing or hanging.
+    // Results come from the build-time "<so>.ctorprobe" file in the signed
+    // bundle; when it is missing or stale, probe in memory without caching.
+    CtorProbeHeader probe_hdr;
+    ctor_probe_header(h, file, file_size, phdrs, ehdr->e_phnum, &probe_hdr);
+    if (generate_probe && h->init_array_count == 0)
+        *probe_ok = ctor_probe_write(path, &probe_hdr, NULL, 0);
     if (h->init_array && h->init_array_count > 0) {
         size_t n = h->init_array_count;
         uint8_t *ctor_safe = mmap(NULL, n, PROT_READ | PROT_WRITE,
                                    MAP_SHARED | MAP_ANON, -1, 0);
-
-        // Try loading from cache
-        char cache_path[256];
-        snprintf(cache_path, sizeof(cache_path),
-                 "/tmp/gboard_ctor_cache_%zu_%lld_%zu",
-                 file_size, (long long)st.st_mtime, n);
-
-        int cached = 0;
-        int cache_fd = open(cache_path, O_RDONLY);
-        if (cache_fd >= 0) {
-            ssize_t rd = read(cache_fd, ctor_safe, n);
-            close(cache_fd);
-            if ((size_t)rd == n) {
-                cached = 1;
-                elf_log("DT_INIT_ARRAY: loaded probe cache (%zu ctors)\n", n);
-            }
+        if (ctor_safe == MAP_FAILED) {
+            // Without probe results no constructor is known to be safe; in
+            // generate mode *probe_ok stays 0 so the build fails.
+            elf_log("DT_INIT_ARRAY: mmap failed, skipping %zu ctors\n", n);
+            goto ctors_done;
         }
 
-        if (!cached) {
-            // Fork-probe: child tests each constructor with sigsetjmp
-            memset(ctor_safe, 0, n);
-            elf_log("DT_INIT_ARRAY: probing %zu constructors via fork...\n", n);
-
-            pid_t pid = fork();
-            if (pid == 0) {
-                for (size_t i = 0; i < n; i++) {
-                    void (*ctor)(void) = h->init_array[i];
-                    if (!ctor || (uintptr_t)ctor < 0x10000) { ctor_safe[i] = 1; continue; }
-
-                    int sig = sigsetjmp(s_ctor_jmp, 1);
-                    if (sig != 0) {
-                        struct itimerval zero = {{0,0},{0,0}};
-                        setitimer(ITIMER_REAL, &zero, NULL);
-                        ctor_safe[i] = (sig == SIGALRM) ? 3 : 2;
-                        elf_log("  ctor[%zu] at %p: %s (sig=%d)\n", i, (void*)ctor,
-                                sig == SIGALRM ? "HUNG" : "CRASHED", sig);
-                        continue;
-                    }
-
-                    struct sigaction csa = {0};
-                    csa.sa_handler = ctor_crash_handler;
-                    sigemptyset(&csa.sa_mask);
-                    struct sigaction old_segv, old_bus, old_ill, old_alrm, old_abrt;
-                    sigaction(SIGSEGV, &csa, &old_segv);
-                    sigaction(SIGBUS,  &csa, &old_bus);
-                    sigaction(SIGILL,  &csa, &old_ill);
-                    sigaction(SIGALRM, &csa, &old_alrm);
-                    sigaction(SIGABRT, &csa, &old_abrt);
-
-                    struct itimerval timer = {{0,0},{2,0}};
-                    setitimer(ITIMER_REAL, &timer, NULL);
-                    ctor();
-                    struct itimerval zero = {{0,0},{0,0}};
-                    setitimer(ITIMER_REAL, &zero, NULL);
-                    ctor_safe[i] = 1;
-
-                    sigaction(SIGSEGV, &old_segv, NULL);
-                    sigaction(SIGBUS,  &old_bus,  NULL);
-                    sigaction(SIGILL,  &old_ill,  NULL);
-                    sigaction(SIGALRM, &old_alrm, NULL);
-                    sigaction(SIGABRT, &old_abrt, NULL);
-                }
-                _exit(0);
-            } else if (pid > 0) {
-                int status;
-                waitpid(pid, &status, 0);
-                elf_log("DT_INIT_ARRAY probe: child exit=%d\n", WEXITSTATUS(status));
-
-                // Save cache for next time
-                int wfd = open(cache_path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
-                if (wfd >= 0) {
-                    write(wfd, ctor_safe, n);
-                    close(wfd);
-                    elf_log("DT_INIT_ARRAY: saved probe cache to %s\n", cache_path);
-                }
-            }
+        int cached = !generate_probe &&
+                     ctor_probe_read(path, &probe_hdr, ctor_safe, n);
+        h->ctor_probe_cached = cached;
+        if (cached) {
+            elf_log("DT_INIT_ARRAY: loaded probe results (%zu ctors)\n", n);
+        } else {
+            int complete = ctor_probe_run(h, ctor_safe);
+            if (generate_probe)
+                *probe_ok = complete &&
+                            ctor_probe_write(path, &probe_hdr, ctor_safe, n);
         }
 
-        // Run only safe constructors
+        // Run only safe constructors. The generator exits right after writing
+        // the file, so it skips this to avoid running them without a timeout.
         int run_ok = 0, skipped = 0;
-        for (size_t i = 0; i < n; i++) {
+        for (size_t i = 0; !generate_probe && i < n; i++) {
             if (ctor_safe[i] != 1) { skipped++; continue; }
             void (*ctor)(void) = h->init_array[i];
             if (!ctor || (uintptr_t)ctor < 0x10000) continue;
@@ -925,6 +1101,7 @@ ElfHandle *elf_load(const char *path) {
                 run_ok, skipped, cached);
         munmap(ctor_safe, n);
     }
+ctors_done:
 
     // Release file mapping and close fd (no longer needed after constructors)
     munmap(file, file_size);
@@ -932,6 +1109,19 @@ ElfHandle *elf_load(const char *path) {
 
     elf_log("elf_load complete: %s @ %p\n", path, load_base);
     return h;
+}
+
+ElfHandle *elf_load(const char *path) {
+    return elf_load_impl(path, 0, NULL);
+}
+
+int elf_write_ctor_probe(const char *so_path) {
+    int ok = 0;
+    return elf_load_impl(so_path, 1, &ok) != NULL && ok;
+}
+
+int elf_ctor_probe_cached(const ElfHandle *h) {
+    return h ? h->ctor_probe_cached : 0;
 }
 
 void *elf_bias(ElfHandle *h) { return h ? h->bias : NULL; }

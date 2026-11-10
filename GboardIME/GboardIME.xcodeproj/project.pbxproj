@@ -260,6 +260,7 @@
 			name = "Copy Engine Resources";
 			outputPaths = (
 				"$(TARGET_BUILD_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/libintegrated_shared_object.so",
+				"$(TARGET_BUILD_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/libintegrated_shared_object.so.ctorprobe",
 				"$(TARGET_BUILD_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/hmmoemdata/current/pinyin_qwerty_setting_scheme",
 			);
 			runOnlyForDeploymentPostprocessing = 0;

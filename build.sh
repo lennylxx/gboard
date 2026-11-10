@@ -73,12 +73,13 @@ build_with_swiftc() {
 }
 
 do_build() {
+    # The Xcode project copies engine resources in its own build phase.
     if has_xcodebuild; then
         build_with_xcodebuild
     else
         build_with_swiftc
+        copy_engine_resources "$BUILD_DIR/$APP_NAME"
     fi
-    copy_engine_resources "$BUILD_DIR/$APP_NAME"
     echo "Built: $BUILD_DIR/$APP_NAME"
 }
 
