@@ -30,6 +30,9 @@ bool  gboard_select(int index);
 bool  gboard_unconvert_last(void);
 int   gboard_get_converted_count(void);
 bool  gboard_delete_last_input(void);
+uint64_t gboard_input_generation(void);
+bool  gboard_can_edit_in_place(uint64_t generation, int letters,
+                               int next_letters);
 int   gboard_get_candidate_consumed(int index);
 int   gboard_get_separator(int vertex_index);
 bool  gboard_set_separator(int vertex_index, int type);

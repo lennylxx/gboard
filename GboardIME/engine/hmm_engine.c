@@ -354,13 +354,15 @@ void hmm_engine_set_external_context(bool has_context) {
     s_has_external_context = has_context;
 }
 
-void hmm_engine_prepare_input(const char *pinyin_input) {
-    size_t input_length = pinyin_input ? strlen(pinyin_input) : 0;
+jlong hmm_engine_decoder_for_input_length(size_t input_length) {
     bool prioritize_context =
         s_has_external_context || input_length >= 12;
-    g_engine = prioritize_context
-        ? s_context_engine
-        : s_personalized_engine;
+    return prioritize_context ? s_context_engine : s_personalized_engine;
+}
+
+void hmm_engine_prepare_input(const char *pinyin_input) {
+    g_engine = hmm_engine_decoder_for_input_length(
+        pinyin_input ? strlen(pinyin_input) : 0);
 }
 
 bool hmm_engine_update_input_context(const char *before_selection,

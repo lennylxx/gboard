@@ -286,7 +286,7 @@ class PinyinSession {
         }
         composition += ch
         if selections.isEmpty {
-            fetchCandidates()
+            if !appendInPlace(ch) { fetchCandidates() }
         } else {
             // Extend the input after the converted part, as Gboard does.
             guard gboard_append(ch) else {
@@ -340,7 +340,7 @@ class PinyinSession {
         if composition.isEmpty {
             cancel()
         } else {
-            fetchCandidates()
+            if removed == "'" || !deleteInPlace() { fetchCandidates() }
             updateMarkedText()
         }
         return .handled
@@ -917,6 +917,9 @@ class PinyinSession {
     private var inputsAfterSelection = 0
     /// Input length last used to choose the engine.
     private var preparedLetterCount = 0
+    /// Engine input generation after this session last decoded its input;
+    /// in-place edits require that no other reset happened since.
+    private var decodedGeneration = UInt64.max
 
     /// Selected text shown before the remaining pinyin.
     var convertedText: String {
@@ -1046,8 +1049,38 @@ class PinyinSession {
             delegate?.sessionHideCandidates()
             return
         }
+        decodedGeneration = gboard_input_generation()
         candidatePage = 0
         fillCandidatePage()
+    }
+
+    /// Appends typed letters to the decoded input, as Gboard does, instead
+    /// of decoding the whole composition again. Fails when the decoder does
+    /// not hold the rest of the composition or would change with its length.
+    private func appendInPlace(_ text: String) -> Bool {
+        let letters = composition.filter { $0 != "'" }.count
+        // The first letters always restart, so the decoder adopts the
+        // composition's context and any pending settings.
+        guard !text.isEmpty, !text.contains("'"), letters > text.count,
+              gboard_can_edit_in_place(decodedGeneration,
+                                       Int32(letters - text.count),
+                                       Int32(letters)),
+              gboard_append(text) else { return false }
+        preparedLetterCount = letters
+        refillCandidates()
+        return true
+    }
+
+    /// Deletes the last letter natively, like Gboard's deleteInputRange.
+    private func deleteInPlace() -> Bool {
+        let letters = composition.filter { $0 != "'" }.count
+        guard letters > 0,
+              gboard_can_edit_in_place(decodedGeneration, Int32(letters + 1),
+                                       Int32(letters)),
+              gboard_delete_last_input() else { return false }
+        preparedLetterCount = letters
+        refillCandidates()
+        return true
     }
 
     /// Selects the candidate matching a converted selection after its

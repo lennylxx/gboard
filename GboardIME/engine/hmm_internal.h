@@ -242,6 +242,8 @@ bool hmm_engine_refresh_settings_after_reset(void);
 // dictionaries were re-enrolled.
 void hmm_engine_mark_shortcuts_dirty(void);
 void hmm_engine_set_external_context(bool has_context);
+// The decoder hmm_engine_prepare_input() selects for an input length.
+jlong hmm_engine_decoder_for_input_length(size_t input_length);
 
 // ── Symbol helper ───────────────────────────────────────────────────────────
 static inline void *hmm_sym(ElfHandle *h, const char *name) {

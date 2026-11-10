@@ -106,6 +106,18 @@ bool hmm_engine_select(int index);
 // input remains. Refill candidates afterwards.
 bool hmm_engine_delete_last_input(void);
 
+// Changes on every hmm_engine_reset(), so a session can tell whether the
+// decoder still holds the input it appended.
+uint64_t hmm_engine_input_generation(void);
+
+// True when the decoder has not been reset since `generation`, holds
+// exactly `letters` unconverted input letters, and
+// hmm_engine_prepare_input() would keep it for `next_letters`. Gboard then
+// appends or deletes input in place instead of resetting and decoding the
+// whole composition again.
+bool hmm_engine_can_edit_in_place(uint64_t generation, int letters,
+                                  int next_letters);
+
 // Number of selections converted in the active composition.
 int hmm_engine_get_converted_count(void);
 

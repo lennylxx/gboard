@@ -264,6 +264,80 @@ func testDelete() {
     check("candidates empty", s.candidates.isEmpty)
 }
 
+func testInPlaceEditing() {
+    print("[test_in_place_editing]")
+    // A single appendLetter call with the whole input decodes from a reset.
+    // References are computed first: another session would reset the engine.
+    func reference(_ input: String) -> [String] {
+        let (r, _) = makeSession()
+        _ = r.appendLetter(input)
+        defer { r.cancel() }
+        return r.candidates
+    }
+    let input = "womenyiqiquchifanba"
+    let prefixes = (1...input.count).map { String(input.prefix($0)) }
+    let expected = prefixes.map(reference)
+    let expectedShort = reference("womenyiqiqu")
+    let expectedXian = reference("xi'an")
+    let expectedNihao = reference("nihaoshijie")
+
+    // Only the first letter and crossing 12 letters (decoder switch)
+    // decode again; every other key edits the decoder input in place.
+    let (s, _) = makeSession()
+    var mismatches: [String] = []
+    var replays: [Int] = []
+    var generation = gboard_input_generation()
+    for (i, prefix) in prefixes.enumerated() {
+        _ = s.appendLetter(String(prefix.last!))
+        if s.candidates != expected[i] { mismatches.append(prefix) }
+        if gboard_input_generation() != generation { replays.append(i + 1) }
+        generation = gboard_input_generation()
+    }
+    check("typing across 12 letters matches a full decode \(mismatches)",
+          mismatches.isEmpty)
+    check("typing decodes again only at 1 and 12 letters \(replays)",
+          replays == [1, 12])
+    replays = []
+    for _ in 0..<8 {
+        _ = s.deleteBack()
+        if gboard_input_generation() != generation {
+            replays.append(s.composition.count)
+        }
+        generation = gboard_input_generation()
+    }
+    check("deleting below 12 letters matches a full decode",
+          s.composition == "womenyiqiqu" && s.candidates == expectedShort)
+    check("deleting decodes again only below 12 letters \(replays)",
+          replays == [11])
+    s.cancel()
+
+    for ch in "xi'an" { _ = s.appendLetter(String(ch)) }
+    for _ in 0..<2 { _ = s.deleteBack() }
+    for ch in "an" { _ = s.appendLetter(String(ch)) }
+    check("retyping after an apostrophe matches a full decode",
+          s.composition == "xi'an" && s.candidates == expectedXian)
+    s.cancel()
+
+    for ch in "nihaoshijie" { _ = s.appendLetter(String(ch)) }
+    _ = selectCandidate("你好", in: s)
+    _ = s.deleteBack()
+    _ = s.deleteBack()
+    _ = s.appendLetter("e")
+    check("editing after undoing a selection matches a full decode",
+          s.composition == "nihaoshijie" && s.candidates == expectedNihao)
+    s.cancel()
+
+    // Another session's reset invalidates this session's decoder input.
+    for ch in "nihao" { _ = s.appendLetter(String(ch)) }
+    let (other, _) = makeSession()
+    for ch in "zhong" { _ = other.appendLetter(String(ch)) }
+    _ = s.appendLetter("s")
+    check("another session's input is never edited in place",
+          s.candidates == reference("nihaos"))
+    other.cancel()
+    s.cancel()
+}
+
 func testEscape() {
     print("[test_escape]")
     let (s, m) = makeSession()
@@ -1684,6 +1758,7 @@ func testShortcutsIntegration(_ args: [String]) {
         testBasicTyping()
         testNumberSelection()
         testDelete()
+        testInPlaceEditing()
         testEscape()
         testArrowKeys()
         testCandidatePaging()

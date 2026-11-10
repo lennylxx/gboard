@@ -33,6 +33,7 @@ typedef struct {
 } VertexRange;
 static VertexRange s_converted[MAX_CONVERTED_RANGES];
 static int s_converted_count;
+static uint64_t s_input_generation;
 
 // Candidates cover the input after the last selection, or after the
 // injected context when nothing is selected yet.
@@ -592,6 +593,20 @@ bool hmm_engine_delete_last_input(void) {
     return true;
 }
 
+uint64_t hmm_engine_input_generation(void) {
+    return s_input_generation;
+}
+
+bool hmm_engine_can_edit_in_place(uint64_t generation, int letters,
+                                  int next_letters) {
+    return g_engine && generation == s_input_generation &&
+           s_settings_ready && s_converted_count == 0 &&
+           s_context_injected && letters >= 0 && next_letters >= 0 &&
+           g_end_vertex - s_context_end_vertex == letters &&
+           hmm_engine_decoder_for_input_length((size_t)next_letters) ==
+               g_engine;
+}
+
 int hmm_engine_get_converted_count(void) {
     return s_converted_count;
 }
@@ -612,6 +627,7 @@ bool hmm_engine_unconvert_last(void) {
 }
 
 void hmm_engine_reset(void) {
+    s_input_generation++;
     g_end_vertex = 0;
     s_converted_count = 0;
     s_context_injected = false;
