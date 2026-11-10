@@ -1121,6 +1121,7 @@ class PinyinSession {
         var bufs = [UnsafeMutablePointer<CChar>?](repeating: nil, count: maxCount)
         let offset = candidatePage * candidatePageSize
         let count = Int(gboard_get_candidates_page(&bufs, Int32(offset), Int32(maxCount)))
+        defer { bufs.prefix(count).forEach { free($0) } }
 
         var results: [String] = []
         for i in 0..<count {
