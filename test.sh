@@ -36,7 +36,7 @@ echo ""
 echo "═══ Checking constructor probe generation ═══"
 PROBE_DIR="$(mktemp -d)"
 trap 'rm -rf "$PROBE_DIR"' EXIT
-clang -O2 -o "$PROBE_DIR/gen-ctor-probe" scripts/gen-ctor-probe.c \
+clang -O2 -o "$PROBE_DIR/gen_ctor_probe" scripts/gen_ctor_probe.c \
     "$ENGINE_DIR/elf_loader.c" \
     "$ENGINE_DIR/android_stubs.c" \
     "$ENGINE_DIR/linux_abi.c" \
@@ -45,7 +45,7 @@ clang -O2 -o "$PROBE_DIR/gen-ctor-probe" scripts/gen-ctor-probe.c \
 ln -s "$PWD/$SO_PATH" "$PROBE_DIR/lib.so"
 echo keep > "$PROBE_DIR/victim"
 ln -s "$PROBE_DIR/victim" "$PROBE_DIR/lib.so.ctorprobe"
-if ! "$PROBE_DIR/gen-ctor-probe" "$PROBE_DIR/lib.so" "$PACK_PATH" >/dev/null; then
+if ! "$PROBE_DIR/gen_ctor_probe" "$PROBE_DIR/lib.so" "$PACK_PATH" >/dev/null; then
     echo "FAIL: constructor probe generator exited with an error"
     exit 1
 fi
@@ -56,7 +56,7 @@ if [ "$(cat "$PROBE_DIR/victim")" != keep ] ||
     exit 1
 fi
 echo "PASS: constructor probe replaces symlinks atomically"
-if ! "$PROBE_DIR/gen-ctor-probe" --verify "$PROBE_DIR/lib.so" "$PACK_PATH" >/dev/null; then
+if ! "$PROBE_DIR/gen_ctor_probe" --verify "$PROBE_DIR/lib.so" "$PACK_PATH" >/dev/null; then
     echo "FAIL: elf_load ignored a freshly generated constructor probe"
     exit 1
 fi
@@ -66,7 +66,7 @@ cp "$PROBE_DIR/lib.so.ctorprobe" "$PROBE_DIR/good.ctorprobe"
 ctors=$(od -An -tu8 -j16 -N8 "$PROBE_DIR/lib.so.ctorprobe" | tr -d ' ')
 dd if=/dev/zero of="$PROBE_DIR/lib.so.ctorprobe" bs=1 count=4 \
     seek=$((56 + ctors + 8)) conv=notrunc 2>/dev/null
-if "$PROBE_DIR/gen-ctor-probe" --verify "$PROBE_DIR/lib.so" "$PACK_PATH" >/dev/null 2>&1; then
+if "$PROBE_DIR/gen_ctor_probe" --verify "$PROBE_DIR/lib.so" "$PACK_PATH" >/dev/null 2>&1; then
     echo "FAIL: elf_load accepted a probe with an invalid TPIDR site"
     exit 1
 fi
@@ -75,7 +75,7 @@ mv "$PROBE_DIR/good.ctorprobe" "$PROBE_DIR/lib.so.ctorprobe"
 b=$(od -An -tu1 -j40 -N1 "$PROBE_DIR/lib.so.ctorprobe" | tr -d ' ')
 printf "\\$(printf %03o $((255 - b)))" |
     dd of="$PROBE_DIR/lib.so.ctorprobe" bs=1 seek=40 conv=notrunc 2>/dev/null
-if "$PROBE_DIR/gen-ctor-probe" --verify "$PROBE_DIR/lib.so" "$PACK_PATH" >/dev/null 2>&1; then
+if "$PROBE_DIR/gen_ctor_probe" --verify "$PROBE_DIR/lib.so" "$PACK_PATH" >/dev/null 2>&1; then
     echo "FAIL: elf_load accepted a constructor probe with a wrong digest"
     exit 1
 fi

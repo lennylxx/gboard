@@ -19,7 +19,7 @@ usage() {
 }
 
 copy_engine_resources() {
-    scripts/copy-engine-resources.sh "$1"
+    scripts/copy_engine_resources.sh "$1"
     echo "Copied native engine and pinyin data pack"
 }
 

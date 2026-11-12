@@ -1,5 +1,5 @@
 // Build-time generator for libintegrated_shared_object.so.ctorprobe.
-// Usage: gen-ctor-probe [--verify] <path/to/libintegrated_shared_object.so> <pack_dir>
+// Usage: gen_ctor_probe [--verify] <path/to/libintegrated_shared_object.so> <pack_dir>
 //   --verify  load the library and exit 0 only if elf_load() used the file.
 #include <stdio.h>
 #include <string.h>

@@ -31,11 +31,11 @@ PROBE_TOOL_DIR="$(mktemp -d)"
 trap 'rm -rf "$PROBE_TOOL_DIR"' EXIT
 rm -f "$RESOURCES"/libintegrated_shared_object.so.ctorprobe*
 xcrun clang -O2 -arch arm64 -I"$ROOT_DIR/GboardIME" \
-    -o "$PROBE_TOOL_DIR/gen-ctor-probe" \
-    "$ROOT_DIR/scripts/gen-ctor-probe.c" \
+    -o "$PROBE_TOOL_DIR/gen_ctor_probe" \
+    "$ROOT_DIR/scripts/gen_ctor_probe.c" \
     "$ENGINE_DIR/elf_loader.c" \
     "$ENGINE_DIR/android_stubs.c" \
     "$ENGINE_DIR/linux_abi.c" \
     -lpthread
-"$PROBE_TOOL_DIR/gen-ctor-probe" \
+"$PROBE_TOOL_DIR/gen_ctor_probe" \
     "$RESOURCES/libintegrated_shared_object.so" "$PACK_DESTINATION" >/dev/null

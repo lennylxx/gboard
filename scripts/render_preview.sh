@@ -36,8 +36,8 @@ done
 swiftc -O -swift-version 5 -parse-as-library -target "$TARGET" -sdk "$SDK" \
     -I"$ENGINE" -I"$IME" -import-objc-header "$IME/GboardBridge.h" \
     -framework Cocoa -framework InputMethodKit \
-    -o "$WORK_DIR/render-preview" \
+    -o "$WORK_DIR/render_preview" \
     "$ROOT_DIR/scripts/render_preview.swift" "${swift_srcs[@]}" "${objs[@]}"
 
-"$WORK_DIR/render-preview" "$OUTPUT"
+"$WORK_DIR/render_preview" "$OUTPUT"
 echo "Rendered: $OUTPUT"

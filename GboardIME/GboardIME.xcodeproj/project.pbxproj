@@ -265,7 +265,7 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
-			shellScript = "\"$SRCROOT/../scripts/copy-engine-resources.sh\" \"$TARGET_BUILD_DIR/$WRAPPER_NAME\"\n";
+			shellScript = "\"$SRCROOT/../scripts/copy_engine_resources.sh\" \"$TARGET_BUILD_DIR/$WRAPPER_NAME\"\n";
 		};
 /* End PBXShellScriptBuildPhase section */
 

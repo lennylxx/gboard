@@ -3,12 +3,12 @@ set -euo pipefail
 
 # Extract Gboard XAPK and download HMM dict pack.
 #
-# You must supply your own Gboard XAPK file. This project does not
+# You must supply your own Gboard XAPK or APK file. This project does not
 # distribute or automate downloading Google's proprietary binaries.
 #
 # The newest dict manifest (a JSON on gstatic.com listing locale packs with
-# download URLs) is located by find_latest_hmm_manifest.sh, which probes the
-# CDN's date-based namespace forward from a known manifest URL.
+# download URLs) is located by scripts/find_latest_hmm_manifest.sh, which
+# probes the CDN's date-based namespace forward from a known manifest URL.
 #
 # Prerequisites: brew install jq curl unzip
 
@@ -16,11 +16,11 @@ usage() {
     cat <<'EOF'
 Usage: setup.sh --xapk PATH [OPTIONS]
 
-You must provide your own Gboard XAPK file obtained from your device
+You must provide your own Gboard XAPK or APK file obtained from your device
 or a legitimate source. See README for instructions.
 
 Options:
-  --xapk PATH     Path to Gboard XAPK file (required)
+  --xapk PATH     Path to Gboard XAPK or APK file (required)
   --dict PATH     Use a local dict zip instead of auto-downloading
   --locale CODE   Dict locale to download (default: zh_CN)
                   Available: zh_CN, zh_TW, zh_HK, ko
@@ -37,7 +37,7 @@ cd "$(cd "$(dirname "$0")" && pwd)"
 
 # ── URLs ──────────────────────────────────────────────────────────────────────
 FALLBACK_MANIFEST="https://www.gstatic.com/android/keyboard/hmmpack/2026081806/metadata_2026081806.json"
-MANIFEST_SCANNER="./find_latest_hmm_manifest.sh"
+MANIFEST_SCANNER="./scripts/find_latest_hmm_manifest.sh"
 
 # ── Directory layout ─────────────────────────────────────────────────────────
 XAPK_DIR="xapk_unpacked"
