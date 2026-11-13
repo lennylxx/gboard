@@ -90,6 +90,14 @@ func testPreferencesStorage() {
         restored.correctionStyle = .hidden
         check("hidden correction style persists",
               Preferences(defaults: defaults).correctionStyle == .hidden)
+        check("candidates default to a horizontal row",
+              Preferences(defaults: defaults).candidateLayout == .horizontal)
+        restored.candidateLayout = .vertical
+        check("vertical candidate layout persists",
+              Preferences(defaults: defaults).candidateLayout == .vertical)
+        defaults.set("invalid", forKey: "candidateLayout")
+        check("unknown candidate layout falls back to horizontal",
+              Preferences(defaults: defaults).candidateLayout == .horizontal)
 
         defaults.set(100, forKey: "candidatePageSize")
         defaults.set("invalid", forKey: "correctionStyle")

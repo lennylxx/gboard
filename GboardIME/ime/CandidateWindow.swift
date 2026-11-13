@@ -50,6 +50,9 @@ struct CandidateView: View {
     /// Hosted in Liquid Glass: content sits directly on the glass with
     /// system label colors and an accent selection, per Apple's HIG.
     var glassBacked = false
+    /// Captured with the window size so a live preference change never
+    /// renders one layout inside a window sized for the other.
+    var layout: CandidateLayout = .horizontal
 
     @Environment(\.colorScheme) private var systemColorScheme
     @ObservedObject var preferences: Preferences = .shared
@@ -198,79 +201,11 @@ struct CandidateView: View {
                 }
             }
 
-            // Candidate row
-            ScrollViewReader { proxy in
-                ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: 0) {
-                        ForEach(Array(candidates.enumerated()), id: \.offset) { i, cand in
-                            Button {
-                                onSelect(i)
-                            } label: {
-                                HStack(alignment: .firstTextBaseline, spacing: 2) {
-                                    Text("\(i + 1).")
-                                        .font(.system(size: 11))
-                                        .foregroundColor(indexColor(selected: i == selectedIndex))
-                                    Text(cand)
-                                        .font(.system(size: 18, weight: .regular))
-                                        .foregroundColor(i == selectedIndex ? selectedLabelColor : labelColor)
-                                }
-                                // On glass the pill is 4pt inset from the 38pt row,
-                                // concentric with the panel; the inset and the gap
-                                // after it stay clickable.
-                                .frame(minWidth: 36, minHeight: glassBacked ? 30 : 36)
-                                .padding(.horizontal, 4)
-                                .padding(.vertical, glassBacked ? 0 : 2)
-                                .background(
-                                    RoundedRectangle(cornerRadius: selectionCornerRadius,
-                                                     style: glassBacked ? .continuous : .circular)
-                                        .fill(i == selectedIndex ? selectionFill : Color.clear)
-                                )
-                                .padding(.vertical, glassBacked ? 4 : 0)
-                                .padding(.trailing, glassBacked
-                                    ? CandidateWindowController.glassCandidateGap : 0)
-                                .contentShape(Rectangle())
-                            }
-                            .buttonStyle(.plain)
-                            .id(i)
-
-                            if !glassBacked && i < candidates.count - 1 {
-                                Divider()
-                                    .frame(height: 28)
-                                    .background(divColor)
-                            }
-                        }
-
-                        if !glassBacked {
-                            Divider()
-                                .frame(height: 28)
-                                .background(divColor)
-                        }
-
-                        VStack(spacing: 0) {
-                            pageButton(
-                                systemName: "chevron.up",
-                                enabled: canGoPrevious,
-                                help: "Previous candidate page (-)",
-                                action: onPrevious
-                            )
-                            pageButton(
-                                systemName: "chevron.down",
-                                enabled: canGoNext,
-                                help: "Next candidate page (=)",
-                                action: onNext
-                            )
-                        }
-                        .frame(width: 30, height: 38)
-                    }
-                    .padding(.horizontal, 4)
-                }
-                .onAppear {
-                    proxy.scrollTo(selectedIndex, anchor: .center)
-                }
+            if layout == .vertical {
+                candidateList
+            } else {
+                candidateRow
             }
-            .id(selectedIndex)
-            .frame(height: 38)
-            .background(keyColor)
         }
         .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
         .overlay(
@@ -278,6 +213,141 @@ struct CandidateView: View {
                 .strokeBorder(glassBacked ? Color.clear : divColor, lineWidth: 1)
         )
     }
+
+    private var candidateRow: some View {
+        ScrollViewReader { proxy in
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 0) {
+                    ForEach(Array(candidates.enumerated()), id: \.offset) { i, cand in
+                        Button {
+                            onSelect(i)
+                        } label: {
+                            HStack(alignment: .firstTextBaseline, spacing: 2) {
+                                Text("\(i + 1).")
+                                    .font(.system(size: 11))
+                                    .foregroundColor(indexColor(selected: i == selectedIndex))
+                                Text(cand)
+                                    .font(.system(size: 18, weight: .regular))
+                                    .foregroundColor(i == selectedIndex ? selectedLabelColor : labelColor)
+                            }
+                            // On glass the pill is 4pt inset from the 38pt row,
+                            // concentric with the panel; the inset and the gap
+                            // after it stay clickable.
+                            .frame(minWidth: 36, minHeight: glassBacked ? 30 : 36)
+                            .padding(.horizontal, 4)
+                            .padding(.vertical, glassBacked ? 0 : 2)
+                            .background(
+                                RoundedRectangle(cornerRadius: selectionCornerRadius,
+                                                 style: glassBacked ? .continuous : .circular)
+                                    .fill(i == selectedIndex ? selectionFill : Color.clear)
+                            )
+                            .padding(.vertical, glassBacked ? 4 : 0)
+                            .padding(.trailing, glassBacked
+                                ? CandidateWindowController.glassCandidateGap : 0)
+                            .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .id(i)
+
+                        if !glassBacked && i < candidates.count - 1 {
+                            Divider()
+                                .frame(height: 28)
+                                .background(divColor)
+                        }
+                    }
+
+                    if !glassBacked {
+                        Divider()
+                            .frame(height: 28)
+                            .background(divColor)
+                    }
+
+                    VStack(spacing: 0) {
+                        pageButton(
+                            systemName: "chevron.up",
+                            enabled: canGoPrevious,
+                            help: "Previous candidate page (-)",
+                            action: onPrevious
+                        )
+                        pageButton(
+                            systemName: "chevron.down",
+                            enabled: canGoNext,
+                            help: "Next candidate page (=)",
+                            action: onNext
+                        )
+                    }
+                    .frame(width: 30, height: 38)
+                }
+                .padding(.horizontal, 4)
+            }
+            .onAppear {
+                proxy.scrollTo(selectedIndex, anchor: .center)
+            }
+        }
+        .id(selectedIndex)
+        .frame(height: 38)
+        .background(keyColor)
+    }
+
+    /// Vertical layout: one candidate per row, the pager in a footer.
+    private var candidateList: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            ForEach(Array(candidates.enumerated()), id: \.offset) { i, cand in
+                Button {
+                    onSelect(i)
+                } label: {
+                    HStack(alignment: .firstTextBaseline, spacing: Self.listIndexGap) {
+                        Text("\(i + 1).")
+                            .font(.system(size: 11))
+                            .foregroundColor(indexColor(selected: i == selectedIndex))
+                            .frame(width: Self.listIndexWidth, alignment: .trailing)
+                        Text(cand)
+                            .font(.system(size: 18, weight: .regular))
+                            .foregroundColor(i == selectedIndex ? selectedLabelColor : labelColor)
+                            .lineLimit(1)
+                        Spacer(minLength: 0)
+                    }
+                    .padding(.horizontal, Self.listRowPadding)
+                    .frame(maxWidth: .infinity, minHeight: Self.listRowHeight,
+                           maxHeight: Self.listRowHeight, alignment: .leading)
+                    .background(
+                        RoundedRectangle(cornerRadius: selectionCornerRadius,
+                                         style: glassBacked ? .continuous : .circular)
+                            .fill(i == selectedIndex ? selectionFill : Color.clear)
+                    )
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+            }
+
+            HStack(spacing: 0) {
+                Spacer()
+                pageButton(
+                    systemName: "chevron.up",
+                    enabled: canGoPrevious,
+                    help: "Previous candidate page (-)",
+                    action: onPrevious
+                )
+                pageButton(
+                    systemName: "chevron.down",
+                    enabled: canGoNext,
+                    help: "Next candidate page (=)",
+                    action: onNext
+                )
+            }
+            .frame(height: Self.listFooterHeight)
+        }
+        .padding(Self.listInset)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        .background(keyColor)
+    }
+
+    static let listRowHeight: CGFloat = 30
+    static let listFooterHeight: CGFloat = 18
+    static let listInset: CGFloat = 4
+    static let listRowPadding: CGFloat = 8
+    static let listIndexWidth: CGFloat = 14
+    static let listIndexGap: CGFloat = 6
 
     private func pageButton(
         systemName: String,
@@ -376,6 +446,7 @@ class CandidateWindowController: NSObject {
         onOpenSettings: (() -> Void)? = nil
     ) {
         self.onSelect = onSelect
+        let layout = preferences.candidateLayout
         let view = CandidateView(
             candidates: candidates,
             pinyin: pinyin,
@@ -388,12 +459,15 @@ class CandidateWindowController: NSObject {
             onNext: onNext,
             onOpenSettings: onOpenSettings,
             glassBacked: glassEffectClass != nil,
+            layout: layout,
             preferences: preferences
         )
-        let width = candidateWindowWidth(
+        let size = Self.windowSize(
             candidates: candidates, pinyin: pinyin.displayText,
-            removeHint: !pinyin.isEmpty)
-        let height: CGFloat = pinyin.isEmpty ? 40 : 68
+            removeHint: !pinyin.isEmpty, layout: layout,
+            glassBacked: glassEffectClass != nil)
+        let width = size.width
+        let height = size.height
         if window == nil {
             let w = CandidatePanel(
                 contentRect: NSRect(x: 0, y: 0, width: width, height: height),
@@ -453,36 +527,57 @@ class CandidateWindowController: NSObject {
     /// for the arrow glyphs, which draw wider than they measure.
     static let removeHintChrome: CGFloat = 52
 
-    private func candidateWindowWidth(candidates: [String], pinyin: String,
-                                      removeHint: Bool = false) -> CGFloat {
-        let candidateWidths = candidates.enumerated().map { index, candidate in
-            let number = "\(index + 1)." as NSString
-            let text = candidate as NSString
-            let numberWidth = number.size(withAttributes: [
-                .font: NSFont.systemFont(ofSize: 11)
-            ]).width
-            let textWidth = text.size(withAttributes: [
-                .font: NSFont.systemFont(ofSize: 18)
-            ]).width
+    /// Height of the pinyin strip (16pt line + 12pt padding) and its
+    /// divider. The horizontal row's 2pt slack absorbs the divider, so
+    /// only the exactly sized vertical list adds it.
+    static let pinyinStripHeight: CGFloat = 29
+
+    static func windowSize(candidates: [String], pinyin: String,
+                           removeHint: Bool = false,
+                           layout: CandidateLayout = .horizontal,
+                           glassBacked: Bool = false,
+                           screenWidth: CGFloat? = NSScreen.main?.visibleFrame.width
+    ) -> NSSize {
+        let numberFont = NSFont.systemFont(ofSize: 11)
+        let textFont = NSFont.systemFont(ofSize: 18)
+        func width(_ s: String, _ font: NSFont) -> CGFloat {
             // SwiftUI lays each Text out at its pixel-rounded width; matching
             // that keeps the row from overflowing and scrolling by a few points.
-            return max(36, ceil(numberWidth) + 2 + ceil(textWidth)) + 8
+            ceil((s as NSString).size(withAttributes: [.font: font]).width)
         }
 
-        let rowWidth = candidateWidths.reduce(0, +)
-            + CGFloat(candidates.count)
-                * (glassEffectClass != nil ? Self.glassCandidateGap : 1)
-            + 38
+        let candidatesWidth: CGFloat
+        let candidatesHeight: CGFloat
+        switch layout {
+        case .horizontal:
+            candidatesWidth = candidates.enumerated().map { index, candidate in
+                max(36, width("\(index + 1).", numberFont) + 2
+                    + width(candidate, textFont)) + 8
+            }.reduce(0, +)
+                + CGFloat(candidates.count) * (glassBacked ? glassCandidateGap : 1)
+                + 38
+            candidatesHeight = pinyin.isEmpty ? 40 : 68
+        case .vertical:
+            let widest = candidates.map { width($0, textFont) }.max() ?? 0
+            candidatesWidth = widest + CandidateView.listIndexWidth
+                + CandidateView.listIndexGap + CandidateView.listRowPadding * 2
+                + CandidateView.listInset * 2
+            candidatesHeight = CGFloat(candidates.count) * CandidateView.listRowHeight
+                + CandidateView.listFooterHeight + CandidateView.listInset * 2
+        }
+
         let pinyinWidth = (pinyin as NSString).size(withAttributes: [
             .font: PinyinReading.displayNSFont
-        ]).width + 24 + (removeHint
-            ? ceil((CandidateView.removeHint as NSString).size(withAttributes: [
-                .font: CandidateView.removeHintFont
-            ]).width) + Self.removeHintChrome
-            : 0)
-        let contentWidth = ceil(max(120, max(rowWidth, pinyinWidth)))
-        let screenWidth = NSScreen.main?.visibleFrame.width ?? contentWidth
-        return min(contentWidth, screenWidth - 24)
+        ]).width + 24
+            + (removeHint
+                ? width(CandidateView.removeHint, CandidateView.removeHintFont)
+                    + removeHintChrome
+                : 0)
+        let contentWidth = ceil(max(120, max(candidatesWidth, pinyinWidth)))
+        let height = layout == .horizontal || pinyin.isEmpty
+            ? candidatesHeight : candidatesHeight + pinyinStripHeight
+        return NSSize(width: min(contentWidth, (screenWidth ?? contentWidth) - 24),
+                      height: height)
     }
 
     /// Predictions have no marked text, so they anchor at the caret; the

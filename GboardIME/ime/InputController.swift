@@ -139,7 +139,8 @@ class GboardInputController: IMKInputController, PinyinSessionDelegate {
             // Arrows carry .numericPad/.function, keypad digits .numericPad.
             let modifiers = flags.subtracting([.capsLock, .numericPad, .function])
             let key = SymbolPanelKey(
-                keyCode: keyCode, characters: chars, plain: modifiers.isEmpty)
+                keyCode: keyCode, characters: chars, plain: modifiers.isEmpty,
+                vertical: Preferences.shared.candidateLayout == .vertical)
             if symbolPanel.handle(key) { return true }
         }
 
@@ -174,6 +175,8 @@ class GboardInputController: IMKInputController, PinyinSessionDelegate {
             session.dismissPredictions()
         }
 
+        // Arrows carry .numericPad/.function; modified arrows edit text.
+        let plainArrow = flags.subtracting([.capsLock, .numericPad, .function]).isEmpty
         switch keyCode {
         case 53: // Escape
             let wasComposing = session.isComposing
@@ -203,6 +206,12 @@ class GboardInputController: IMKInputController, PinyinSessionDelegate {
         case 123: // Left arrow
             result = session.moveLeft()
         case 124: // Right arrow
+            result = session.moveRight()
+        case 126 where session.isComposing && plainArrow &&
+                Preferences.shared.candidateLayout == .vertical: // Up arrow
+            result = session.moveLeft()
+        case 125 where session.isComposing && plainArrow &&
+                Preferences.shared.candidateLayout == .vertical: // Down arrow
             result = session.moveRight()
         case 27 where session.isComposing && (flags.isEmpty || flags == .capsLock): // -
             result = session.previousPage()

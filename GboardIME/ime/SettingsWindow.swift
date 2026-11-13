@@ -107,6 +107,19 @@ private struct SettingsView: View {
                             .pickerStyle(.menu)
                             .frame(width: 80)
                         }
+                        HStack {
+                            Text("候选排列")
+                            Spacer()
+                            Picker("候选排列", selection: $preferences.candidateLayout) {
+                                ForEach(CandidateLayout.allCases, id: \.self) { layout in
+                                    Text(layout.title).tag(layout)
+                                }
+                            }
+                            .labelsHidden()
+                            .pickerStyle(.segmented)
+                            .frame(width: 180)
+                        }
+                        note("竖排时，输入拼音时也可用 ↑ ↓ 移动选中的候选。")
                     }
                     section("外观", systemImage: "paintpalette") {
                         HStack {

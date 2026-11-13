@@ -31,6 +31,18 @@ enum CandidatePageSize: Int, CaseIterable {
     case five = 5, six, seven, eight, nine
 }
 
+enum CandidateLayout: String, CaseIterable {
+    case horizontal
+    case vertical
+
+    var title: String {
+        switch self {
+        case .horizontal: return "横排"
+        case .vertical: return "竖排"
+        }
+    }
+}
+
 enum ThemeMode: String, CaseIterable {
     case system
     case light
@@ -156,6 +168,7 @@ final class Preferences: NSObject, ObservableObject {
         static let correction = "correctionStyle"
         static let correctionAlignment = "correctionAlignment"
         static let pageSize = "candidatePageSize"
+        static let candidateLayout = "candidateLayout"
         static let legacyPinyinBar = "pinyinBarEnabled"
         static let pinyinDisplayMode = "pinyinDisplayMode"
         static let learning = "learningEnabled"
@@ -224,6 +237,10 @@ final class Preferences: NSObject, ObservableObject {
 
     @Published var candidatePageSize: CandidatePageSize {
         didSet { save(candidatePageSize.rawValue, forKey: Key.pageSize) }
+    }
+
+    @Published var candidateLayout: CandidateLayout {
+        didSet { save(candidateLayout.rawValue, forKey: Key.candidateLayout) }
     }
 
     @Published var pinyinDisplayMode: PinyinDisplayMode {
@@ -366,6 +383,7 @@ final class Preferences: NSObject, ObservableObject {
             Key.correction: CorrectionStyle.edits.rawValue,
             Key.correctionAlignment: CorrectionAlignment.lcs.rawValue,
             Key.pageSize: CandidatePageSize.nine.rawValue,
+            Key.candidateLayout: CandidateLayout.horizontal.rawValue,
             Key.pinyinDisplayMode: defaultDisplayMode.rawValue,
             Key.learning: true,
             Key.shortcuts: false,
@@ -391,6 +409,9 @@ final class Preferences: NSObject, ObservableObject {
         candidatePageSize = CandidatePageSize(
             rawValue: defaults.integer(forKey: Key.pageSize)
         ) ?? .nine
+        candidateLayout = CandidateLayout(
+            rawValue: defaults.string(forKey: Key.candidateLayout) ?? ""
+        ) ?? .horizontal
         pinyinDisplayMode = PinyinDisplayMode(
             rawValue: defaults.string(forKey: Key.pinyinDisplayMode) ?? ""
         ) ?? defaultDisplayMode

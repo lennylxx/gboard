@@ -21,13 +21,16 @@ enum SymbolPanelKey: Equatable {
     case other
 
     /// Maps a key-down. `plain` means no modifiers other than Caps Lock.
-    init(keyCode: UInt16, characters: String, plain: Bool) {
+    /// In a `vertical` candidate layout Up and Down move the selection too.
+    init(keyCode: UInt16, characters: String, plain: Bool, vertical: Bool = false) {
         switch keyCode {
         case 53: self = .escape
         case 36, 76: self = .returnKey
         case 51: self = .delete
         case 123 where plain: self = .left
         case 124 where plain: self = .right
+        case 126 where plain && vertical: self = .left
+        case 125 where plain && vertical: self = .right
         case 49: self = .space
         case 27 where plain: self = .previousPage
         case 24 where plain: self = .nextPage

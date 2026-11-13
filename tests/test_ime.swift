@@ -1538,6 +1538,30 @@ func testSymbolPanel() {
           SymbolPanelKey(keyCode: 124, characters: "", plain: false) == .other)
     check("letters fall through",
           SymbolPanelKey(keyCode: 0, characters: "a", plain: true) == .other)
+    check("Up and Down move the highlight in a vertical layout",
+          SymbolPanelKey(keyCode: 126, characters: "", plain: true, vertical: true) == .left &&
+          SymbolPanelKey(keyCode: 125, characters: "", plain: true, vertical: true) == .right)
+    check("Up and Down fall through in a horizontal layout",
+          SymbolPanelKey(keyCode: 126, characters: "", plain: true) == .other &&
+          SymbolPanelKey(keyCode: 125, characters: "", plain: true) == .other)
+
+    // Vertical layout stacks one row per candidate under the pinyin strip.
+    let horizontal = CandidateWindowController.windowSize(
+        candidates: ["你好", "你", "尼"], pinyin: "nihao", screenWidth: 2000)
+    let vertical = CandidateWindowController.windowSize(
+        candidates: ["你好", "你", "尼"], pinyin: "nihao",
+        layout: .vertical, screenWidth: 2000)
+    check("horizontal candidate window keeps its two-strip height",
+          horizontal.height == 68)
+    check("vertical candidate window grows one row per candidate",
+          vertical.height == CandidateWindowController.pinyinStripHeight
+            + 3 * CandidateView.listRowHeight + CandidateView.listFooterHeight
+            + 2 * CandidateView.listInset)
+    check("vertical prediction window has no pinyin strip",
+          CandidateWindowController.windowSize(
+            candidates: ["乐"], pinyin: "", layout: .vertical, screenWidth: 2000).height
+            == CandidateView.listRowHeight + CandidateView.listFooterHeight
+            + 2 * CandidateView.listInset)
 
     withTestPreferences { preferences, _ in
         let (panel, s, m) = makeSymbolPanel(preferences: preferences)
