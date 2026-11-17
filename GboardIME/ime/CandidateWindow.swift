@@ -173,7 +173,6 @@ struct CandidateView: View {
                             .font(Font(Self.removeHintFont))
                             .foregroundColor(hintColor)
                             .fixedSize()
-                            .help("Shift+退格 删除选中的学习词")
                     }
 
                     if let onOpenSettings = onOpenSettings {
@@ -187,7 +186,6 @@ struct CandidateView: View {
                                 .contentShape(Rectangle())
                         }
                         .buttonStyle(.plain)
-                        .help("设置…")
                     }
                 }
                 .padding(.horizontal, 12)
@@ -266,13 +264,11 @@ struct CandidateView: View {
                         pageButton(
                             systemName: "chevron.up",
                             enabled: canGoPrevious,
-                            help: "Previous candidate page (-)",
                             action: onPrevious
                         )
                         pageButton(
                             systemName: "chevron.down",
                             enabled: canGoNext,
-                            help: "Next candidate page (=)",
                             action: onNext
                         )
                     }
@@ -325,13 +321,11 @@ struct CandidateView: View {
                 pageButton(
                     systemName: "chevron.up",
                     enabled: canGoPrevious,
-                    help: "Previous candidate page (-)",
                     action: onPrevious
                 )
                 pageButton(
                     systemName: "chevron.down",
                     enabled: canGoNext,
-                    help: "Next candidate page (=)",
                     action: onNext
                 )
             }
@@ -352,7 +346,6 @@ struct CandidateView: View {
     private func pageButton(
         systemName: String,
         enabled: Bool,
-        help: String,
         action: @escaping () -> Void
     ) -> some View {
         Button(action: action) {
@@ -366,7 +359,6 @@ struct CandidateView: View {
         }
         .buttonStyle(.plain)
         .disabled(!enabled)
-        .help(help)
     }
 }
 
@@ -475,11 +467,12 @@ class CandidateWindowController: NSObject {
                 backing: .buffered,
                 defer: false
             )
-            w.level = NSWindow.Level(rawValue: Int(CGWindowLevelKey.popUpMenuWindow.rawValue))
+            // isFloatingPanel would reset the level to .floating (3), below
+            // high-level clients such as Spotlight.
+            w.level = .popUpMenu
             w.isOpaque = false
             w.backgroundColor = .clear
             w.hasShadow = true
-            w.isFloatingPanel = true
             w.becomesKeyOnlyIfNeeded = false
 
             let frame = NSRect(x: 0, y: 0, width: width, height: height)
@@ -632,8 +625,18 @@ class CandidateWindowController: NSObject {
         return origin
     }
 
-    func show(near rect: NSRect) {
+    /// IMKTextInput's documented convention: candidate windows sit one
+    /// level above the client window, never below pop-up menus or above
+    /// the window server's maximum level.
+    static func windowLevel(clientLevel: Int) -> NSWindow.Level {
+        let top = Int(CGWindowLevelForKey(.maximumWindow))
+        return NSWindow.Level(rawValue: min(top, max(
+            NSWindow.Level.popUpMenu.rawValue, clientLevel + 1)))
+    }
+
+    func show(near rect: NSRect, clientLevel: Int = 0) {
         guard let w = window else { return }
+        w.level = Self.windowLevel(clientLevel: clientLevel)
         let screens = NSScreen.screens
         let screen = Self.screenIndex(for: rect, in: screens.map(\.frame))
             .map { screens[$0] } ?? NSScreen.main
@@ -646,7 +649,7 @@ class CandidateWindowController: NSObject {
         }
         w.setFrameOrigin(Self.windowOrigin(size: w.frame.size, below: rect,
                                            visible: screen?.visibleFrame))
-        w.orderFront(nil)
+        w.orderFrontRegardless()
     }
 
     func close() { window?.orderOut(nil) }

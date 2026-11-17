@@ -265,6 +265,7 @@ class GboardInputController: IMKInputController, PinyinSessionDelegate {
             session.handleClientSwitch()
             contextTracker.invalidate()
             windowAnchor = nil
+            clientWindowLevel = nil
         }
         currentClient = sender
     }
@@ -286,6 +287,9 @@ class GboardInputController: IMKInputController, PinyinSessionDelegate {
     /// Where the candidate window was last anchored in this client; a
     /// trusted prediction caret advances it along a prediction chain.
     private var windowAnchor: NSRect?
+    /// The client's window level, queried once per client because each
+    /// query is a synchronous round trip to the client process.
+    private var clientWindowLevel: Int?
     private var contextTracker = SessionContextTracker()
     private var clientTracker = SessionClientTracker()
 
@@ -472,7 +476,9 @@ class GboardInputController: IMKInputController, PinyinSessionDelegate {
                 },
                 previousAnchor: windowAnchor)
             if rect != .zero { windowAnchor = rect }
-            candidateWindow?.show(near: rect)
+            let level = clientWindowLevel ?? Int(client.windowLevel())
+            clientWindowLevel = level
+            candidateWindow?.show(near: rect, clientLevel: level)
         }
     }
 
@@ -567,6 +573,7 @@ class GboardInputController: IMKInputController, PinyinSessionDelegate {
         candidateWindow = nil
         currentClient = nil
         windowAnchor = nil
+        clientWindowLevel = nil
         clientTracker.clear()
         super.deactivateServer(sender)
     }

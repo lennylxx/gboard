@@ -1327,6 +1327,14 @@ func testPredictionEdgeCases() {
         size: size, below: NSRect(x: 100, y: -200, width: 1, height: 16),
         visible: screens[0])
     check("origin: flipped window stays on screen", below.y == screens[0].minY)
+    check("level: ordinary client gets pop-up menu level",
+          CandidateWindowController.windowLevel(clientLevel: 0) == .popUpMenu)
+    check("level: high-level client is exceeded",
+          CandidateWindowController.windowLevel(clientLevel: 1000).rawValue
+              == 1001)
+    check("level: maximal client level is capped",
+          CandidateWindowController.windowLevel(clientLevel: Int(Int32.max))
+              .rawValue < Int(Int32.max))
     let stacked = [NSRect(x: 0, y: 0, width: 1440, height: 900),
                    NSRect(x: 0, y: 900, width: 1440, height: 900)]
     check("screen: shared edge belongs to the upper screen",
