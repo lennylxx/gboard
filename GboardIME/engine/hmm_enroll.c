@@ -188,6 +188,93 @@ invalid:
     return NULL;
 }
 
+// Copies a SettingScheme without subfield `inner` of length-delimited
+// top-level field `outer`, preserving every other field unchanged.
+static uint8_t *remove_setting_subfield(const uint8_t *orig, size_t orig_len,
+                                        int outer, int inner,
+                                        size_t *out_len) {
+    uint8_t *out = malloc(orig_len + 16);
+    if (!out) return NULL;
+    size_t in_pos = 0, out_pos = 0;
+    bool found = false;
+    while (in_pos < orig_len) {
+        size_t field_start = in_pos;
+        uint64_t tag, value_len = 0;
+        if (!pb_read_varint(orig, orig_len, &in_pos, &tag)) goto invalid;
+        int wire = (int)(tag & 7);
+        if (wire == 0) {
+            if (!pb_read_varint(orig, orig_len, &in_pos, &value_len)) goto invalid;
+        } else if (wire == 2) {
+            if (!pb_read_varint(orig, orig_len, &in_pos, &value_len) ||
+                value_len > orig_len - in_pos) {
+                goto invalid;
+            }
+            if ((int)(tag >> 3) == outer) {
+                // Rewrite the message without the inner field.
+                const uint8_t *msg = orig + in_pos;
+                uint8_t *kept = malloc((size_t)value_len + 1);
+                if (!kept) goto invalid;
+                size_t pos = 0, kept_len = 0;
+                while (pos < value_len) {
+                    size_t sub_start = pos;
+                    uint64_t sub_tag, sub_len = 0;
+                    bool ok = pb_read_varint(msg, value_len, &pos, &sub_tag);
+                    int sub_wire = (int)(sub_tag & 7);
+                    if (ok && sub_wire == 0) {
+                        ok = pb_read_varint(msg, value_len, &pos, &sub_len);
+                    } else if (ok && sub_wire == 2) {
+                        ok = pb_read_varint(msg, value_len, &pos, &sub_len) &&
+                             sub_len <= value_len - pos;
+                        if (ok) pos += (size_t)sub_len;
+                    } else if (ok && (sub_wire == 1 || sub_wire == 5)) {
+                        size_t width = sub_wire == 1 ? 8 : 4;
+                        ok = value_len - pos >= width;
+                        if (ok) pos += width;
+                    } else {
+                        ok = false;
+                    }
+                    if (!ok) {
+                        free(kept);
+                        goto invalid;
+                    }
+                    if ((int)(sub_tag >> 3) == inner) {
+                        found = true;
+                    } else {
+                        memcpy(kept + kept_len, msg + sub_start, pos - sub_start);
+                        kept_len += pos - sub_start;
+                    }
+                }
+                out_pos += pb_write_tag(out + out_pos, outer, 2);
+                out_pos += pb_write_varint(out + out_pos, kept_len);
+                memcpy(out + out_pos, kept, kept_len);
+                out_pos += kept_len;
+                free(kept);
+                in_pos += (size_t)value_len;
+                continue;
+            }
+            in_pos += (size_t)value_len;
+        } else if (wire == 1 || wire == 5) {
+            size_t width = wire == 1 ? 8 : 4;
+            if (orig_len - in_pos < width) goto invalid;
+            in_pos += width;
+        } else {
+            goto invalid;
+        }
+        memcpy(out + out_pos, orig + field_start, in_pos - field_start);
+        out_pos += in_pos - field_start;
+    }
+    if (!found) {
+        LOGERR("SettingScheme field %d.%d not found", outer, inner);
+        goto invalid;
+    }
+    *out_len = out_pos;
+    return out;
+
+invalid:
+    free(out);
+    return NULL;
+}
+
 // Serializes one DictionaryConfig entry (aohs): raw type, name, raw flags.
 static size_t pb_write_dictionary_entry(uint8_t *buf, int raw_type,
                                         const char *name, int raw_flags) {
@@ -639,7 +726,8 @@ bool hmm_enroll_pinyin_accessor_settings(const char *pack_dir,
 }
 
 bool hmm_enroll_decoder_settings(const char *pack_dir, uint32_t fuzzy_groups,
-                                 HmmPinyinScheme scheme, bool shortcuts) {
+                                 HmmPinyinScheme scheme, bool shortcuts,
+                                 bool spelling_correction) {
     if (!pack_dir || !g_sm || !g_enrollSettingScheme ||
         scheme < HMM_PINYIN_FULL || scheme > HMM_PINYIN_SHUANGPIN_ZIRANMA ||
         (fuzzy_groups & ~HMM_FUZZY_ALL)) {
@@ -665,6 +753,21 @@ bool hmm_enroll_decoder_settings(const char *pack_dir, uint32_t fuzzy_groups,
     if (!base) {
         LOGERR("Cannot configure English mixed input");
         return false;
+    }
+    if (!spelling_correction) {
+        // Gboard always enables its pinyin corrector; removing field 10.51
+        // (CorrectorSetting, which loads PinyinCorrectionModel) turns
+        // spelling correction off.
+        size_t uncorrected_length = 0;
+        uint8_t *uncorrected = remove_setting_subfield(
+            base, base_length, 10, 51, &uncorrected_length);
+        free(base);
+        base = uncorrected;
+        base_length = uncorrected_length;
+        if (!base) {
+            LOGERR("Cannot disable pinyin spelling correction");
+            return false;
+        }
     }
     // Keep bit ordering in sync with HMM_FUZZY_* and PinyinHmmEngineFactory.
     static const char *const groups[] = {
@@ -752,7 +855,7 @@ bool hmm_enroll_all(const char *pack_dir) {
 
     // 3. Enroll setting schemes (SettingScheme / aohv)
     bool setting_ok = hmm_enroll_decoder_settings(
-        pack_dir, 0, HMM_PINYIN_FULL, false);
+        pack_dir, 0, HMM_PINYIN_FULL, false, true);
     jlong handles[] = { g_sm, 0 };
 
     if (g_loadBuiltInSettingScheme && !setting_ok) {

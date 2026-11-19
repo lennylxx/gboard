@@ -177,6 +177,7 @@ final class Preferences: NSObject, ObservableObject {
         static let pinyinScheme = "pinyinScheme"
         static let shortcuts = "shortcutsEnabled"
         static let shuangpinKeyCorrection = "shuangpinKeyCorrectionEnabled"
+        static let pinyinCorrection = "pinyinCorrectionEnabled"
         static let isTraditional = "traditionalChineseEnabled"
         static let themeMode = "themeMode"
         static let windowOpacity = "candidateWindowOpacity"
@@ -348,6 +349,36 @@ final class Preferences: NSObject, ObservableObject {
         return true
     }
 
+    /// Gboard's pinyin spelling corrector; on by default as in Gboard.
+    @Published private(set) var pinyinCorrectionEnabled: Bool {
+        didSet { save(pinyinCorrectionEnabled, forKey: Key.pinyinCorrection) }
+    }
+    @Published private(set) var pinyinCorrectionApplyFailed = false
+
+    @discardableResult
+    func applyPinyinCorrection(
+        _ enabled: Bool? = nil,
+        using apply: (Bool) -> Bool = { gboard_set_pinyin_correction($0) }
+    ) -> Bool {
+        precondition(Thread.isMainThread)
+        let requested = enabled ?? pinyinCorrectionEnabled
+        guard apply(requested) else {
+            if enabled == nil {
+                pinyinCorrectionApplyFailed = true
+            }
+            NSLog("Unable to %@ pinyin correction; saved setting retained",
+                  requested ? "enable" : "disable")
+            return false
+        }
+        pinyinCorrectionApplyFailed = false
+        if requested != pinyinCorrectionEnabled {
+            pinyinCorrectionEnabled = requested
+        } else {
+            NotificationCenter.default.post(name: Self.didChangeNotification, object: self)
+        }
+        return true
+    }
+
     var fuzzyPinyinMask: UInt32 {
         fuzzyPinyinGroups.reduce(0) { $0 | $1.mask }
     }
@@ -396,6 +427,7 @@ final class Preferences: NSObject, ObservableObject {
             Key.learning: true,
             Key.shortcuts: false,
             Key.shuangpinKeyCorrection: true,
+            Key.pinyinCorrection: true,
             Key.saveInterval: UserDictionarySaveInterval.fourHours.rawValue
         ])
         predictionsEnabled = defaults.bool(forKey: Key.predictions)
@@ -436,6 +468,7 @@ final class Preferences: NSObject, ObservableObject {
             rawValue: defaults.string(forKey: Key.pinyinScheme) ?? ""
         ) ?? .full
         shortcutsEnabled = defaults.bool(forKey: Key.shortcuts)
+        pinyinCorrectionEnabled = defaults.bool(forKey: Key.pinyinCorrection)
         super.init()
     }
 

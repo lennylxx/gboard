@@ -9,6 +9,7 @@ private struct SettingsView: View {
     @State private var didClear = false
     @State private var showFuzzyError = false
     @State private var showShortcutsError = false
+    @State private var showPinyinCorrectionError = false
     @State private var showPinyinSchemeError = false
     let onClose: () -> Void
 
@@ -91,7 +92,17 @@ private struct SettingsView: View {
                         }
                     }
                     section("纠错", systemImage: "wand.and.stars") {
-                        note("Gboard 内置纠错始终开启，处理拼写中的字母颠倒、漏打和多打。")
+                        toggle("拼音纠错", isOn: pinyinCorrectionBinding)
+                        note("使用 Gboard 内置纠错处理拼写中的字母颠倒、漏打和多打，例：nihoa → 你好。")
+                        if preferences.pinyinCorrectionApplyFailed {
+                            Label("拼音纠错设置未生效", systemImage: "exclamationmark.triangle")
+                                .foregroundStyle(.orange)
+                            Button("重试应用") {
+                                if !preferences.applyPinyinCorrection() {
+                                    showPinyinCorrectionError = true
+                                }
+                            }
+                        }
                         toggle("双拼按键纠错", isOn: $preferences.shuangpinKeyCorrectionEnabled)
                         note("纠正误按的同排相邻键和音节内颠倒的两键，例：小鹤 uhjd → 上海。仅用于 4 键以上的双拼输入。")
                         HStack {
@@ -290,6 +301,11 @@ private struct SettingsView: View {
         } message: {
             Text("原生引擎未能切换模糊音，已保留原设置和输入内容，请重试。")
         }
+        .alert("无法更新拼音纠错设置", isPresented: $showPinyinCorrectionError) {
+            Button("好", role: .cancel) {}
+        } message: {
+            Text("原生引擎未能切换拼音纠错，已保留原设置，请重试。")
+        }
         .alert("无法更新快捷短语设置", isPresented: $showShortcutsError) {
             Button("好", role: .cancel) {}
         } message: {
@@ -308,6 +324,17 @@ private struct SettingsView: View {
             set: {
                 if !preferences.applyPinyinScheme($0) {
                     showPinyinSchemeError = true
+                }
+            }
+        )
+    }
+
+    private var pinyinCorrectionBinding: Binding<Bool> {
+        Binding(
+            get: { preferences.pinyinCorrectionEnabled },
+            set: {
+                if !preferences.applyPinyinCorrection($0) {
+                    showPinyinCorrectionError = true
                 }
             }
         )

@@ -361,6 +361,31 @@ func testPinyinSchemePreference() {
     }
 }
 
+func testPinyinCorrectionPreference() {
+    print("[test_pinyin_correction_preference]")
+    withTestPreferences { preferences, defaults in
+        check("pinyin correction defaults to enabled", preferences.pinyinCorrectionEnabled)
+        check("failed pinyin correction change keeps the setting",
+              !preferences.applyPinyinCorrection(false, using: { _ in false }) &&
+              preferences.pinyinCorrectionEnabled && !preferences.pinyinCorrectionApplyFailed)
+
+        let (session, delegate) = makeSession(preferences: preferences)
+        for ch in "nihoa" { _ = session.appendLetter(String(ch)) }
+        check("pinyin typo is corrected by default",
+              session.candidates.first == "你好" && delegate.candidateReading.hasCorrection)
+        check("disable pinyin correction", preferences.applyPinyinCorrection(false))
+        check("disabling redecodes without correction",
+              session.candidates.first != "你好" && session.composition == "nihoa" &&
+              !delegate.candidateReading.hasCorrection)
+        check("disabled pinyin correction persists",
+              !Preferences(defaults: defaults).pinyinCorrectionEnabled)
+        check("enable pinyin correction", preferences.applyPinyinCorrection(true))
+        check("enabling redecodes with correction",
+              session.candidates.first == "你好" && delegate.candidateReading.hasCorrection)
+        session.cancel()
+    }
+}
+
 func testShuangpinKeyCorrectionPreference() {
     print("[test_shuangpin_key_correction_preference]")
     withTestPreferences { preferences, defaults in

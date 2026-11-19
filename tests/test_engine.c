@@ -2127,6 +2127,46 @@ static int find_shortcut_candidate(const char *input, const char *phrase) {
     return position;
 }
 
+static void test_pinyin_correction_setting(void) {
+    printf("[test_pinyin_correction_setting]\n");
+    set_editor_context("");
+    char *cands[50] = {0};
+    HmmTokenReading readings[16];
+    check("pinyin correction is on by default",
+          hmm_engine_get_pinyin_correction());
+    check("disable pinyin correction", hmm_engine_set_pinyin_correction(false) &&
+          !hmm_engine_get_pinyin_correction());
+    int count = get_candidates_bulk("nihoa", cands, 50);
+    bool any_corrected = false;
+    for (int i = 0; i < count; i++) {
+        any_corrected |= hmm_engine_get_corrected_candidate_reading(i, readings, 16) > 0;
+    }
+    check("disabled corrector leaves every candidate uncorrected",
+          count > 0 && strcmp(cands[0], "你好") != 0 && !any_corrected);
+    free_cands(cands, count);
+    check("fuzzy re-enrollment keeps correction disabled",
+          hmm_engine_set_fuzzy_pinyin(HMM_FUZZY_L_N));
+    count = get_candidates_bulk("nihoa", cands, 50);
+    any_corrected = false;
+    for (int i = 0; i < count; i++) {
+        any_corrected |= hmm_engine_get_corrected_candidate_reading(i, readings, 16) > 0;
+    }
+    check("fuzzy pinyin does not restore the corrector",
+          count > 0 && !any_corrected);
+    free_cands(cands, count);
+    check("reset fuzzy pinyin after correction test", hmm_engine_set_fuzzy_pinyin(0));
+    count = get_candidates_bulk("nihao", cands, 50);
+    check("valid pinyin still decodes without the corrector",
+          count > 0 && strcmp(cands[0], "你好") == 0);
+    free_cands(cands, count);
+    check("enable pinyin correction", hmm_engine_set_pinyin_correction(true));
+    count = get_candidates_bulk("nihoa", cands, 50);
+    check("re-enabled corrector fixes typos",
+          count > 0 && strcmp(cands[0], "你好") == 0 &&
+          hmm_engine_get_corrected_candidate_reading(0, readings, 16) > 0);
+    free_cands(cands, count);
+}
+
 static void test_shortcuts(const char *user_dir) {
     printf("[test_shortcuts]\n");
     const HmmShortcut entries[] = {
@@ -2525,6 +2565,7 @@ int main(int argc, char **argv) {
     test_segmented_pinyin();
     test_english_mixed_input();
     test_next_word_prediction();
+    test_pinyin_correction_setting();
     test_fuzzy_pinyin();
     pid_t shuangpin_pid = fork();
     if (shuangpin_pid == 0) {

@@ -45,6 +45,7 @@ class PinyinSession {
     private var fuzzyPinyinMask: UInt32
     private var shortcutsEnabled: Bool
     private var shuangpinKeyCorrectionEnabled: Bool
+    private var pinyinCorrectionEnabled: Bool
     private var requestedPinyinScheme: PinyinScheme
     private var traditionalEnabled: Bool
     private var correctionStyle: CorrectionStyle
@@ -65,6 +66,7 @@ class PinyinSession {
         pinyinDisplayMode = preferences.pinyinDisplayMode
         fuzzyPinyinMask = gboard_get_fuzzy_pinyin()
         shortcutsEnabled = gboard_get_shortcuts_enabled()
+        pinyinCorrectionEnabled = gboard_get_pinyin_correction()
         requestedPinyinScheme = preferences.pinyinScheme
         traditionalEnabled = preferences.isTraditional
         correctionStyle = preferences.correctionStyle
@@ -152,6 +154,17 @@ class PinyinSession {
             dismissPredictions()
         }
 
+        let pinyinCorrectionChanged = !preferences.pinyinCorrectionApplyFailed &&
+            pinyinCorrectionEnabled != preferences.pinyinCorrectionEnabled
+        if pinyinCorrectionChanged {
+            guard gboard_set_pinyin_correction(preferences.pinyinCorrectionEnabled) else {
+                NSLog("Unable to update pinyin correction: enabled=%d",
+                      preferences.pinyinCorrectionEnabled)
+                return
+            }
+            pinyinCorrectionEnabled = preferences.pinyinCorrectionEnabled
+        }
+
         if contextChanged {
             contextBeforeInput = ""
             predictionContext = ""
@@ -174,7 +187,7 @@ class PinyinSession {
                 updateMarkedText()
             }
             if contextChanged || fuzzyChanged || shortcutsChanged ||
-                keyCorrectionChanged {
+                keyCorrectionChanged || pinyinCorrectionChanged {
                 fetchCandidates()
                 updateMarkedText()
             } else if pageSizeChanged {

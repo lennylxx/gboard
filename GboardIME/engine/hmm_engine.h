@@ -58,6 +58,12 @@ typedef enum {
 bool hmm_engine_set_pinyin_scheme(HmmPinyinScheme scheme);
 HmmPinyinScheme hmm_engine_get_pinyin_scheme(void);
 
+// Gboard's pinyin spelling corrector (PinyinCorrectionModel), on by default
+// as in Gboard, which has no switch for it. Like fuzzy settings, decoders
+// adopt the change on their next reset; failure keeps the previous setting.
+bool hmm_engine_set_pinyin_correction(bool enabled);
+bool hmm_engine_get_pinyin_correction(void);
+
 // Shuangpin key correction, off by default. While a Shuangpin scheme is
 // active and the prepared input has at least four keys, each key is
 // appended with its left and right QWERTY neighbours as lower-scored

@@ -12,6 +12,8 @@ bool  gboard_set_pinyin_scheme(HmmPinyinScheme scheme);
 HmmPinyinScheme gboard_get_pinyin_scheme(void);
 bool  gboard_set_shortcuts_enabled(bool enabled);
 bool  gboard_get_shortcuts_enabled(void);
+bool  gboard_set_pinyin_correction(bool enabled);
+bool  gboard_get_pinyin_correction(void);
 void  gboard_set_shuangpin_key_correction(bool enabled);
 bool  gboard_get_shuangpin_key_correction(void);
 bool  gboard_input_edges_stale(void);

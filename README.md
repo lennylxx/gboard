@@ -37,7 +37,8 @@ that powers Gboard on Android.
 - **Typo correction**: Gboard's built-in corrector handles swapped, missing, or
   extra letters, and the Pinyin strip marks each fix. For example, `nihoa`
   yields `你好` and `zhonguo` yields `中国`.
-- **Shuangpin key correction**: in Shuangpin it fixes a mistyped same-row neighbour or swapped keys
+- **Shuangpin key correction**: separate from typo correction, with its own
+  switch. In Shuangpin it fixes a mistyped same-row neighbour or swapped keys
   within a syllable, so Flypy `uhjd` still yields `上海`.
 - **Fuzzy Pinyin**: 12 optional pronunciation pairs. For example, with l/n
   enabled, `hulan` produces `湖南`.
@@ -171,8 +172,11 @@ candidate window, to open the settings window. Changes are saved automatically.
 
 **纠错 (Correction)**
 
-- Gboard's built-in corrector is always on and fixes swapped, missing, or extra
-  letters in Pinyin spellings.
+- **Pinyin correction** (拼音纠错, on by default): Gboard's built-in corrector
+  fixes swapped, missing, or extra letters in Pinyin spellings, for example
+  `nihoa` → `你好`. Gboard itself has no switch for it; turning it off removes
+  the `CorrectorSetting` that loads `PinyinCorrectionModel` from the decoder
+  setting.
 - **Shuangpin key correction** (双拼按键纠错, on by default): in Shuangpin
   input of four or more keys, also decodes each key as its left or right
   neighbour on the same keyboard row and the two keys of each syllable in

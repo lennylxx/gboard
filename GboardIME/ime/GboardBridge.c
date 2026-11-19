@@ -47,6 +47,16 @@ bool gboard_get_shortcuts_enabled(void) {
     return hmm_engine_get_shortcuts_enabled();
 }
 
+bool gboard_set_pinyin_correction(bool enabled) {
+    bool ok = hmm_engine_set_pinyin_correction(enabled);
+    if (ok) s_cached_cand_idx = -1;
+    return ok;
+}
+
+bool gboard_get_pinyin_correction(void) {
+    return hmm_engine_get_pinyin_correction();
+}
+
 void gboard_set_shuangpin_key_correction(bool enabled) {
     hmm_engine_set_shuangpin_key_correction(enabled);
 }

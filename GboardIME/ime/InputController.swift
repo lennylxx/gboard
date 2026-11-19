@@ -61,6 +61,7 @@ class GboardInputController: IMKInputController, PinyinSessionDelegate {
             Preferences.shared.applyPinyinScheme()
             Preferences.shared.applyFuzzyPinyin()
             Preferences.shared.applyShortcuts()
+            Preferences.shared.applyPinyinCorrection()
             if case .failure(let error) = ShortcutStore.shared.loadAndSync() {
                 imeLog("Shortcuts sync failed: \(error)")
             }
