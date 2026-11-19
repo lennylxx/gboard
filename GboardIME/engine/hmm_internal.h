@@ -129,6 +129,8 @@ typedef jboolean (*fn_IsCandidateCorrected)(JNIEnv *, jobject, jlong, jint);
 typedef jboolean (*fn_UnconvertSegments)(JNIEnv *, jobject, jlong, jobject);
 typedef jboolean (*fn_IsSegmentConverted)(JNIEnv *, jobject, jlong, jlong);
 typedef jboolean (*fn_DeleteInput)(JNIEnv *, jobject, jlong, jobject);
+typedef jint     (*fn_AddInputEdge)(JNIEnv *, jobject, jlong, jint, jint, jobject, jint);
+typedef jobject  (*fn_GetTokenRange)(JNIEnv *, jobject, jlong, jlong);
 typedef jlong    (*fn_CreateMutableDictionaryAccessor)(JNIEnv *, jclass, jlong, jstring, jstring, jstring);
 typedef jboolean (*fn_AddDictionaryCount)(JNIEnv *, jclass, jlong, jobject, jintArray, jstring, jint, jboolean);
 typedef jboolean (*fn_DecreaseDictionaryCount)(JNIEnv *, jclass, jlong, jobject, jintArray, jstring, jint);
@@ -230,6 +232,8 @@ extern fn_IsCandidateCorrected g_isCandidateCorrected;
 extern fn_UnconvertSegments g_unconvertSegments;
 extern fn_IsSegmentConverted g_isSegmentConverted;
 extern fn_DeleteInput g_deleteInput;
+extern fn_AddInputEdge g_addInputEdge;
+extern fn_GetTokenRange g_getTokenRange;
 extern fn_RefreshData      g_refreshData;
 extern fn_FillPredictionCandList   g_fillPredictionCandList;
 extern fn_GetPredictionCandCount   g_getPredictionCandCount;
@@ -244,6 +248,8 @@ void hmm_engine_mark_shortcuts_dirty(void);
 void hmm_engine_set_external_context(bool has_context);
 // The decoder hmm_engine_prepare_input() selects for an input length.
 jlong hmm_engine_decoder_for_input_length(size_t input_length);
+// Letters passed to the last hmm_engine_prepare_input().
+size_t hmm_engine_prepared_input_length(void);
 
 // ── Symbol helper ───────────────────────────────────────────────────────────
 static inline void *hmm_sym(ElfHandle *h, const char *name) {

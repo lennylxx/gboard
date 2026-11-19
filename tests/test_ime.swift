@@ -1783,6 +1783,7 @@ func testShortcutsIntegration(_ args: [String]) {
         if args.dropFirst(3).contains("--shuangpin-only") {
             testPinyinSchemePreference()
             testPinyinSchemeRestoreFailure()
+            testShuangpinKeyCorrectionPreference()
             print("Results: \(gPass) passed, \(gFail) failed")
             exit(gFail > 0 ? 1 : 0)
         }
@@ -1829,6 +1830,7 @@ testCorrectedPinyinReading()
         testFuzzyPinyinRestoreFailure()
         testPinyinSchemePreference()
         testPinyinSchemeRestoreFailure()
+        testShuangpinKeyCorrectionPreference()
         testPreferenceSessionUpdates()
         testContextPreference()
         testCandidatePageSizePreference()

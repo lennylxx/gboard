@@ -361,6 +361,84 @@ func testPinyinSchemePreference() {
     }
 }
 
+func testShuangpinKeyCorrectionPreference() {
+    print("[test_shuangpin_key_correction_preference]")
+    withTestPreferences { preferences, defaults in
+        check("shuangpin key correction defaults to enabled",
+              preferences.shuangpinKeyCorrectionEnabled)
+        preferences.shuangpinKeyCorrectionEnabled = false
+        check("disabled key correction persists",
+              !Preferences(defaults: defaults).shuangpinKeyCorrectionEnabled)
+        preferences.shuangpinKeyCorrectionEnabled = true
+    }
+
+    withTestPreferences { preferences, _ in
+        preferences.contextEnabled = false
+        preferences.predictionsEnabled = false
+        preferences.learningEnabled = false
+        check("enable flypy for key correction", preferences.applyPinyinScheme(.flypy))
+        let (session, delegate) = makeSession(preferences: preferences)
+        for ch in "uhjd" { _ = session.appendLetter(String(ch)) }
+        check("neighbour key typo is corrected and marked",
+              session.candidates.first == "上海" && session.composition == "uhjd" &&
+              delegate.candidateReading.hasCorrection)
+        preferences.shuangpinKeyCorrectionEnabled = false
+        check("disabling key correction redecodes the composition",
+              session.candidates.first != "上海" && session.composition == "uhjd" &&
+              !delegate.candidateReading.hasCorrection)
+        preferences.shuangpinKeyCorrectionEnabled = true
+        check("enabling key correction redecodes the composition",
+              session.candidates.first == "上海")
+        _ = session.selectCurrent()
+        check("corrected candidate commits", delegate.committedText == "上海")
+
+        delegate.clear()
+        _ = session.appendLetter("i")
+        _ = session.handlePunctuation("'")
+        for ch in "nhc" { _ = session.appendLetter(String(ch)) }
+        check("typed separator blocks a swap across it",
+              session.composition == "i'nhc" && session.candidates.first != "你好")
+        preferences.shuangpinKeyCorrectionEnabled = false
+        preferences.shuangpinKeyCorrectionEnabled = true
+        check("replayed separator still blocks a swap across it",
+              session.composition == "i'nhc" && session.candidates.first != "你好")
+        session.cancel()
+
+        delegate.clear()
+        for ch in "uhhinhc" { _ = session.appendLetter(String(ch)) }
+        check("odd-length selection re-pairs the remaining keys",
+              selectCandidate("上海", in: session) &&
+              session.convertedText == "上海" &&
+              session.remainingComposition == "inhc" &&
+              session.candidates.first == "你好")
+        _ = session.selectCurrent()
+        check("re-paired composition commits both selections",
+              delegate.committedText == "上海你好" && !session.isComposing)
+
+        delegate.clear()
+        for ch in "gitjub" { _ = session.appendLetter(String(ch)) }
+        check("corrected English word is marked",
+              session.candidates.first == "GitHub" &&
+              delegate.candidateReading.hasCorrection)
+        session.cancel()
+
+        // The first observer updates the shared engine flag; a later
+        // session must still redecode its own composition.
+        let (other, _) = makeSession(preferences: preferences)
+        for ch in "uhjd" { _ = other.appendLetter(String(ch)) }
+        check("second session corrects keys", other.candidates.first == "上海")
+        preferences.shuangpinKeyCorrectionEnabled = false
+        check("second session redecodes when disabled",
+              other.candidates.first != "上海")
+        preferences.shuangpinKeyCorrectionEnabled = true
+        check("second session redecodes when enabled",
+              other.candidates.first == "上海")
+        other.cancel()
+        check("restore full pinyin after key correction",
+              preferences.applyPinyinScheme(.full))
+    }
+}
+
 func testPinyinSchemeRestoreFailure() {
     print("[test_pinyin_scheme_restore_failure]")
     withTestPreferences { _, defaults in

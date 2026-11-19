@@ -368,9 +368,15 @@ jlong hmm_engine_decoder_for_input_length(size_t input_length) {
     return prioritize_context ? s_context_engine : s_personalized_engine;
 }
 
+static size_t s_prepared_input_length;
+
 void hmm_engine_prepare_input(const char *pinyin_input) {
-    g_engine = hmm_engine_decoder_for_input_length(
-        pinyin_input ? strlen(pinyin_input) : 0);
+    s_prepared_input_length = pinyin_input ? strlen(pinyin_input) : 0;
+    g_engine = hmm_engine_decoder_for_input_length(s_prepared_input_length);
+}
+
+size_t hmm_engine_prepared_input_length(void) {
+    return s_prepared_input_length;
 }
 
 bool hmm_engine_update_input_context(const char *before_selection,
@@ -463,6 +469,8 @@ fn_IsCandidateCorrected g_isCandidateCorrected = NULL;
 fn_UnconvertSegments g_unconvertSegments = NULL;
 fn_IsSegmentConverted g_isSegmentConverted = NULL;
 fn_DeleteInput g_deleteInput = NULL;
+fn_AddInputEdge g_addInputEdge = NULL;
+fn_GetTokenRange g_getTokenRange = NULL;
 fn_RefreshData      g_refreshData      = NULL;
 fn_FillPredictionCandList  g_fillPredictionCandList  = NULL;
 fn_GetPredictionCandCount  g_getPredictionCandCount  = NULL;

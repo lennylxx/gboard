@@ -47,6 +47,18 @@ bool gboard_get_shortcuts_enabled(void) {
     return hmm_engine_get_shortcuts_enabled();
 }
 
+void gboard_set_shuangpin_key_correction(bool enabled) {
+    hmm_engine_set_shuangpin_key_correction(enabled);
+}
+
+bool gboard_get_shuangpin_key_correction(void) {
+    return hmm_engine_get_shuangpin_key_correction();
+}
+
+bool gboard_input_edges_stale(void) {
+    return hmm_engine_input_edges_stale();
+}
+
 bool gboard_shortcut_is_valid(const char *shortcut, const char *phrase) {
     return hmm_shortcut_is_valid(shortcut, phrase);
 }

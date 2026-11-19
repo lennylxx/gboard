@@ -58,6 +58,17 @@ typedef enum {
 bool hmm_engine_set_pinyin_scheme(HmmPinyinScheme scheme);
 HmmPinyinScheme hmm_engine_get_pinyin_scheme(void);
 
+// Shuangpin key correction, off by default. While a Shuangpin scheme is
+// active and the prepared input has at least four keys, each key is
+// appended with its left and right QWERTY neighbours as lower-scored
+// alternatives, like the touch spatial model's ScoredInput lists, and the
+// two keys of each syllable get a swapped input edge, like Gboard's Korean
+// decoder. Like the scheme,
+// the setting is adopted on the next reset; hmm_engine_can_edit_in_place()
+// fails when the input length crosses the four-key threshold.
+void hmm_engine_set_shuangpin_key_correction(bool enabled);
+bool hmm_engine_get_shuangpin_key_correction(void);
+
 // Enables the user shortcuts dictionary (shortcuts_dict_3_3), off by
 // default as in Gboard. Like fuzzy settings, decoders adopt the change on
 // their next reset.
@@ -118,6 +129,11 @@ uint64_t hmm_engine_input_generation(void);
 bool hmm_engine_can_edit_in_place(uint64_t generation, int letters,
                                   int next_letters);
 
+// True when unconverting a selection or removing a separator lifted a
+// boundary that blocked a swapped-key edge. Edges can only be added at the
+// end of the input, so decode the composition again to add them.
+bool hmm_engine_input_edges_stale(void);
+
 // Number of selections converted in the active composition.
 int hmm_engine_get_converted_count(void);
 
@@ -157,7 +173,9 @@ typedef struct {
 } HmmTokenReading;
 
 // Fills the token readings of the candidate at index when the engine's pinyin
-// corrector produced it (e.g. "nihoa" -> 你好). Returns the token count, or 0
+// corrector produced it (e.g. "nihoa" -> 你好), or when Shuangpin key
+// correction replaced typed keys (raw is then the typed keys, e.g. "jd", and
+// normalized the keys decoded, e.g. "hd"). Returns the token count, or 0
 // when the candidate is not corrected, has more than max_tokens tokens, or the
 // engine fails. Must be called after hmm_engine_get_candidates().
 int hmm_engine_get_corrected_candidate_reading(int index,

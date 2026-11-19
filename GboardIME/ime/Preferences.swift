@@ -176,6 +176,7 @@ final class Preferences: NSObject, ObservableObject {
         static let fuzzyPinyin = "fuzzyPinyinGroups"
         static let pinyinScheme = "pinyinScheme"
         static let shortcuts = "shortcutsEnabled"
+        static let shuangpinKeyCorrection = "shuangpinKeyCorrectionEnabled"
         static let isTraditional = "traditionalChineseEnabled"
         static let themeMode = "themeMode"
         static let windowOpacity = "candidateWindowOpacity"
@@ -221,6 +222,13 @@ final class Preferences: NSObject, ObservableObject {
 
     @Published var contextEnabled: Bool {
         didSet { save(contextEnabled, forKey: Key.context) }
+    }
+
+    /// Corrects neighbouring and swapped keys in Shuangpin schemes.
+    @Published var shuangpinKeyCorrectionEnabled: Bool {
+        didSet {
+            save(shuangpinKeyCorrectionEnabled, forKey: Key.shuangpinKeyCorrection)
+        }
     }
 
     @Published var shiftToggleEnabled: Bool {
@@ -387,10 +395,12 @@ final class Preferences: NSObject, ObservableObject {
             Key.pinyinDisplayMode: defaultDisplayMode.rawValue,
             Key.learning: true,
             Key.shortcuts: false,
+            Key.shuangpinKeyCorrection: true,
             Key.saveInterval: UserDictionarySaveInterval.fourHours.rawValue
         ])
         predictionsEnabled = defaults.bool(forKey: Key.predictions)
         contextEnabled = defaults.bool(forKey: Key.context)
+        shuangpinKeyCorrectionEnabled = defaults.bool(forKey: Key.shuangpinKeyCorrection)
         shiftToggleEnabled = defaults.bool(forKey: Key.shift)
         isTraditional = defaults.bool(forKey: Key.isTraditional)
         themeMode = ThemeMode(

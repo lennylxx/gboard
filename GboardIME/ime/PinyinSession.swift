@@ -44,6 +44,7 @@ class PinyinSession {
     private var pinyinDisplayMode: PinyinDisplayMode
     private var fuzzyPinyinMask: UInt32
     private var shortcutsEnabled: Bool
+    private var shuangpinKeyCorrectionEnabled: Bool
     private var requestedPinyinScheme: PinyinScheme
     private var traditionalEnabled: Bool
     private var correctionStyle: CorrectionStyle
@@ -68,6 +69,8 @@ class PinyinSession {
         traditionalEnabled = preferences.isTraditional
         correctionStyle = preferences.correctionStyle
         correctionAlignment = preferences.correctionAlignment
+        shuangpinKeyCorrectionEnabled = preferences.shuangpinKeyCorrectionEnabled
+        gboard_set_shuangpin_key_correction(shuangpinKeyCorrectionEnabled)
         preferencesObserver = NotificationCenter.default.addObserver(
             forName: Preferences.didChangeNotification, object: preferences, queue: nil
         ) { [weak self] _ in
@@ -122,6 +125,12 @@ class PinyinSession {
             correctionAlignment != preferences.correctionAlignment
         correctionStyle = preferences.correctionStyle
         correctionAlignment = preferences.correctionAlignment
+        // Compare with this session's copy: another session may already
+        // have updated the shared engine flag.
+        let keyCorrectionChanged = shuangpinKeyCorrectionEnabled !=
+            preferences.shuangpinKeyCorrectionEnabled
+        shuangpinKeyCorrectionEnabled = preferences.shuangpinKeyCorrectionEnabled
+        gboard_set_shuangpin_key_correction(shuangpinKeyCorrectionEnabled)
         let fuzzyChanged = !preferences.fuzzyPinyinApplyFailed &&
             fuzzyPinyinMask != preferences.fuzzyPinyinMask
         if fuzzyChanged {
@@ -164,7 +173,8 @@ class PinyinSession {
             if displayModeChanged || traditionalChanged {
                 updateMarkedText()
             }
-            if contextChanged || fuzzyChanged || shortcutsChanged {
+            if contextChanged || fuzzyChanged || shortcutsChanged ||
+                keyCorrectionChanged {
                 fetchCandidates()
                 updateMarkedText()
             } else if pageSizeChanged {
@@ -324,7 +334,11 @@ class PinyinSession {
                 return .handled
             }
             inputsAfterSelection = max(0, inputsAfterSelection - 1)
-            refillCandidates()
+            if gboard_input_edges_stale() {
+                fetchCandidates()
+            } else {
+                refillCandidates()
+            }
             updateMarkedText()
             return .handled
         }
@@ -424,7 +438,13 @@ class PinyinSession {
             // Backspace can still restore its pinyin.
             selections.append(selection)
             inputsAfterSelection = 0
-            refillCandidates()
+            // An odd-length selection re-pairs the remaining Shuangpin keys,
+            // so their swapped-key edges must be added again.
+            if gboard_input_edges_stale() {
+                fetchCandidates()
+            } else {
+                refillCandidates()
+            }
             if !candidates.isEmpty {
                 updateMarkedText()
                 return .handled
@@ -968,7 +988,11 @@ class PinyinSession {
         inputsAfterSelection = last.inputsBefore
         if gboard_unconvert_last() {
             restore(last)
-            refillCandidates()
+            if gboard_input_edges_stale() {
+                fetchCandidates()
+            } else {
+                refillCandidates()
+            }
         } else {
             restore(selections.first ?? last)
             selections = []
@@ -997,14 +1021,19 @@ class PinyinSession {
         // for the first selection stays, so the candidates still match.
         func appendLetters(upTo end: Int) -> Bool {
             guard end > appended else { return true }
-            guard gboard_append(String(letters[appended..<end])) else {
-                return false
+            // Restore user-set separators before the letters after them, as
+            // typing does, so input edges cannot span a separator.
+            let boundaries = separatorPositions.map(Int.init)
+                .filter { $0 > appended && $0 < end }.sorted() + [end]
+            for boundary in boundaries where boundary > appended {
+                guard gboard_append(String(letters[appended..<boundary])) else {
+                    return false
+                }
+                if separatorPositions.contains(Int32(boundary)) {
+                    gboard_set_separator(Int32(boundary), 1)
+                }
+                appended = boundary
             }
-            // Restore user-set separators after reset+append
-            for pos in separatorPositions where Int(pos) > appended && Int(pos) <= end {
-                gboard_set_separator(pos, 1)
-            }
-            appended = end
             return true
         }
         let replayed = selections
@@ -1192,7 +1221,7 @@ class PinyinSession {
             if !spans.isEmpty && !(isLatin && previousLatin) {
                 spans.append(.init(text: "'", isCorrected: false))
             }
-            if isLatin || corrected.lowercased() == typed.lowercased() {
+            if corrected.lowercased() == typed.lowercased() {
                 spans.append(.init(text: isLatin ? typed : corrected, isCorrected: false))
             } else {
                 spans += Self.correctionSpans(

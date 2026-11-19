@@ -90,6 +90,41 @@ private struct SettingsView: View {
                             }
                         }
                     }
+                    section("纠错", systemImage: "wand.and.stars") {
+                        note("Gboard 内置纠错始终开启，处理拼写中的字母颠倒、漏打和多打。")
+                        toggle("双拼按键纠错", isOn: $preferences.shuangpinKeyCorrectionEnabled)
+                        note("纠正误按的同排相邻键和音节内颠倒的两键，例：小鹤 uhjd → 上海。仅用于 4 键以上的双拼输入。")
+                        HStack {
+                            Text("纠错标记")
+                            Spacer()
+                            Picker("纠错标记", selection: $preferences.correctionStyle) {
+                                ForEach(CorrectionStyle.allCases, id: \.self) { style in
+                                    Text(style.title).tag(style)
+                                }
+                            }
+                            .labelsHidden()
+                            .pickerStyle(.segmented)
+                            .frame(width: 270)
+                        }
+                        HStack {
+                            Text("纠错对齐")
+                            Spacer()
+                            Picker("纠错对齐", selection: $preferences.correctionAlignment) {
+                                ForEach(CorrectionAlignment.allCases, id: \.self) { alignment in
+                                    Text(alignment.title).tag(alignment)
+                                }
+                            }
+                            .labelsHidden()
+                            .pickerStyle(.segmented)
+                            .frame(width: 270)
+                            .help("交换标记将相邻颠倒的两个字母按正确顺序一起标色；不改变实际纠错。")
+                        }
+                        HStack(alignment: .firstTextBaseline, spacing: 8) {
+                            note("例：niihoa →")
+                            Text(correctionExample)
+                        }
+                        .help("只调整候选窗口中的拼音标记，不影响原生组合文本或实际纠错。")
+                    }
                     section("候选与预测", systemImage: "list.bullet.rectangle") {
                         toggle("下一词预测", isOn: $preferences.predictionsEnabled)
                         note("例：生日快 → 乐")
@@ -162,36 +197,6 @@ private struct SettingsView: View {
                             .frame(width: 270)
                             .help("输入框模式使用应用原生的 marked text。")
                         }
-                        HStack {
-                            Text("纠错对齐")
-                            Spacer()
-                            Picker("纠错对齐", selection: $preferences.correctionAlignment) {
-                                ForEach(CorrectionAlignment.allCases, id: \.self) { alignment in
-                                    Text(alignment.title).tag(alignment)
-                                }
-                            }
-                            .labelsHidden()
-                            .pickerStyle(.segmented)
-                            .frame(width: 270)
-                            .help("交换标记将相邻颠倒的两个字母按正确顺序一起标色；不改变实际纠错。")
-                        }
-                        HStack {
-                            Text("纠错标记")
-                            Spacer()
-                            Picker("纠错标记", selection: $preferences.correctionStyle) {
-                                ForEach(CorrectionStyle.allCases, id: \.self) { style in
-                                    Text(style.title).tag(style)
-                                }
-                            }
-                            .labelsHidden()
-                            .pickerStyle(.segmented)
-                            .frame(width: 270)
-                        }
-                        HStack(alignment: .firstTextBaseline, spacing: 8) {
-                            note("例：niihoa →")
-                            Text(correctionExample)
-                        }
-                        .help("只调整候选窗口中的拼音标记，不影响原生组合文本或实际纠错。")
                     }
                     section("快捷短语", systemImage: "text.badge.plus") {
                         toggle("启用快捷短语", isOn: shortcutsBinding)

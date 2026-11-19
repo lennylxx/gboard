@@ -474,6 +474,130 @@ static void test_shuangpin(void) {
     free_cands(learned, count);
 }
 
+static bool first_reading_corrects(const char *typed, const char *decoded) {
+    HmmTokenReading tokens[16];
+    int count = hmm_engine_get_corrected_candidate_reading(0, tokens, 16);
+    for (int i = 0; i < count; i++) {
+        if (strcmp(tokens[i].raw, typed) == 0 &&
+            strcmp(tokens[i].normalized, decoded) == 0) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static void test_shuangpin_key_correction(void) {
+    printf("[test_shuangpin_key_correction]\n");
+    set_editor_context("");
+    char *cands[50] = {0};
+    check("key correction is off by default",
+          !hmm_engine_get_shuangpin_key_correction());
+    check("enable flypy for key correction",
+          hmm_engine_set_pinyin_scheme(HMM_PINYIN_SHUANGPIN_FLYPY));
+    int count = get_candidates_bulk("uhjd", cands, 50);
+    check("neighbour key typo is literal while disabled",
+          count > 0 && strcmp(cands[0], "上海") != 0);
+    free_cands(cands, count);
+
+    hmm_engine_set_shuangpin_key_correction(true);
+    count = get_candidates_bulk("uhjd", cands, 50);
+    check("neighbour key typo is corrected",
+          count > 0 && strcmp(cands[0], "上海") == 0);
+    check("reading marks the replaced key", first_reading_corrects("jd", "hd"));
+    check("corrected phrase consumes all typed keys",
+          hmm_engine_get_candidate_consumed(0) == 4);
+    free_cands(cands, count);
+
+    count = get_candidates_bulk("inhc", cands, 50);
+    check("swapped keys are corrected",
+          count > 0 && strcmp(cands[0], "你好") == 0);
+    check("reading marks the swapped keys", first_reading_corrects("in", "ni"));
+    free_cands(cands, count);
+
+    HmmTokenReading readings[16];
+    count = get_candidates_bulk("sd", cands, 50);
+    check("short input stays literal",
+          count > 0 && strcmp(cands[0], "赛") == 0 &&
+          hmm_engine_get_corrected_candidate_reading(0, readings, 16) == 0);
+    free_cands(cands, count);
+    count = get_candidates_bulk("wm", cands, 50);
+    check("short abbreviation is kept", has_candidate(cands, count, "我们"));
+    free_cands(cands, count);
+
+    hmm_engine_prepare_input("uhj");
+    hmm_engine_reset();
+    check("append three keys below the threshold", hmm_engine_append("uhj"));
+    uint64_t generation = hmm_engine_input_generation();
+    check("crossing the threshold requires a new decode",
+          !hmm_engine_can_edit_in_place(generation, 3, 4));
+    hmm_engine_set_shuangpin_key_correction(false);
+    check("without correction the input can grow in place",
+          hmm_engine_can_edit_in_place(generation, 3, 4));
+    hmm_engine_set_shuangpin_key_correction(true);
+
+    count = get_candidates_bulk("gitjub", cands, 50);
+    check("English word keys are corrected and reported",
+          count > 0 && strcmp(cands[0], "GitHub") == 0 &&
+          first_reading_corrects("j", "h"));
+    free_cands(cands, count);
+
+    hmm_engine_prepare_input("inhc");
+    hmm_engine_reset();
+    check("separator blocks a swap inside a syllable",
+          hmm_engine_append("i") && hmm_engine_set_separator(1, 1) &&
+          hmm_engine_append("nhc") && !hmm_engine_input_edges_stale());
+    count = hmm_engine_get_candidates(cands, 50);
+    check("separated keys are not swapped",
+          count > 0 && strcmp(cands[0], "你好") != 0);
+    free_cands(cands, count);
+    check("removing the separator marks the swap as missing",
+          hmm_engine_set_separator(1, 0) && hmm_engine_input_edges_stale());
+    count = get_candidates_bulk("inhc", cands, 50);
+    check("decoding again adds the swap", count > 0 &&
+          strcmp(cands[0], "你好") == 0 && !hmm_engine_input_edges_stale());
+    free_cands(cands, count);
+
+    count = get_candidates_bulk("nihx", cands, 50);
+    check("valid rarer input is not replaced",
+          count > 0 && strcmp(cands[0], "你花") == 0 &&
+          !first_reading_corrects("hx", "hc"));
+    free_cands(cands, count);
+
+    hmm_engine_prepare_input("uhjd");
+    hmm_engine_reset();
+    check("append keys one at a time",
+          hmm_engine_append("uh") && hmm_engine_append("j") &&
+          hmm_engine_append("x") && hmm_engine_delete_last_input() &&
+          hmm_engine_append("d"));
+    count = hmm_engine_get_candidates(cands, 50);
+    check("incremental input with deletion is corrected",
+          count > 0 && strcmp(cands[0], "上海") == 0 &&
+          first_reading_corrects("jd", "hd"));
+    free_cands(cands, count);
+
+    set_editor_context("我在");
+    count = get_candidates_bulk("uhjd", cands, 50);
+    check("context decoder corrects keys after context vertices",
+          count > 0 && strcmp(cands[0], "上海") == 0 &&
+          first_reading_corrects("jd", "hd") &&
+          hmm_engine_get_candidate_consumed(0) == 4);
+    free_cands(cands, count);
+    set_editor_context("");
+
+    check("restore full pinyin after key correction",
+          hmm_engine_set_pinyin_scheme(HMM_PINYIN_FULL));
+    count = get_candidates_bulk("nihoa", cands, 50);
+    check("full pinyin keeps native spelling correction only",
+          count > 0 && strcmp(cands[0], "你好") == 0 &&
+          first_reading_corrects("hoa", "hao"));
+    free_cands(cands, count);
+    count = get_candidates_bulk("shanghsi", cands, 50);
+    check("full pinyin does not use neighbour keys",
+          count > 0 && strcmp(cands[0], "上海") != 0);
+    free_cands(cands, count);
+    hmm_engine_set_shuangpin_key_correction(false);
+}
+
 static void test_init(const char *so, const char *pack) {
     printf("[test_init]\n");
     check("missing library path fails cleanly",
@@ -2237,6 +2361,7 @@ int main(int argc, char **argv) {
         }
         if (!hmm_engine_init_with_user_data(argv[2], argv[3], user_dir)) return 2;
         test_shuangpin();
+        test_shuangpin_key_correction();
         check("persist shuangpin learning", hmm_user_dict_persist());
         pid_t pid = fork();
         if (pid == 0) {

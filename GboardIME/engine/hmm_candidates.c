@@ -35,6 +35,23 @@ static VertexRange s_converted[MAX_CONVERTED_RANGES];
 static int s_converted_count;
 static uint64_t s_input_generation;
 
+// Shuangpin key correction. Scores are log likelihoods like those of
+// Gboard's touch spatial model, where a single key scores 0. The penalties
+// were tuned on all six schemes against typos and dictionary words.
+// Shorter input stays literal: two keys are nearly always a valid syllable,
+// and initial-letter abbreviations would lose to corrected syllables.
+enum { KEY_HISTORY_MAX = 512, KEY_CORRECTION_MIN_KEYS = 4 };
+static const float TYPED_KEY_SCORE = 0.0f;
+static const float NEIGHBOR_KEY_SCORE = -6.0f;
+static const float SWAPPED_KEYS_SCORE = -6.0f;
+static bool s_key_correction_enabled;
+static bool s_key_correction_active;
+static bool s_semicolon_is_key;
+// Key typed between vertices v and v + 1.
+static char s_typed_keys[KEY_HISTORY_MAX];
+// A swapped-key edge ends at vertex v + 1.
+static bool s_swap_added[KEY_HISTORY_MAX];
+
 // Candidates cover the input after the last selection, or after the
 // injected context when nothing is selected yet.
 static int candidate_start_vertex(void) {
@@ -239,6 +256,96 @@ static bool append_context(void) {
     return true;
 }
 
+void hmm_engine_set_shuangpin_key_correction(bool enabled) {
+    s_key_correction_enabled = enabled;
+}
+
+bool hmm_engine_get_shuangpin_key_correction(void) {
+    return s_key_correction_enabled;
+}
+
+static bool key_correction_applies(size_t input_length) {
+    return s_key_correction_enabled && s_settings_ready &&
+           hmm_engine_get_pinyin_scheme() != HMM_PINYIN_FULL &&
+           input_length >= KEY_CORRECTION_MIN_KEYS;
+}
+
+static bool is_shuangpin_key(char key) {
+    return (key >= 'a' && key <= 'z') || (key == ';' && s_semicolon_is_key);
+}
+
+// The keys left and right of a key on its QWERTY row. Like librime and
+// libime, rows are not crossed: physical keyboards rarely miss vertically.
+static int qwerty_neighbors(char key, char neighbors[2]) {
+    static const char *const rows[] = {
+        "qwertyuiop", "asdfghjkl;", "zxcvbnm"
+    };
+    for (size_t r = 0; r < sizeof(rows) / sizeof(rows[0]); r++) {
+        const char *position = strchr(rows[r], key);
+        if (!position || !key) continue;
+        int count = 0;
+        if (position > rows[r]) neighbors[count++] = position[-1];
+        if (position[1]) neighbors[count++] = position[1];
+        return count;
+    }
+    return 0;
+}
+
+static jobject key_alternatives(char key) {
+    char neighbors[2], keys[3] = { key };
+    int count = 1;
+    int neighbor_count =
+        is_shuangpin_key(key) ? qwerty_neighbors(key, neighbors) : 0;
+    for (int i = 0; i < neighbor_count; i++) {
+        if (is_shuangpin_key(neighbors[i])) keys[count++] = neighbors[i];
+    }
+    jobject arr = jni_NewObjectArray(g_env, count, NULL, NULL);
+    for (int i = 0; i < count; i++) {
+        char text[2] = { keys[i], '\0' };
+        jobject si = jni_create_scored_input(
+            g_env, text, i == 0 ? TYPED_KEY_SCORE : NEIGHBOR_KEY_SCORE);
+        jni_scored_input_set_vertices(si, (int)g_end_vertex,
+                                      (int)(g_end_vertex + 1));
+        jni_SetObjectArrayElement(g_env, arr, i, si);
+    }
+    return arr;
+}
+
+// True when the keys typed between start - 1 and start + 1 form one
+// Shuangpin syllable that may have been typed in the opposite order. Edges
+// across syllables never help: decoded tokens cannot split them.
+static bool swapped_keys_edge_wanted(int start) {
+    int first = candidate_start_vertex();
+    if (start < 1 || start >= KEY_HISTORY_MAX || start - 1 < first ||
+        (start - first) % 2 == 0) {
+        return false;
+    }
+    char previous = s_typed_keys[start - 1], key = s_typed_keys[start];
+    return previous != key && is_shuangpin_key(previous) &&
+           is_shuangpin_key(key) &&
+           hmm_engine_get_separator(start - s_context_end_vertex) == 0;
+}
+
+// Lets the decoder read the keys typed between start - 1 and start + 1 in
+// the opposite order. Edges must end at the last vertex.
+static void add_swapped_keys_edge(int start) {
+    if (!g_addInputEdge || !swapped_keys_edge_wanted(start)) return;
+    char previous = s_typed_keys[start - 1], key = s_typed_keys[start];
+    char swapped[3] = { key, previous, '\0' };
+    jobject si = jni_create_scored_input(g_env, swapped, SWAPPED_KEYS_SCORE);
+    jni_scored_input_set_vertices(si, start - 1, start + 1);
+    jint result = 0;
+    CRASH_PROTECT_BEGIN()
+    result = g_addInputEdge(g_env, NULL, g_engine, start - 1, start + 1, si,
+                            INPUT_TYPE_SOURCE_INPUT_UNIT);
+    CRASH_PROTECT_END("nativeAddInputEdge")
+    if (result > 0) {
+        s_swap_added[start] = true;
+    } else {
+        LOGERR("swapped key edge '%s' rejected", swapped);
+    }
+}
+
 bool hmm_engine_append(const char *pinyin_input) {
     JNI_LOCAL_FRAME();
     LOG("append: input='%s' g_append=%p g_engine=%lld", pinyin_input, (void*)g_append, (long long)g_engine);
@@ -252,10 +359,16 @@ bool hmm_engine_append(const char *pinyin_input) {
     size_t len = strlen(pinyin_input);
     for (size_t i = 0; i < len; i++) {
         char ch[2] = { pinyin_input[i], '\0' };
-        jobject arr = jni_NewObjectArray(g_env, 1, NULL, NULL);
-        jobject si = jni_create_scored_input(g_env, ch, 1.0f);
-        jni_scored_input_set_vertices(si, (int)g_end_vertex, (int)(g_end_vertex + 1));
-        jni_SetObjectArrayElement(g_env, arr, 0, si);
+        int start = (int)g_end_vertex;
+        jobject arr;
+        if (s_key_correction_active) {
+            arr = key_alternatives(ch[0]);
+        } else {
+            arr = jni_NewObjectArray(g_env, 1, NULL, NULL);
+            jobject si = jni_create_scored_input(g_env, ch, 1.0f);
+            jni_scored_input_set_vertices(si, start, start + 1);
+            jni_SetObjectArrayElement(g_env, arr, 0, si);
+        }
 
         jint result = 0;
         CRASH_PROTECT_BEGIN()
@@ -265,6 +378,13 @@ bool hmm_engine_append(const char *pinyin_input) {
         CRASH_PROTECT_END("nativeAppend")
         if (result > 0) {
             g_end_vertex = result;
+            if (start < KEY_HISTORY_MAX) {
+                s_typed_keys[start] = ch[0];
+                s_swap_added[start] = false;
+            }
+            if (s_key_correction_active && result == start + 1) {
+                add_swapped_keys_edge(start);
+            }
         } else {
             return i > 0;
         }
@@ -514,6 +634,23 @@ static void copy_token_text(char *dst, size_t max, jstring js) {
     jni_release_string(js);
 }
 
+// Copies the keys typed over a token's vertex range; false when unknown.
+static bool typed_keys_for_token(jlong token, char *dst, size_t max) {
+    if (!g_getTokenRange) return false;
+    jobject range = g_getTokenRange(g_env, NULL, g_engine, token);
+    if (!range) return false;
+    int start = 0, end = 0;
+    jni_get_range(range, &start, &end);
+    if (start < candidate_start_vertex() || end <= start ||
+        end > g_end_vertex || end > KEY_HISTORY_MAX ||
+        (size_t)(end - start) >= max) {
+        return false;
+    }
+    memcpy(dst, s_typed_keys + start, (size_t)(end - start));
+    dst[end - start] = '\0';
+    return true;
+}
+
 int hmm_engine_get_corrected_candidate_reading(int index,
                                                HmmTokenReading *tokens,
                                                int max_tokens) {
@@ -528,10 +665,13 @@ int hmm_engine_get_corrected_candidate_reading(int index,
     volatile int filled = 0;
     CRASH_PROTECT_BEGIN()
     jint count = 0;
-    if (g_isCandidateCorrected(g_env, NULL, g_engine, (jint)index)) {
+    bool spelling_corrected =
+        g_isCandidateCorrected(g_env, NULL, g_engine, (jint)index);
+    if (spelling_corrected || s_key_correction_active) {
         count = natives->getCandidateTokenCount(g_env, NULL, g_engine,
                                                 (jint)index);
     }
+    bool keys_corrected = false;
     if (count > 0 && count <= max_tokens) {
         int i = 0;
         for (; i < count; i++) {
@@ -554,11 +694,26 @@ int hmm_engine_get_corrected_candidate_reading(int index,
                 memcpy(reading->normalized, reading->raw,
                        sizeof(reading->normalized));
             }
+            // A token decoded from neighbour or swapped keys reports the
+            // keys it used; show them as a correction of the typed keys.
+            char typed[HMM_TOKEN_TEXT_MAX];
+            if (s_key_correction_active &&
+                typed_keys_for_token(token, typed, sizeof(typed)) &&
+                strcmp(typed, reading->raw) != 0) {
+                keys_corrected = true;
+                if (!spelling_corrected) {
+                    memcpy(reading->normalized, reading->raw,
+                           sizeof(reading->normalized));
+                }
+                memcpy(reading->raw, typed, sizeof(reading->raw));
+            }
             reading->language = natives->getTokenLanguage
                 ? natives->getTokenLanguage(g_env, NULL, g_engine, token)
                 : -1;
         }
-        if (i == count) filled = (int)count;
+        if (i == count && (spelling_corrected || keys_corrected)) {
+            filled = (int)count;
+        }
     }
     CRASH_PROTECT_END("corrected candidate reading")
     return filled;
@@ -605,6 +760,15 @@ bool hmm_engine_delete_last_input(void) {
     return true;
 }
 
+bool hmm_engine_input_edges_stale(void) {
+    if (!s_key_correction_active) return false;
+    int end = g_end_vertex < KEY_HISTORY_MAX ? g_end_vertex : KEY_HISTORY_MAX;
+    for (int v = candidate_start_vertex() + 1; v < end; v++) {
+        if (swapped_keys_edge_wanted(v) && !s_swap_added[v]) return true;
+    }
+    return false;
+}
+
 uint64_t hmm_engine_input_generation(void) {
     return s_input_generation;
 }
@@ -612,6 +776,8 @@ uint64_t hmm_engine_input_generation(void) {
 bool hmm_engine_can_edit_in_place(uint64_t generation, int letters,
                                   int next_letters) {
     return g_engine && generation == s_input_generation &&
+           key_correction_applies((size_t)next_letters) ==
+               s_key_correction_active &&
            s_settings_ready && s_converted_count == 0 &&
            s_context_injected && letters >= 0 && next_letters >= 0 &&
            g_end_vertex - s_context_end_vertex == letters &&
@@ -654,5 +820,10 @@ void hmm_engine_reset(void) {
         CRASH_PROTECT_END("nativeReset")
     }
     s_settings_ready = reset_ok && hmm_engine_refresh_settings_after_reset();
+    HmmPinyinScheme scheme = hmm_engine_get_pinyin_scheme();
+    s_key_correction_active =
+        key_correction_applies(hmm_engine_prepared_input_length());
+    s_semicolon_is_key = scheme == HMM_PINYIN_SHUANGPIN_MS ||
+                         scheme == HMM_PINYIN_SHUANGPIN_ZIGUANG;
     hmm_user_dict_refresh_decoder_if_needed();
 }

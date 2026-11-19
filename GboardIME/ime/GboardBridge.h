@@ -12,6 +12,9 @@ bool  gboard_set_pinyin_scheme(HmmPinyinScheme scheme);
 HmmPinyinScheme gboard_get_pinyin_scheme(void);
 bool  gboard_set_shortcuts_enabled(bool enabled);
 bool  gboard_get_shortcuts_enabled(void);
+void  gboard_set_shuangpin_key_correction(bool enabled);
+bool  gboard_get_shuangpin_key_correction(void);
+bool  gboard_input_edges_stale(void);
 bool  gboard_shortcut_is_valid(const char *shortcut, const char *phrase);
 // Replaces every user shortcut; see hmm_user_dict_replace_shortcuts.
 bool  gboard_replace_shortcuts(const HmmShortcut *entries, int count);

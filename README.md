@@ -37,6 +37,8 @@ that powers Gboard on Android.
 - **Typo correction**: Gboard's built-in corrector handles swapped, missing, or
   extra letters, and the Pinyin strip marks each fix. For example, `nihoa`
   yields `你好` and `zhonguo` yields `中国`.
+- **Shuangpin key correction**: in Shuangpin it fixes a mistyped same-row neighbour or swapped keys
+  within a syllable, so Flypy `uhjd` still yields `上海`.
 - **Fuzzy Pinyin**: 12 optional pronunciation pairs. For example, with l/n
   enabled, `hulan` produces `湖南`.
 - **Chinese-English mixed input**: English words are offered inside Pinyin
@@ -167,6 +169,29 @@ candidate window, to open the settings window. Changes are saved automatically.
   Changes take effect immediately without restarting and preserve the active
   Pinyin, explicit separators, and learned data.
 
+**纠错 (Correction)**
+
+- Gboard's built-in corrector is always on and fixes swapped, missing, or extra
+  letters in Pinyin spellings.
+- **Shuangpin key correction** (双拼按键纠错, on by default): in Shuangpin
+  input of four or more keys, also decodes each key as its left or right
+  neighbour on the same keyboard row and the two keys of each syllable in
+  swapped order. A typed `'` keeps the keys around it from being swapped.
+  Corrected keys are marked in the Pinyin strip.
+- **Correction marking style** (纠错标记): 删除线与插入高亮 (strikethrough and
+  insert highlight, default: extra letters are struck out and inserted letters
+  are shown in orange), 仅颜色 (color only), or 隐藏标记 (hidden). It affects
+  display only.
+- **Correction marking alignment** (纠错对齐): how fixes are aligned in the
+  Pinyin strip:
+  - 增删标记 (insert/delete marks, default): based on LCS.
+  - 交换标记 (swap-aware marks): adjacent swapped letters are highlighted
+    together in corrected order. For example, `nihoa` shows `ni'hao` with `ao`
+    in orange.
+
+  The change takes effect immediately, works with all three marking styles, and
+  affects display only, not native candidate generation.
+
 **候选与预测 (Candidates and predictions)**
 
 - **Next-word prediction** (下一词预测, on by default).
@@ -186,19 +211,6 @@ candidate window, to open the settings window. Changes are saved automatically.
 - **Pinyin display** (拼音显示位置): 候选窗口 (in the candidate window,
   default), 输入框（原生） (inline, using the app's native marked text), or 隐藏
   (hidden).
-- **Correction marking style** (纠错标记): 删除线与插入高亮 (strikethrough and
-  insert highlight, default: extra letters are struck out and inserted letters
-  are shown in orange), 仅颜色 (color only), or 隐藏标记 (hidden). It affects
-  display only.
-- **Correction marking alignment** (纠错对齐): how fixes are aligned in the
-  Pinyin strip:
-  - 增删标记 (insert/delete marks, default): based on LCS.
-  - 交换标记 (swap-aware marks): adjacent swapped letters are highlighted
-    together in corrected order. For example, `nihoa` shows `ni'hao` with `ao`
-    in orange.
-
-  The change takes effect immediately, works with all three marking styles, and
-  affects display only, not native candidate generation.
 
 **快捷短语 (Shortcuts)**
 
@@ -248,6 +260,13 @@ Implementation details:
   punctuation, whitespace, or a language boundary.
 - **Mixed input**: uses Gboard's English token and system dictionaries.
 - **Shuangpin**: uses Gboard's native token dictionaries.
+- **Shuangpin key correction**: Gboard's built-in corrector targets full
+  Pinyin spellings. Key correction reuses the native input lattice instead:
+  each key is appended with its same-row neighbours as lower-scored
+  `ScoredInput` alternatives, as Gboard's touch spatial model does, and the
+  two keys of each syllable get a swapped input edge, as Gboard's Korean
+  decoder does. Shorter input stays literal to keep syllables and
+  initial-letter abbreviations.
 - **Traditional Chinese**: user-dictionary learning and context scoring always
   use the Simplified text.
 - **User dictionary**: Chinese and mixed phrases are stored in `user_dict_3_3`
