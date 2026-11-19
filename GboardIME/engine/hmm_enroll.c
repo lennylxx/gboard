@@ -13,17 +13,49 @@
 //                                              field 2 = data_id (string),
 //                                              field 3 = creator_type (varint, set to 5 = file system),
 //                                              field 4 = filename (string)
-//   aohv        →  SettingScheme               Protobuf for nativeEnrollSettingScheme;
-//                                              field 4 = DictionaryConfig
-//   aoht        →  DictionaryConfig            Container inside SettingScheme;
+//   aohv        →  SettingScheme               Protobuf for nativeEnrollSettingScheme
+//                                              (xvy in 18.0.5); see SettingField
+//   aoht        →  DictionaryConfig            Container inside SettingScheme (xvx);
 //                                              field 1 = repeated DictionaryEntry
-//   aohs        →  DictionaryEntry             Individual dict entry;
+//   aohs        →  DictionaryEntry             Individual dict entry (xvw);
 //                                              field 1 = type-1, field 2 = name, field 3 = flags-1
 //   lcj         →  DataSchemeModifier          Sets DataSchemeEntry.creator_type = 5 (file system loading)
 //   nsg         →  HmmEngineBuilder            Orchestrates system dict enrollment via S(type, name, flags)
 //   kzw         →  MutableDictEnroller         Enrolls mutable dicts (contacts, user, shortcuts) via f()
 //
 #include "hmm_internal.h"
+
+// Fields of i18n_input.engine.hmm.proto.SettingScheme edited here. Only the
+// message type names survive in the native library; field names do not, so
+// these names describe each field's role.
+enum SettingField {
+    SETTING_ID = 1,                 // string
+    SETTING_TOKEN_DICTIONARIES = 2, // field 1: repeated token dictionary name
+    SETTING_DICTIONARIES = 3,       // field 1: repeated dictionary name
+    SETTING_DICTIONARY_CONFIG = 4,  // DictionaryConfig
+    // DictionaryConfig
+    SETTING_SECONDARY_DICTIONARY_CONFIG = 5,
+    SETTING_DECODER = 10,           // DecoderSetting
+};
+
+// Fields of DecoderSetting and the messages it contains.
+enum DecoderSettingField {
+    // CorrectorSetting. The native decoder creates its corrector only when
+    // this message holds both CORRECTOR_NAME and CORRECTOR_MODEL.
+    DECODER_CORRECTOR = 51,
+};
+
+enum CorrectorSettingField {
+    CORRECTOR_NAME = 1,             // string key, "PinyinCorrectionModel"
+    CORRECTOR_ENABLED = 2,          // int32; corrects only when non-zero
+    CORRECTOR_MODEL = 4,            // CorrectionModelSetting
+};
+
+enum CorrectionModelSettingField {
+    CORRECTION_EDIT_SCORE = 1,      // float log score added per edit, -9.0
+    CORRECTION_ALPHABET = 2,        // string of letters that may be inserted
+    CORRECTION_SUBSTITUTIONS = 6,   // map<string, string> confusion pairs
+};
 
 // ── Protobuf encoding helpers ───────────────────────────────────────────────
 
@@ -70,7 +102,7 @@ static uint8_t *replace_setting_id(const uint8_t *original,
     uint64_t tag = 0;
     uint64_t old_length = 0;
     if (!pb_read_varint(original, original_length, &offset, &tag) ||
-        tag != ((uint64_t)1 << 3 | 2) ||
+        tag != ((uint64_t)SETTING_ID << 3 | 2) ||
         !pb_read_varint(original, original_length, &offset, &old_length) ||
         old_length > original_length - offset) {
         return NULL;
@@ -82,7 +114,7 @@ static uint8_t *replace_setting_id(const uint8_t *original,
     uint8_t *result = malloc(capacity);
     if (!result) return NULL;
 
-    size_t written = pb_write_tag(result, 1, 2);
+    size_t written = pb_write_tag(result, SETTING_ID, 2);
     written += pb_write_varint(result + written, id_length);
     memcpy(result + written, setting_id, id_length);
     written += id_length;
@@ -315,7 +347,9 @@ static uint8_t *add_english_mixed_input_to_setting(const uint8_t *orig,
             dicts + dicts_len, 3, "shortcuts_dict_3_3_english", 4);
     }
 
-    const SettingAppend append = {4, dicts, dicts_len, false};
+    const SettingAppend append = {
+        SETTING_DICTIONARY_CONFIG, dicts, dicts_len, false
+    };
     uint8_t *out = append_to_setting_fields(orig, orig_len, &append, 1, out_len);
     if (out) LOGERR("Added English mixed-input dictionaries to setting scheme");
     return out;
@@ -338,8 +372,8 @@ static uint8_t *add_user_dictionary_to_setting(const uint8_t *orig,
             entries + entries_len, 3, "shortcuts_dict_3_3", 4);
     }
     const SettingAppend appends[] = {
-        {4, entries, entries_len, false},
-        {5, entries, entries_len, false},
+        {SETTING_DICTIONARY_CONFIG, entries, entries_len, false},
+        {SETTING_SECONDARY_DICTIONARY_CONFIG, entries, entries_len, false},
     };
     uint8_t *out = append_to_setting_fields(orig, orig_len, appends, 2, out_len);
     if (out) {
@@ -680,7 +714,9 @@ static uint8_t *configure_pinyin_tokens(const uint8_t *original, size_t length,
         tokens_length += pb_write_string(
             tokens + tokens_length, 1, "shortcuts_token_dictionary");
     }
-    const SettingAppend replacement = {2, tokens, tokens_length, true};
+    const SettingAppend replacement = {
+        SETTING_TOKEN_DICTIONARIES, tokens, tokens_length, true
+    };
     return append_to_setting_fields(
         original, length, &replacement, 1, out_length);
 }
@@ -755,12 +791,13 @@ bool hmm_enroll_decoder_settings(const char *pack_dir, uint32_t fuzzy_groups,
         return false;
     }
     if (!spelling_correction) {
-        // Gboard always enables its pinyin corrector; removing field 10.51
-        // (CorrectorSetting, which loads PinyinCorrectionModel) turns
-        // spelling correction off.
+        // Gboard always enables its pinyin corrector. Setting
+        // CORRECTOR_ENABLED to 0 would also stop corrections, but removing
+        // the CorrectorSetting keeps the decoder from creating a corrector.
         size_t uncorrected_length = 0;
         uint8_t *uncorrected = remove_setting_subfield(
-            base, base_length, 10, 51, &uncorrected_length);
+            base, base_length, SETTING_DECODER, DECODER_CORRECTOR,
+            &uncorrected_length);
         free(base);
         base = uncorrected;
         base_length = uncorrected_length;
@@ -785,7 +822,9 @@ bool hmm_enroll_decoder_settings(const char *pack_dir, uint32_t fuzzy_groups,
             dictionaries + dictionaries_length, 1, name);
     }
     if (dictionaries_length) {
-        const SettingAppend append = {3, dictionaries, dictionaries_length, false};
+        const SettingAppend append = {
+            SETTING_DICTIONARIES, dictionaries, dictionaries_length, false
+        };
         size_t fuzzy_length = 0;
         uint8_t *fuzzy = append_to_setting_fields(
             base, base_length, &append, 1, &fuzzy_length);
