@@ -564,6 +564,17 @@ class GboardInputController: IMKInputController, PinyinSessionDelegate {
         _ = session.commitRawPinyin()
     }
 
+    override func activateServer(_ sender: Any!) {
+        super.activateServer(sender)
+        // IMK may reuse a controller whose Shift toggle left it in English;
+        // switching back to Gboard must always start in Chinese.
+        shiftTracker.cancelTracking()
+        if !chineseMode {
+            chineseMode = true
+            imeLog("Mode reset to Chinese on activation")
+        }
+    }
+
     override func deactivateServer(_ sender: Any!) {
         session.forgetLearningUndo()
         symbolPanel.dismiss()

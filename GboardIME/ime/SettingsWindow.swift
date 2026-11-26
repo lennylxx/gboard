@@ -66,7 +66,7 @@ private struct SettingsView: View {
                             note("等待本次输入结束后切换。")
                         }
                         toggle("单击 Shift 切换中英文", isOn: $preferences.shiftToggleEnabled)
-                        note("关闭时恢复中文；不影响系统 Caps Lock 设置。")
+                        note("切换回本输入法、切换应用或输入框，或关闭此选项时恢复中文；不影响系统 Caps Lock 设置。")
                         toggle("繁体中文", isOn: $preferences.isTraditional)
                         note("开启后候选词与上屏内容实时转换为繁体中文；中文模式下可按 ⇧⌘F 切换，按 ⌃1 或 ⌥? 打开 ?123 符号面板。")
                     }

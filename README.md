@@ -157,8 +157,10 @@ candidate window, to open the settings window. Changes are saved automatically.
   current composition ends and preserves partial selections and learning.
   Microsoft and Ziguang accept `;` while composing.
 - **Shift toggle** (单击 Shift 切换中英文, on by default): pressing Shift
-  switches between Chinese and English. Turning it off returns to Chinese; it
-  does not affect the system Caps Lock setting.
+  switches between Chinese and English. English mode is temporary: switching
+  back to Gboard, or moving to another app or text field, returns to Chinese.
+  Turning it off returns to Chinese; it does not affect the system Caps Lock
+  setting.
 - **Traditional Chinese** (繁体中文, off by default): convert candidates and
   next-word predictions to Traditional Chinese (also `Cmd+Shift+F`, or
   切换为繁体中文 / 切换为简体中文 in the input menu).
