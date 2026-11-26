@@ -46,6 +46,7 @@ class PinyinSession {
     private var shortcutsEnabled: Bool
     private var shuangpinKeyCorrectionEnabled: Bool
     private var pinyinCorrectionEnabled: Bool
+    private var chaiziEnabled: Bool
     private var requestedPinyinScheme: PinyinScheme
     private var traditionalEnabled: Bool
     private var correctionStyle: CorrectionStyle
@@ -67,6 +68,7 @@ class PinyinSession {
         fuzzyPinyinMask = gboard_get_fuzzy_pinyin()
         shortcutsEnabled = gboard_get_shortcuts_enabled()
         pinyinCorrectionEnabled = gboard_get_pinyin_correction()
+        chaiziEnabled = preferences.chaiziEnabled
         requestedPinyinScheme = preferences.pinyinScheme
         traditionalEnabled = preferences.isTraditional
         correctionStyle = preferences.correctionStyle
@@ -117,6 +119,8 @@ class PinyinSession {
         if !preferences.learningEnabled && isComposing {
             invalidatePendingLearning()
         }
+        let chaiziChanged = chaiziEnabled != preferences.chaiziEnabled
+        chaiziEnabled = preferences.chaiziEnabled
         let pageSizeChanged = candidatePageSize != preferences.candidatePageSize.rawValue
         candidatePageSize = preferences.candidatePageSize.rawValue
         let contextChanged = contextEnabled != preferences.contextEnabled
@@ -190,7 +194,8 @@ class PinyinSession {
                 keyCorrectionChanged || pinyinCorrectionChanged {
                 fetchCandidates()
                 updateMarkedText()
-            } else if pageSizeChanged {
+            } else if pageSizeChanged || chaiziChanged ||
+                        (traditionalChanged && chaiziTotal > 0) {
                 candidatePage = 0
                 fillCandidatePage()
             } else if traditionalChanged || displayModeChanged || readingChanged {
@@ -398,12 +403,14 @@ class PinyinSession {
             return selectCurrent()
         }
         let text = candidates[index]
+        guard let engineIndex = engineIndex(forVisible: index) else {
+            return commitChaizi(text, tableText: engineCandidates[index])
+        }
         let engineText = index < engineCandidates.count
             ? engineCandidates[index] : engineContext(text)
         lastLearning = nil
 
         // Get the vertex range BEFORE selecting (like Android does)
-        let engineIndex = candidatePage * candidatePageSize + index
         let consumed = Int(gboard_get_candidate_consumed(Int32(engineIndex)))
 
         // Capture this segment before selection mutates the engine state.
@@ -857,8 +864,8 @@ class PinyinSession {
     func removeSelectedCandidate() -> Bool {
         guard isComposing, selectedIndex >= 0,
               selectedIndex < candidates.count else { return false }
-        let engineIndex = candidatePage * candidatePageSize + selectedIndex
-        guard gboard_user_dict_remove_candidate(Int32(engineIndex)) else {
+        guard let engineIndex = engineIndex(forVisible: selectedIndex),
+              gboard_user_dict_remove_candidate(Int32(engineIndex)) else {
             return false
         }
         let previousSelection = selectedIndex
@@ -889,6 +896,64 @@ class PinyinSession {
         return true
     }
 
+    // MARK: - u-mode character composition
+
+    /// Input and script the cached matches were looked up for.
+    private var chaiziInput: (text: String, traditional: Bool)?
+    private var chaiziMatches: [ChaiziDictionary.Match] = []
+    /// Composed characters listed before the engine's candidates.
+    private var chaiziTotal = 0
+    private var pageChaizi: [ChaiziDictionary.Match] = []
+
+    /// In full pinyin no syllable starts with `u`, so a leading `u` spells
+    /// a character by its components, like Sogou's u-mode. The engine's
+    /// candidates, such as English words, still follow the matches.
+    private func currentChaiziMatches() -> [ChaiziDictionary.Match] {
+        guard chaiziEnabled, selections.isEmpty, composition.first == "u",
+              gboard_get_pinyin_scheme() == HMM_PINYIN_FULL else { return [] }
+        let input = String(composition.dropFirst())
+        let traditional = preferences.isTraditional
+        if chaiziInput?.text != input || chaiziInput?.traditional != traditional {
+            chaiziInput = (input, traditional)
+            var matches = ChaiziDictionary.shared.lookup(input)
+            if traditional {
+                // The table lists pairs such as 骉 and 驫 that convert alike.
+                var shown: Set<String> = []
+                matches = matches.filter {
+                    shown.insert(toTraditionalIfEnabled($0.character)).inserted
+                }
+            }
+            chaiziMatches = matches
+        }
+        return chaiziMatches
+    }
+
+    /// Engine candidate index for a visible candidate; nil for a composed
+    /// character.
+    private func engineIndex(forVisible index: Int) -> Int? {
+        let global = candidatePage * candidatePageSize + index
+        return global < chaiziTotal ? nil : global - chaiziTotal
+    }
+
+    /// Commits a composed character for the whole input. It is not learned:
+    /// the engine has no tokens for the component spelling. Predictions use
+    /// the table's character, as converting back may not restore it.
+    private func commitChaizi(_ text: String, tableText: String) -> KeyResult {
+        lastLearning = nil
+        let context = contextBeforeInput + tableText
+        delegate?.sessionInsertText(text)
+        reset()
+        showPredictions(context: context)
+        return .handled
+    }
+
+    static func chaiziReading(_ match: ChaiziDictionary.Match) -> PinyinReading {
+        var text = "u " + match.readings.joined(separator: "'")
+        let toned = ChaiziDictionary.tonedReading(of: match.character)
+        if !toned.isEmpty { text += "  (\(toned))" }
+        return .plain(text)
+    }
+
     // MARK: - Internal
 
     func reset() {
@@ -914,6 +979,10 @@ class PinyinSession {
         enginePredictions = []
         predictionPage = 0
         predictionContext = ""
+        chaiziInput = nil
+        chaiziMatches = []
+        chaiziTotal = 0
+        pageChaizi = []
         gboard_reset()
         delegate?.sessionHideCandidates()
         preferences.endPinyinComposition(self)
@@ -1160,12 +1229,18 @@ class PinyinSession {
 
     private func fillCandidatePage() {
         let maxCount = candidatePageSize + 1
-        var bufs = [UnsafeMutablePointer<CChar>?](repeating: nil, count: maxCount)
         let offset = candidatePage * candidatePageSize
-        let count = Int(gboard_get_candidates_page(&bufs, Int32(offset), Int32(maxCount)))
+        let matches = currentChaiziMatches()
+        let chaizi = offset < matches.count
+            ? Array(matches[offset..<min(matches.count, offset + maxCount)]) : []
+        let engineOffset = max(0, offset - matches.count)
+        let engineCount = maxCount - chaizi.count
+        var bufs = [UnsafeMutablePointer<CChar>?](repeating: nil, count: maxCount)
+        let count = engineCount > 0 ? Int(gboard_get_candidates_page(
+            &bufs, Int32(engineOffset), Int32(engineCount))) : 0
         defer { bufs.prefix(count).forEach { free($0) } }
 
-        var results: [String] = []
+        var results = chaizi.map(\.character)
         for i in 0..<count {
             if let ptr = bufs[i] {
                 results.append(String(cString: ptr))
@@ -1173,9 +1248,14 @@ class PinyinSession {
         }
 
         hasNextPage = results.count > candidatePageSize
+        chaiziTotal = matches.count
+        pageChaizi = Array(chaizi.prefix(candidatePageSize))
         engineCandidates = Array(results.prefix(candidatePageSize))
-        verbatimCandidates = engineCandidates.indices.map {
-            shortcutsEnabled && gboard_is_shortcut_candidate(Int32(offset + $0))
+        // The table is Simplified, so composed characters convert like
+        // engine candidates in Traditional mode.
+        verbatimCandidates = engineCandidates.indices.map { index in
+            guard let engineIndex = engineIndex(forVisible: index) else { return false }
+            return shortcutsEnabled && gboard_is_shortcut_candidate(Int32(engineIndex))
         }
         candidates = displayCandidates()
         selectedIndex = 0
@@ -1186,8 +1266,9 @@ class PinyinSession {
     private func notifyCandidates() {
         selectedCandidateRemovable = !candidates.isEmpty &&
             selectedIndex < candidates.count &&
-            gboard_user_dict_is_candidate_removable(
-                Int32(candidatePage * candidatePageSize + selectedIndex))
+            engineIndex(forVisible: selectedIndex).map {
+                gboard_user_dict_is_candidate_removable(Int32($0))
+            } ?? false
         if candidates.isEmpty {
             pinyinReading = .empty
             delegate?.sessionHideCandidates()
@@ -1215,7 +1296,13 @@ class PinyinSession {
     private func readingForSelectedCandidate() -> PinyinReading {
         let fallback = PinyinReading.plain(segmentedPinyin)
         guard selectedIndex < candidates.count else { return fallback }
-        let engineIndex = Int32(candidatePage * candidatePageSize + selectedIndex)
+        if selectedIndex < pageChaizi.count {
+            return Self.chaiziReading(pageChaizi[selectedIndex])
+        }
+        guard let visibleEngineIndex = engineIndex(forVisible: selectedIndex) else {
+            return fallback
+        }
+        let engineIndex = Int32(visibleEngineIndex)
         let maxTokens = 64
         var tokens = [HmmTokenReading](repeating: HmmTokenReading(), count: maxTokens)
         let tokenCount = Int(gboard_get_corrected_candidate_reading(

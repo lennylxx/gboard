@@ -1,5 +1,6 @@
 #pragma once
 #include <stdbool.h>
+#include <stddef.h>
 #include "../engine/hmm_engine.h"
 #include "../engine/hmm_user_dict.h"
 
@@ -47,6 +48,31 @@ int   gboard_get_corrected_candidate_reading(int index,
                                              int max_tokens);
 void  gboard_reset(void);
 void  gboard_destroy(void);
+
+// u-mode (拆字) lookup tables, generated from the TSV files at build time
+// by scripts/gen_chaizi_tables.py. Each `*_starts`/`*_offsets` array has
+// one more element than the items it delimits.
+typedef struct {
+    // Distinct readings, concatenated lowercase ASCII.
+    const char *reading_pool;
+    const uint32_t *reading_offsets;
+    // Reading ids of each component, preferred first.
+    const uint16_t *component_reading_ids;
+    const uint32_t *component_reading_starts;
+    // Component ids of each split.
+    const uint16_t *split_components;
+    const uint32_t *split_starts;
+    // Characters in encoding order, UTF-8 concatenated.
+    const char *character_pool;
+    const uint32_t *character_starts;
+    // Splits of each character, authored first, then expanded.
+    const uint32_t *entry_split_starts;
+    // Bit n: some split's first component has a reading starting 'a' + n.
+    const uint32_t *entry_first_letters;
+    uint32_t entry_count;
+} ChaiziTables;
+
+const ChaiziTables *gboard_chaizi_tables(void);
 
 // ── User dictionary ──────────────────────────────────────────────────────────
 

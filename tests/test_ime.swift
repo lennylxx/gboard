@@ -1514,6 +1514,118 @@ func makeSymbolPanel(preferences: Preferences) -> (SymbolPanel, PinyinSession, M
     return (panel, session, mock)
 }
 
+// ── u-mode character composition ─────────────────────────────────────────────
+
+func testChaizi() {
+    print("[test_chaizi]")
+    let dictionary = ChaiziDictionary.shared
+    check("niuniuniu composes 犇",
+          dictionary.lookup("niuniuniu").first == .init(
+            character: "犇", readings: ["niu", "niu", "niu"], isComplete: true))
+    let mumu = dictionary.lookup("mumu")
+    check("complete match 林 precedes prefix match 森",
+          mumu.first?.character == "林" &&
+          (mumu.firstIndex { $0.character == "森" } ?? -1) > 0 &&
+          mumu.first { $0.character == "森" }?.isComplete == false)
+    check("ü components accept v and u",
+          dictionary.lookup("nvzi").first?.character == "好" &&
+          dictionary.lookup("nuzi").first?.character == "好")
+    check("components the table decomposes expand",
+          dictionary.lookup("mabeitiangong").first == .init(
+            character: "骥", readings: ["ma", "bei", "tian", "gong"], isComplete: true))
+    check("radical names match", dictionary.lookup("shuiguyue").contains {
+        $0.character == "湖" && $0.isComplete })
+    check("apostrophes must fall between components",
+          dictionary.lookup("mu'mu").first?.character == "林" &&
+          !dictionary.lookup("m'umu").contains { $0.character == "林" })
+    check("a partly typed reading still matches",
+          dictionary.lookup("mum").contains { $0.character == "林" })
+    check("one letter or a partial first component does not match",
+          dictionary.lookup("m").isEmpty && dictionary.lookup("mx").isEmpty)
+    let zhang = dictionary.lookup("zhang").map(\.character)
+    check("a reading typed in full outranks one cut short",
+          (zhang.firstIndex(of: "彰") ?? .max) < (zhang.firstIndex(of: "战") ?? -1))
+
+    withTestPreferences { preferences, _ in
+        preferences.contextEnabled = false
+        preferences.predictionsEnabled = false
+        let (session, delegate) = makeSession(preferences: preferences)
+        for ch in "uniuniuniu" { _ = session.appendLetter(String(ch)) }
+        check("u-mode lists 犇 first", session.candidates.first == "犇")
+        check("reading shows components and tone",
+              session.pinyinReading.text == "u niu'niu'niu  (bēn)")
+        check("composed candidate is not removable",
+              !session.selectedCandidateRemovable)
+        _ = session.selectCurrent()
+        check("composed character commits the whole input",
+              delegate.committedText == "犇" && !session.isComposing)
+
+        delegate.clear()
+        for ch in "ubuntu" { _ = session.appendLetter(String(ch)) }
+        check("engine candidates follow in u-mode",
+              session.candidates.contains("Ubuntu"))
+        session.cancel()
+
+        // Paging crosses from composed characters into engine candidates.
+        for ch in "umu" { _ = session.appendLetter(String(ch)) }
+        var seen: [String] = session.candidates
+        while session.hasNextPage {
+            _ = session.nextPage()
+            seen += session.candidates
+        }
+        let engineStart = ChaiziDictionary.shared.lookup("mu").count
+        check("engine candidates follow every composed character",
+              seen.count > engineStart && seen.prefix(engineStart).contains("林"))
+        session.cancel()
+
+        // Selecting the first engine candidate after the composed ones must
+        // reach the engine's own first candidate.
+        for ch in "umu" { _ = session.appendLetter(String(ch)) }
+        let pageSize = preferences.candidatePageSize.rawValue
+        for _ in 0..<(engineStart / pageSize) { _ = session.nextPage() }
+        let boundary = engineStart % pageSize
+        let engineFirst = seen[engineStart]
+        check("boundary page shows the first engine candidate",
+              session.candidates.count > boundary &&
+              session.candidates[boundary] == engineFirst)
+        session.selectCandidate(index: boundary)
+        check("engine candidate after composed ones is selected",
+              delegate.committedText.hasPrefix(engineFirst) ||
+              session.convertedText == engineFirst)
+        session.cancel()
+        delegate.clear()
+
+        preferences.isTraditional = true
+        for ch in "uyanyan" { _ = session.appendLetter(String(ch)) }
+        check("composed characters convert in Traditional mode",
+              session.candidates.contains("談") && !session.candidates.contains("谈"))
+        if let index = session.candidates.firstIndex(of: "談") {
+            session.selectCandidate(index: index)
+        }
+        check("Traditional composed character commits", delegate.committedText == "談")
+        session.dismissPredictions()
+        for ch in "umamama" { _ = session.appendLetter(String(ch)) }
+        check("Traditional mode lists 驫 once",
+              session.candidates.filter { $0 == "驫" }.count == 1)
+        session.cancel()
+        preferences.isTraditional = false
+        delegate.clear()
+
+        preferences.chaiziEnabled = false
+        for ch in "uniuniuniu" { _ = session.appendLetter(String(ch)) }
+        check("disabled u-mode leaves engine candidates",
+              session.candidates.first != "犇")
+        session.cancel()
+        preferences.chaiziEnabled = true
+
+        check("switch to flypy", preferences.applyPinyinScheme(.flypy))
+        for ch in "uniuniuniu" { _ = session.appendLetter(String(ch)) }
+        check("Shuangpin keeps u as a key", session.candidates.first != "犇")
+        session.cancel()
+        check("switch back to full pinyin", preferences.applyPinyinScheme(.full))
+    }
+}
+
 func testSymbolPanel() {
     print("[test_symbol_panel]")
 
@@ -1823,6 +1935,7 @@ testCorrectedPinyinReading()
         testTraditionalPredictionChainUsesEngineText()
         testTraditionalLearningKeepsSimplifiedDictionary()
         testSymbolPanel()
+        testChaizi()
         testNextWordPrediction()
         testPredictionEdgeCases()
         testPreferencesStorage()

@@ -47,6 +47,11 @@ that powers Gboard on Android.
   yields `用Python写`.
 - **Shuangpin (Double Pinyin)**: six schemes; full Pinyin remains the default.
   For example, Flypy `nihc` yields `你好`.
+- **u-mode character composition**: in full Pinyin, type `u` followed by the
+  Pinyin of each component to enter a character you cannot pronounce. For
+  example, `uniuniuniu` yields `犇` and `ushuiguyue` yields `湖`. Composed
+  characters come first; the engine's own candidates, such as English words,
+  follow.
 - **Next-word prediction**: after a commit, the engine predicts the next Chinese
   word. For example, committing `生日快` predicts `乐`.
 - **Simplified / Traditional toggle**: candidates and predictions are converted
@@ -266,6 +271,13 @@ Implementation details:
   punctuation, whitespace, or a language boundary.
 - **Mixed input**: uses Gboard's English token and system dictionaries.
 - **Shuangpin**: uses Gboard's native token dictionaries.
+- **u-mode composition**: Gboard has no component data. The project
+  maintains its own tables of about 7,400 characters
+  (`chaizi_characters.tsv`) and component readings
+  (`chaizi_components.tsv`), written for this project rather than taken
+  from a third-party dataset. Each build compiles them with
+  `scripts/gen_chaizi_tables.py` into static lookup arrays, which
+  matching reads in place without parsing.
 - **Shuangpin key correction**: Gboard's built-in corrector targets full
   Pinyin spellings. Key correction reuses the native input lattice instead:
   each key is appended with its same-row neighbours as lower-scored

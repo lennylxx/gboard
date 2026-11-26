@@ -17,6 +17,8 @@
 		AA000001000000000000024A /* LearnedWords.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA000001000000000000024F /* LearnedWords.swift */; };
 		AA000001000000000000025A /* LearnedWordsWindow.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA000001000000000000025F /* LearnedWordsWindow.swift */; };
 		AA000001000000000000026A /* Shortcuts.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA000001000000000000026F /* Shortcuts.swift */; };
+		AA0000010000000000000282 /* ChaiziData.c in Sources */ = {isa = PBXBuildFile; fileRef = AA0000010000000000000283 /* ChaiziData.c */; };
+		AA0000010000000000000280 /* ChaiziDictionary.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000010000000000000281 /* ChaiziDictionary.swift */; };
 		AA000001000000000000027A /* ShortcutsWindow.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA000001000000000000027F /* ShortcutsWindow.swift */; };
 		EE00000100000000000000PA /* PinyinSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = EE00000100000000000000PF /* PinyinSession.swift */; };
 		FF00000100000000000000SA /* ShiftToggleTracker.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF00000100000000000000SF /* ShiftToggleTracker.swift */; };
@@ -47,6 +49,10 @@
 		AA000001000000000000024F /* LearnedWords.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LearnedWords.swift; sourceTree = "<group>"; };
 		AA000001000000000000025F /* LearnedWordsWindow.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LearnedWordsWindow.swift; sourceTree = "<group>"; };
 		AA000001000000000000026F /* Shortcuts.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Shortcuts.swift; sourceTree = "<group>"; };
+		AA0000010000000000000283 /* ChaiziData.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = ChaiziData.c; sourceTree = "<group>"; };
+		AA0000010000000000000285 /* chaizi_characters.tsv */ = {isa = PBXFileReference; lastKnownFileType = text; path = chaizi_characters.tsv; sourceTree = "<group>"; };
+		AA0000010000000000000284 /* chaizi_components.tsv */ = {isa = PBXFileReference; lastKnownFileType = text; path = chaizi_components.tsv; sourceTree = "<group>"; };
+		AA0000010000000000000281 /* ChaiziDictionary.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChaiziDictionary.swift; sourceTree = "<group>"; };
 		AA000001000000000000027F /* ShortcutsWindow.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ShortcutsWindow.swift; sourceTree = "<group>"; };
 		AA000001000000000000004F /* GboardBridge.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = GboardBridge.c; sourceTree = "<group>"; };
 		AA000001000000000000005F /* elf_loader.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = elf_loader.c; sourceTree = "<group>"; };
@@ -128,6 +134,10 @@
 				AA000001000000000000024F /* LearnedWords.swift */,
 				AA000001000000000000025F /* LearnedWordsWindow.swift */,
 				AA000001000000000000026F /* Shortcuts.swift */,
+				AA0000010000000000000283 /* ChaiziData.c */,
+				AA0000010000000000000285 /* chaizi_characters.tsv */,
+				AA0000010000000000000284 /* chaizi_components.tsv */,
+				AA0000010000000000000281 /* ChaiziDictionary.swift */,
 				AA000001000000000000027F /* ShortcutsWindow.swift */,
 				DD00000100000000000000H6 /* GboardBridge.h */,
 				AA000001000000000000004F /* GboardBridge.c */,
@@ -189,6 +199,7 @@
 			isa = PBXNativeTarget;
 			buildConfigurationList = AA0000010000000000000160 /* Build configuration list for PBXNativeTarget "GboardIME" */;
 			buildPhases = (
+				HH00000100000000000000E1 /* Generate Chaizi Tables */,
 				AA0000010000000000000170 /* Sources */,
 				AA00000100000000000000E0 /* Frameworks */,
 				AA0000010000000000000180 /* Resources */,
@@ -267,6 +278,24 @@
 			shellPath = /bin/sh;
 			shellScript = "\"$SRCROOT/../scripts/copy_engine_resources.sh\" \"$TARGET_BUILD_DIR/$WRAPPER_NAME\"\n";
 		};
+		HH00000100000000000000E1 /* Generate Chaizi Tables */ = {
+			isa = PBXShellScriptBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputPaths = (
+				"$(SRCROOT)/../scripts/gen_chaizi_tables.py",
+				"$(SRCROOT)/ime/chaizi_components.tsv",
+				"$(SRCROOT)/ime/chaizi_characters.tsv",
+			);
+			name = "Generate Chaizi Tables";
+			outputPaths = (
+				"$(DERIVED_FILE_DIR)/chaizi_tables.h",
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "python3 \"$SRCROOT/../scripts/gen_chaizi_tables.py\" \"$DERIVED_FILE_DIR\"\n";
+		};
 /* End PBXShellScriptBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
@@ -288,6 +317,8 @@
 				AA000001000000000000024A /* LearnedWords.swift in Sources */,
 				AA000001000000000000025A /* LearnedWordsWindow.swift in Sources */,
 				AA000001000000000000026A /* Shortcuts.swift in Sources */,
+				AA0000010000000000000282 /* ChaiziData.c in Sources */,
+				AA0000010000000000000280 /* ChaiziDictionary.swift in Sources */,
 				AA000001000000000000027A /* ShortcutsWindow.swift in Sources */,
 				AA000001000000000000004A /* GboardBridge.c in Sources */,
 				AA000001000000000000005A /* elf_loader.c in Sources */,
@@ -434,6 +465,7 @@
 				HEADER_SEARCH_PATHS = (
 					"$(PROJECT_DIR)/engine",
 					"$(PROJECT_DIR)/ime",
+					"$(DERIVED_FILE_DIR)",
 				);
 				INFOPLIST_FILE = Info.plist;
 				SWIFT_OBJC_BRIDGING_HEADER = "ime/GboardBridge.h";
@@ -460,6 +492,7 @@
 				HEADER_SEARCH_PATHS = (
 					"$(PROJECT_DIR)/engine",
 					"$(PROJECT_DIR)/ime",
+					"$(DERIVED_FILE_DIR)",
 				);
 				INFOPLIST_FILE = Info.plist;
 				SWIFT_OBJC_BRIDGING_HEADER = "ime/GboardBridge.h";

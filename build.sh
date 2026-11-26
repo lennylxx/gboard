@@ -51,11 +51,12 @@ build_with_swiftc() {
 
     rm -rf "$app" "$obj_dir"
     mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources" "$obj_dir"
+    python3 scripts/gen_chaizi_tables.py "$obj_dir"
 
     for src in "${c_srcs[@]}"; do
         local obj="$obj_dir/$(basename "${src%.c}").o"
         clang -c -Os -target "$target" \
-            -I"$XCODE_DIR/engine" -I"$XCODE_DIR/ime" \
+            -I"$XCODE_DIR/engine" -I"$XCODE_DIR/ime" -I"$obj_dir" \
             -o "$obj" "$src"
         objs+=("$obj")
     done
@@ -112,7 +113,7 @@ do_uninstall() {
 }
 
 do_clean() {
-    rm -rf "$BUILD_DIR"
+    rm -rf "$XCODE_DIR/build"
     rm -f tests/test_engine
     rm -rf tests/test_engine.dSYM
     echo "Cleaned."

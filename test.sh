@@ -94,6 +94,29 @@ ENGINE_RC=$?
 
 echo ""
 echo "═══ Building test_ime (Swift) ═══"
+# The generator rejects tables the matcher could not use.
+mkdir -p "$PROBE_DIR/bad"
+printf '木\tmu\n' > "$PROBE_DIR/bad/chaizi_components.tsv"
+printf '林\t木木\n森\t木木木\n' > "$PROBE_DIR/bad/chaizi_characters.tsv"
+if ! python3 scripts/gen_chaizi_tables.py "$PROBE_DIR/bad" "$PROBE_DIR/bad"; then
+    echo "FAIL: chaizi generator rejected a valid table"
+    exit 1
+fi
+# Each invalid table must fail with the generator's own message.
+for bad in '林\t木口\n|no reading for 口' '林\t木木\n林\t木木\n|duplicate character 林' \
+           '林\t林木\n|bad character line'; do
+    printf "${bad%%|*}" > "$PROBE_DIR/bad/chaizi_characters.tsv"
+    if python3 scripts/gen_chaizi_tables.py "$PROBE_DIR/bad" "$PROBE_DIR/bad" \
+        2> "$PROBE_DIR/bad/stderr" ||
+       ! grep -q "gen_chaizi_tables: .*${bad#*|}" "$PROBE_DIR/bad/stderr"; then
+        echo "FAIL: chaizi generator did not reject: ${bad#*|}"
+        exit 1
+    fi
+done
+echo "PASS: chaizi generator validates tables"
+python3 scripts/gen_chaizi_tables.py "$PROBE_DIR"
+clang -c -g -o "$TEST_DIR/ChaiziData.o" GboardIME/ime/ChaiziData.c \
+    -IGboardIME/ime -I"$PROBE_DIR"
 swiftc -g -parse-as-library -o "$TEST_DIR/test_ime" \
     "$TEST_DIR/test_ime.swift" \
     "$TEST_DIR/test_preferences.swift" \
@@ -103,11 +126,13 @@ swiftc -g -parse-as-library -o "$TEST_DIR/test_ime" \
     "GboardIME/ime/UserDictionary.swift" \
     "GboardIME/ime/LearnedWords.swift" \
     "GboardIME/ime/Shortcuts.swift" \
+    "GboardIME/ime/ChaiziDictionary.swift" \
     "GboardIME/ime/ShiftToggleTracker.swift" \
     "GboardIME/ime/SymbolPanel.swift" \
     "GboardIME/ime/SessionContextRetriever.swift" \
     "GboardIME/ime/CandidateWindow.swift" \
     "GboardIME/ime/GboardBridge.c" \
+    "$TEST_DIR/ChaiziData.o" \
     "${ENGINE_SRCS[@]}" \
     -IGboardIME -import-objc-header GboardIME/ime/GboardBridge.h \
     -DDEBUG

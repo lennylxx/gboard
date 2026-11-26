@@ -178,6 +178,7 @@ final class Preferences: NSObject, ObservableObject {
         static let shortcuts = "shortcutsEnabled"
         static let shuangpinKeyCorrection = "shuangpinKeyCorrectionEnabled"
         static let pinyinCorrection = "pinyinCorrectionEnabled"
+        static let chaizi = "chaiziEnabled"
         static let isTraditional = "traditionalChineseEnabled"
         static let themeMode = "themeMode"
         static let windowOpacity = "candidateWindowOpacity"
@@ -230,6 +231,11 @@ final class Preferences: NSObject, ObservableObject {
         didSet {
             save(shuangpinKeyCorrectionEnabled, forKey: Key.shuangpinKeyCorrection)
         }
+    }
+
+    /// u-mode: `u` followed by the pinyin of a character's components.
+    @Published var chaiziEnabled: Bool {
+        didSet { save(chaiziEnabled, forKey: Key.chaizi) }
     }
 
     @Published var shiftToggleEnabled: Bool {
@@ -428,11 +434,13 @@ final class Preferences: NSObject, ObservableObject {
             Key.shortcuts: false,
             Key.shuangpinKeyCorrection: true,
             Key.pinyinCorrection: true,
+            Key.chaizi: true,
             Key.saveInterval: UserDictionarySaveInterval.fourHours.rawValue
         ])
         predictionsEnabled = defaults.bool(forKey: Key.predictions)
         contextEnabled = defaults.bool(forKey: Key.context)
         shuangpinKeyCorrectionEnabled = defaults.bool(forKey: Key.shuangpinKeyCorrection)
+        chaiziEnabled = defaults.bool(forKey: Key.chaizi)
         shiftToggleEnabled = defaults.bool(forKey: Key.shift)
         isTraditional = defaults.bool(forKey: Key.isTraditional)
         themeMode = ThemeMode(

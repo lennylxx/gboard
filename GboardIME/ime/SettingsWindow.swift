@@ -65,6 +65,8 @@ private struct SettingsView: View {
                         } else if preferences.pinyinSchemePending {
                             note("等待本次输入结束后切换。")
                         }
+                        toggle("u 模式拆字", isOn: $preferences.chaiziEnabled)
+                        note("以 u 开头，依次输入各部件的拼音来打生僻字，例：uniuniuniu → 犇、umumu → 林。仅用于全拼。")
                         toggle("单击 Shift 切换中英文", isOn: $preferences.shiftToggleEnabled)
                         note("切换回本输入法、切换应用或输入框，或关闭此选项时恢复中文；不影响系统 Caps Lock 设置。")
                         toggle("繁体中文", isOn: $preferences.isTraditional)
